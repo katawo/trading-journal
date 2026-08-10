@@ -11,11 +11,11 @@ Feature: Import completed MT5 positions locally
     And the trade is excluded from R metrics until planned risk is added
 
   Scenario: Re-import a previously imported position
-    Given an imported MT5 trade with journal annotations
+    Given an imported MT5 trade
     And a newer export for the same MT5 position
     When I import the newer export
     Then the MT5 financial fields are refreshed
-    And the journal annotations remain unchanged
+    And journal-wide defaults continue to determine strategy and R
 
   Scenario: Reject a mismatched account currency
     Given a USD journal with a registered USD MT5 account
@@ -23,23 +23,22 @@ Feature: Import completed MT5 positions locally
     When I import the export
     Then the import fails without creating a trade
 
-  Scenario: Compare a tagged strategy with optional backtest context
+  Scenario: Compare the default strategy with optional backtest context
     Given a strategy profile with optional backtest statistics
-    And an imported trade tagged with that strategy
+    And that profile is the journal default strategy
     When I view the performance dashboard
     Then the live strategy result includes its backtest context
 
-  Scenario: Apply a journal default strategy with a trade override
+  Scenario: Apply a journal default strategy to every imported trade
     Given Motimoti is the journal's default strategy
-    And an imported trade has no strategy override
-    And another imported trade overrides the strategy as Breakout
-    When I view the journal
-    Then the first trade uses Motimoti and the second uses Breakout
+    And multiple imported trades
+    When I view the performance dashboard
+    Then every trade uses Motimoti
 
-  Scenario: Rename a saved strategy profile
-    Given imported trades and the journal default are linked to a saved strategy profile
+  Scenario: Rename the journal default strategy profile
+    Given the journal default is linked to a saved strategy profile
     When I rename that strategy profile
-    Then its linked trades and journal default use the new strategy name
+    Then imported trades and the journal default use the new strategy name
 
   Scenario: Compare P&L with the target over more than one month
     Given a selected report period spans two calendar months
@@ -55,3 +54,9 @@ Feature: Import completed MT5 positions locally
     Given imported closed trades in the selected report period
     When I select the per-trade chart view
     Then I can see each closed trade's P&L and post-close drawdown
+
+  Scenario: Refresh a changed MT5 export automatically
+    Given an approved MT5 account has a configured Common Files export path
+    And the Trading Journal sync EA publishes a changed completed-position export
+    When I have the Dashboard open
+    Then the journal imports the changed export without duplicating existing positions

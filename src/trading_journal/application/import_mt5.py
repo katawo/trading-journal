@@ -30,6 +30,7 @@ REQUIRED_COLUMNS = {
     "fees",
     "net_pnl",
 }
+SUPPORTED_SCHEMA_VERSION = 1
 
 
 class MT5ImportService:
@@ -60,6 +61,11 @@ class MT5ImportService:
             positions = [MT5PositionExport.model_validate(row) for row in rows]
         except ValidationError as error:
             raise ImportValidationError(f"Invalid MT5 export row: {error.errors()[0]['msg']}") from error
+
+        if any(position.schema_version != SUPPORTED_SCHEMA_VERSION for position in positions):
+            raise ImportValidationError(
+                f"Unsupported MT5 export schema version; expected {SUPPORTED_SCHEMA_VERSION}"
+            )
 
         identities = {(item.account_login, item.broker_server, item.account_currency) for item in positions}
         if len(identities) != 1:

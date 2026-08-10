@@ -73,29 +73,50 @@ def test_existing_database_is_migrated_with_a_nullable_risk_baseline(tmp_path: P
     assert database_path.with_suffix(".db.pre-strategy-default.bak").exists()
 
 
-def test_dynamic_baseline_recalculates_only_trades_without_an_override(tmp_path: Path) -> None:
+def test_dynamic_baseline_recalculates_every_trade(tmp_path: Path) -> None:
     repository = configured_repository(tmp_path, baseline="10")
-    repository.annotate_imported_trade(
-        login="123456",
-        broker_server="DemoBroker-Live",
-        position_id="1002",
-        strategy="Pullback",
-        planned_risk_amount="5",
-        notes=None,
-    )
 
     before = {trade.position_id: trade for trade in repository.list_trades()}
     assert before["1001"].effective_risk == "10"
     assert before["1001"].risk_source == "Baseline"
     assert before["1001"].result_r == "2"
-    assert before["1002"].effective_risk == "5"
-    assert before["1002"].risk_source == "Override"
-    assert before["1002"].result_r == "-1"
+    assert before["1002"].effective_risk == "10"
+    assert before["1002"].risk_source == "Baseline"
+    assert before["1002"].result_r == "-0.5"
 
     repository.configure_journal(base_currency="USD", reporting_timezone="UTC", monthly_target="100", default_planned_risk_amount="20")
     after = {trade.position_id: trade for trade in repository.list_trades()}
     assert after["1001"].result_r == "1"
-    assert after["1002"].result_r == "-1"
+    assert after["1002"].result_r == "-0.25"
+
+
+def test_existing_trade_overrides_are_removed_during_initialization(tmp_path: Path) -> None:
+    repository = configured_repository(tmp_path, baseline="10")
+    database_path = tmp_path / "journal.db"
+    connection = sqlite3.connect(database_path)
+    for column_name, column_type in [
+        ("strategy", "VARCHAR(100)"),
+        ("strategy_profile_id", "INTEGER"),
+        ("notes", "VARCHAR"),
+        ("planned_risk_amount", "VARCHAR"),
+        ("result_r", "VARCHAR"),
+        ("journal_completed_at", "VARCHAR(64)"),
+    ]:
+        connection.execute(f"ALTER TABLE trades ADD COLUMN {column_name} {column_type}")
+    connection.execute(
+        "UPDATE trades SET strategy = 'Legacy', notes = 'Legacy note', planned_risk_amount = '5', result_r = '4', journal_completed_at = '2026-08-10T00:00:00+00:00'"
+    )
+    connection.commit()
+    connection.close()
+
+    repository.initialize()
+
+    connection = sqlite3.connect(database_path)
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(trades)")}
+    connection.close()
+    assert not columns.intersection({"strategy", "strategy_profile_id", "notes", "planned_risk_amount", "result_r", "journal_completed_at"})
+    assert database_path.with_suffix(".db.pre-trade-override-removal.bak").exists()
+    assert {trade.position_id: trade.result_r for trade in repository.list_trades()} == {"1001": "2", "1002": "-0.5"}
 
 
 def test_dashboard_builds_kpis_and_time_series_from_effective_risk(tmp_path: Path) -> None:

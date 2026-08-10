@@ -182,7 +182,7 @@ Use Python `Decimal` for monetary and R calculations, the standard-library `csv`
 
 ## MetaTrader 5 Exporter
 
-Each selected MT5 terminal runs a manually triggered MQL5 exporter script. The script reads terminal history locally and writes a versioned CSV file to MT5's Common Files directory. The Streamlit app imports that file; it does not use broker credentials, send orders, or communicate with a cloud service.
+Each selected MT5 terminal can run a resident, read-only MQL5 sync EA. It reads terminal history locally after trade-deal events and writes a versioned CSV snapshot to MT5's Common Files directory using a temporary file then rename. The app resolves this location locally across native Windows `%APPDATA%` and Linux Wine prefixes (`WINEPREFIX`, `~/.wine`, and `~/.mt5`), with an explicit environment override for non-standard installations. While the Dashboard is open, the Streamlit app checks the configured export path every 15 seconds and imports only a changed snapshot. The app does not use broker credentials, send orders, or communicate with a cloud service. The manually triggered exporter script remains a recovery fallback.
 
 ---
 
@@ -204,6 +204,7 @@ trading-journal/
 ├── screenshots/
 │
 ├── mql5/
+│   ├── TradingJournalSync.mq5
 │   └── TradingJournalExporter.mq5
 │
 ├── migrations/
@@ -242,7 +243,6 @@ Recommended navigation:
 
 ```text
 Dashboard
-Journal
 New Trade
 Risk Planner
 Analytics
@@ -456,47 +456,13 @@ Optional:
 
 ---
 
-# 10. Screen 3 — Journal
+# 10. Dashboard subview — Closed-trade detail
 
-Table of all trades.
+When the Dashboard uses the **Per trade** chart view, it displays a read-only table of completed positions. The table includes close time, position ID, symbol, P&L, result R, post-close drawdown, and balance when balance tracking is enabled.
 
-Recommended columns:
+MT5 execution values are stored as imported. Risk and strategy values are derived only from the journal-wide defaults; the current interface has no individual-trade annotations or overrides.
 
-| Field |
-|---|
-| Date |
-| Symbol |
-| Direction |
-| Strategy |
-| Setup |
-| Grade |
-| Risk $ |
-| Risk % |
-| Planned R:R |
-| Net P&L |
-| Result R |
-| Rule followed |
-| Emotion |
-| Notes |
-
-Filters:
-
-- Date range
-- Symbol
-- Strategy
-- Setup
-- Grade
-- Session
-- Long/Short
-- Win/Loss
-- Rule followed
-- Market regime
-
-Clicking a trade should open its complete detail page.
-
-For MT5-imported trades, execution values and P&L are read-only. The user can add or edit strategy/setup tags, grade, rule checks, psychology, notes, screenshots, and planned risk.
-
-The Journal includes a manual **Import MT5 Trades** action that shows the source account, created/updated/skipped/error counts, and any validation failures from the latest import run.
+The Dashboard includes automatic changed-export detection and a manual **Sync MT5 now** action. They show the source account, created/updated/skipped/error counts, and any validation failures from the latest import run.
 
 ---
 
@@ -1075,6 +1041,12 @@ Review questions:
 
 # 23. Settings Screen
 
+Settings is the single configuration workspace. It has three tabs:
+
+- **General** — journal currency, reporting timezone, targets, balance tracking, and default risk baseline
+- **MT5 Accounts** — approved accounts and their export file locations
+- **Strategies** — reusable strategy profiles, the one journal-default strategy, and optional backtest evidence
+
 ## Account Settings
 
 - Journal base currency
@@ -1103,7 +1075,7 @@ Only accounts explicitly registered here may be imported. An account whose MT5 d
 ## Trading Settings
 
 - Allowed symbols
-- Strategies
+- Strategies (managed in the **Strategies** tab)
 - Setups
 - Trading sessions
 - Setup grades
@@ -1194,13 +1166,11 @@ source                    # manual | mt5
 mt5_account_id            # null for manual trades
 mt5_position_id           # null for manual trades
 source_updated_at
-journal_completed_at      # set when planned risk is recorded for an imported trade
 trade_date
 entry_time
 exit_time
 symbol
 direction
-strategy_id
 setup_id
 session
 market_regime
@@ -1212,7 +1182,6 @@ exit_price
 
 account_balance
 risk_percent
-planned_risk_amount
 position_size
 planned_rr
 
@@ -1221,7 +1190,6 @@ commission
 swap
 fees
 net_pnl
-result_r
 
 setup_grade
 rule_followed
@@ -1264,7 +1232,7 @@ error_summary
 created_at
 ```
 
-Imported records are unique by `(mt5_account_id, mt5_position_id)`. Re-importing updates MT5-owned execution data while preserving journal annotations.
+Imported records are unique by `(mt5_account_id, mt5_position_id)`. Re-importing updates MT5-owned execution data; strategy and R are derived from the journal-wide defaults.
 
 ---
 
@@ -1353,12 +1321,12 @@ The app should validate:
 - R calculation requires planned risk
 - Monthly target should not affect position sizing
 - Position sizing must use defined risk, not remaining monthly target
-- MT5 import file must match the expected schema version and a registered `(login, broker server)` account
+- MT5 import file must use supported schema version `1` and a registered `(login, broker server)` account
 - MT5 import currency must match the journal base currency
 - Imported position records must have a unique `(mt5_account_id, mt5_position_id)` identity
 - Corrupt, incomplete, unknown-account, or currency-mismatched imports must make no database changes
-- Imported execution/P&L fields are read-only; only journal annotations and planned risk may be edited
-- Imported trades contribute to dollar P&L immediately, but require positive planned risk before contributing to R, expectancy, target-R, or process metrics
+- Imported execution/P&L fields are read-only; the current app has no individual-trade annotations or overrides
+- Imported trades contribute to dollar P&L immediately, but require a positive journal risk baseline before contributing to R, expectancy, target-R, or process metrics
 
 ---
 
@@ -1483,20 +1451,20 @@ Success condition:
 
 ---
 
-## Phase 2 — Local MT5 Import
+## Phase 2 — Local MT5 Sync
 
 Build:
 
 - MT5 account whitelist and journal timezone/base-currency settings
-- Manually triggered MQL5 exporter script for each selected local terminal
+- Resident read-only MQL5 sync EA for each selected local terminal, with a manual exporter-script fallback
 - Versioned CSV exports in MT5 Common Files, written through a temporary file then moved into place
 - Closed-position aggregation by MT5 position ID, including partial fills/closes, commission, swap, fees, and net P&L
-- Idempotent importer, import-run audit log, and import-result UI
-- Read-only imported execution data with editable journal annotations
+- Hash-gated idempotent importer, import-run audit log, and automatic import status UI
+- Read-only imported execution data with journal-wide risk and strategy defaults
 
 Success condition:
 
-> User can manually export and safely import completed trades from registered local MT5 accounts without sending or modifying any MT5 trade.
+> User can safely auto-import changed completed-trade snapshots from registered local MT5 accounts without sending or modifying any MT5 trade.
 
 ---
 
@@ -1676,7 +1644,7 @@ Keep the first implementation small.
 
 ```text
 1. Dashboard
-2. Journal / MT5 Import
+2. Settings
 3. New Trade
 4. Risk Planner
 5. Analytics
@@ -1695,7 +1663,7 @@ Database
    ↓
 MT5 Account Setup
    ↓
-MT5 Import
+Automatic MT5 Sync
    ↓
 Manual Trade Entry
    ↓
@@ -1720,15 +1688,15 @@ The priority is:
 
 ---
 
-# 33. Local MT5 Import Architecture
+# 33. Local MT5 Sync Architecture
 
 MT5 is a local, read-only data source in Phase 2. It is not the foundation of the application and does not receive commands from it.
 
 ```text
 Selected MT5 terminal
-        ↓ manual exporter script
+        ↓ read-only sync EA on trade events
 MT5 Common Files CSV export
-        ↓ manual import action
+        ↓ changed-export detection while the app is open
 Validated SQLite journal database
         ↓
 Risk Engine → Analytics Engine → Dashboard
@@ -1736,7 +1704,7 @@ Risk Engine → Analytics Engine → Dashboard
 
 The exporter identifies its source by MT5 account login and broker server. The importer accepts only registered accounts and fully closed positions, groups related deals by MT5 position ID, and records every import outcome. Manual entry remains available for non-MT5 trades; it must not duplicate an imported position.
 
-MT5 execution values remain read-only after import. Journal annotations are editable, and the trade enters R-based metrics only once the user supplies planned risk.
+MT5 execution values remain read-only after import. Strategy and R values are derived from the journal defaults, and a trade enters R-based metrics only when the journal risk baseline is enabled.
 
 The journal and terminal must run on the same machine, or the journal must have local read access to the MT5 Common Files directory.
 
@@ -1745,7 +1713,7 @@ Future data-source compatibility:
 ```text
 Manual Entry ─────┐
                   │
-MT5 Import ───────┼──→ Unified Trade Database
+MT5 Sync export ──┼──→ Unified Trade Database
                   │
 Broker API ───────┘
                          ↓
@@ -1781,11 +1749,11 @@ Settings
 +
 MT5 Account Setup
 +
-Local MT5 Import
+Local MT5 Sync
 +
-Journal Enrichment
+Journal-wide risk and strategy defaults
 +
-Basic Dashboard (dollar P&L only until planned risk is recorded)
+Basic Dashboard (dollar P&L only until the risk baseline is enabled)
 ```
 
 Once those components are reliable, add:
@@ -1812,14 +1780,14 @@ This prevents unnecessary complexity and makes the app useful very early in deve
 
 Use pytest for domain, database, and importer tests, plus Streamlit AppTest for important page flows.
 
-## MT5 Import Tests
+## MT5 Sync Tests
 
 - Import a valid completed MT5 position.
 - Aggregate multiple entries, partial closes, commission, swap, fees, and net P&L into one journal trade.
 - Reject an unknown account, broker-server mismatch, base-currency mismatch, invalid schema, corrupt CSV, or incomplete temporary export without changing the database.
-- Re-import the same position safely; refresh MT5-owned data while preserving journal annotations.
+- Re-import the same position safely and refresh MT5-owned execution data.
 - Exclude open positions, pending orders, and non-trading balance/credit operations.
-- Verify imported P&L is visible immediately and R/process metrics remain excluded until planned risk is recorded.
+- Verify imported P&L is visible immediately and R/process metrics remain excluded until the journal risk baseline is enabled.
 - Verify all reporting-period grouping uses the configured journal timezone.
 
 ## Regression Tests

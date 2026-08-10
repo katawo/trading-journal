@@ -77,7 +77,7 @@ def test_strategy_profile_validates_backtest_ranges(tmp_path) -> None:
 
 def test_dashboard_links_live_strategy_performance_to_backtest_context(tmp_path) -> None:
     repository = _repository(tmp_path)
-    repository.save_strategy_profile(
+    profile = repository.save_strategy_profile(
         name="Motimoti",
         description=None,
         backtest_start_date=None,
@@ -88,6 +88,7 @@ def test_dashboard_links_live_strategy_performance_to_backtest_context(tmp_path)
         backtest_net_r="24",
         backtest_notes=None,
     )
+    repository.set_default_strategy(profile.id)
     repository.register_mt5_account(
         display_name="Primary",
         login="123456",
@@ -123,15 +124,6 @@ def test_dashboard_links_live_strategy_performance_to_backtest_context(tmp_path)
         "positions.csv",
         "test-hash",
     )
-    repository.annotate_imported_trade(
-        login="123456",
-        broker_server="DemoBroker-Live",
-        position_id="1001",
-        strategy="Motimoti",
-        planned_risk_amount=None,
-        notes=None,
-    )
-
     strategy = DashboardService(repository).build_report(start_date="2026-08-01", end_date="2026-08-31").by_strategy[0]
 
     assert strategy.strategy == "Motimoti"
@@ -142,9 +134,9 @@ def test_dashboard_links_live_strategy_performance_to_backtest_context(tmp_path)
     assert strategy.backtest_net_r == "24"
 
 
-def test_default_strategy_is_inherited_and_trade_override_takes_priority(tmp_path) -> None:
+def test_default_strategy_is_inherited_by_every_trade(tmp_path) -> None:
     repository = _repository(tmp_path)
-    for name in ["Motimoti", "Breakout", "Reversal"]:
+    for name in ["Motimoti", "Reversal"]:
         repository.save_strategy_profile(
             name=name,
             description=None,
@@ -211,28 +203,19 @@ def test_default_strategy_is_inherited_and_trade_override_takes_priority(tmp_pat
         "positions.csv",
         "test-hash",
     )
-    repository.annotate_imported_trade(
-        login="123456",
-        broker_server="DemoBroker-Live",
-        position_id="1002",
-        strategy="Breakout",
-        planned_risk_amount=None,
-        notes=None,
-    )
-
     before = {trade.position_id: trade for trade in repository.list_trades()}
     assert before["1001"].strategy == "Motimoti"
     assert before["1001"].strategy_source == "Default"
-    assert before["1002"].strategy == "Breakout"
-    assert before["1002"].strategy_source == "Override"
+    assert before["1002"].strategy == "Motimoti"
+    assert before["1002"].strategy_source == "Default"
 
     repository.set_default_strategy("Reversal")
     after = {trade.position_id: trade for trade in repository.list_trades()}
     assert after["1001"].strategy == "Reversal"
-    assert after["1002"].strategy == "Breakout"
+    assert after["1002"].strategy == "Reversal"
 
 
-def test_profile_rename_preserves_default_and_trade_associations_by_id(tmp_path) -> None:
+def test_profile_rename_preserves_the_default_strategy_by_id(tmp_path) -> None:
     repository = _repository(tmp_path)
     profile = repository.save_strategy_profile(
         name="Motimoti",
@@ -281,16 +264,6 @@ def test_profile_rename_preserves_default_and_trade_associations_by_id(tmp_path)
         "positions.csv",
         "test-hash",
     )
-    repository.annotate_imported_trade(
-        login="123456",
-        broker_server="DemoBroker-Live",
-        position_id="1001",
-        strategy=None,
-        strategy_profile_id=profile.id,
-        planned_risk_amount=None,
-        notes=None,
-    )
-
     renamed = repository.save_strategy_profile(
         strategy_id=profile.id,
         name="Motimoti Trend",
@@ -308,67 +281,3 @@ def test_profile_rename_preserves_default_and_trade_associations_by_id(tmp_path)
     assert [item.name for item in repository.list_strategy_profiles()] == ["Motimoti Trend"]
     assert repository.get_journal_settings().default_strategy_name == "Motimoti Trend"
     assert repository.list_trades()[0].strategy == "Motimoti Trend"
-
-
-def test_existing_matching_strategy_text_is_backfilled_to_a_profile_id(tmp_path) -> None:
-    repository = _repository(tmp_path)
-    repository.register_mt5_account(
-        display_name="Primary",
-        login="123456",
-        broker_server="DemoBroker-Live",
-        account_currency="USD",
-        export_file_path="",
-    )
-    account = repository.find_active_mt5_account("123456", "DemoBroker-Live")
-    assert account is not None
-    repository.upsert_mt5_positions(
-        account.id,
-        [
-            MT5PositionExport(
-                schema_version=1,
-                account_login="123456",
-                broker_server="DemoBroker-Live",
-                account_currency="USD",
-                position_id="1001",
-                symbol="XAUUSD",
-                direction="long",
-                entry_time="2026-08-01T08:00:00+00:00",
-                exit_time="2026-08-01T09:00:00+00:00",
-                entry_price="3300",
-                exit_price="3310",
-                volume="0.01",
-                gross_pnl="20",
-                commission="0",
-                swap="0",
-                fees="0",
-                net_pnl="20",
-            )
-        ],
-        "positions.csv",
-        "test-hash",
-    )
-    repository.annotate_imported_trade(
-        login="123456",
-        broker_server="DemoBroker-Live",
-        position_id="1001",
-        strategy="Motimoti",
-        planned_risk_amount=None,
-        notes=None,
-    )
-    profile = repository.save_strategy_profile(
-        name="Motimoti",
-        description=None,
-        backtest_start_date=None,
-        backtest_end_date=None,
-        backtest_trade_count=None,
-        backtest_win_rate=None,
-        backtest_expectancy_r=None,
-        backtest_net_r=None,
-        backtest_notes=None,
-    )
-
-    repository.initialize()
-    imported = repository.list_imported_trade_annotation_refs()[0]
-
-    assert imported.strategy is None
-    assert imported.strategy_profile_id == profile.id

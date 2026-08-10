@@ -9,13 +9,16 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+from trading_journal.application.auto_sync import MT5AutoSyncResult, MT5AutoSyncService
 from trading_journal.application.dashboard import DashboardService
-from trading_journal.application.import_mt5 import MT5ImportService
-from trading_journal.domain.errors import ImportValidationError
+from trading_journal.application.display_time import format_relative_time
+from trading_journal.application.mt5_paths import default_mt5_export_path, find_mt5_common_files
 from trading_journal.infrastructure.sqlite_repository import SQLiteJournalRepository
 
 
 _CURRENCY_SYMBOLS = {"USD": "$", "EUR": "€", "GBP": "£", "JPY": "¥", "AUD": "A$", "CAD": "C$", "CHF": "CHF", "NZD": "NZ$"}
+_AUTO_SYNC_INTERVAL_SECONDS = 15
+_FRESHNESS_INTERVAL_SECONDS = 1
 
 
 def format_number(value: str | Decimal, decimal_places: int = 2) -> str:
@@ -91,32 +94,124 @@ def repository() -> SQLiteJournalRepository:
     return repo
 
 
-def render_settings(repo: SQLiteJournalRepository) -> None:
+@st.fragment(run_every=_AUTO_SYNC_INTERVAL_SECONDS)
+def monitor_mt5_exports(repo: SQLiteJournalRepository) -> None:
+    results = MT5AutoSyncService(repo).sync_configured_exports()
+    st.session_state["auto_sync_results"] = results
+    render_sync_failures(results, prefix="MT5 auto-sync needs attention")
+    imported = [item for item in results if item.status == "imported"]
+    if not imported:
+        return
+    created = sum(item.created_count for item in imported)
+    updated = sum(item.updated_count for item in imported)
+    st.session_state["auto_sync_notice"] = f"Auto-imported {created} created and {updated} updated MT5 position(s)."
+    st.rerun(scope="app")
+
+
+def render_auto_sync_notice() -> None:
+    notice = st.session_state.pop("auto_sync_notice", None)
+    if notice:
+        st.success(notice)
+
+
+def render_sync_failures(results: list[MT5AutoSyncResult], *, prefix: str) -> None:
+    failures = [item for item in results if item.status == "failed"]
+    if not failures:
+        return
+    details = "; ".join(
+        f"{item.account_name}: {item.message or 'Unknown error'}"
+        for item in failures
+    )
+    st.error(f"{prefix}: {details}")
+
+
+@st.fragment(run_every=_FRESHNESS_INTERVAL_SECONDS)
+def render_live_sync_freshness(account_key: tuple[str, str] | None = None, *, include_sync_hint: bool = False) -> None:
+    results = st.session_state.get("auto_sync_results", [])
+    if account_key is not None:
+        account_login, broker_server = account_key
+        result = next(
+            (item for item in results if (item.account_login, item.broker_server) == (account_login, broker_server)),
+            None,
+        )
+        last_update = result.export_updated_at if result else None
+    else:
+        last_update = max((item.export_updated_at for item in results if item.export_updated_at is not None), default=None)
+    message = f"Last update: {format_relative_time(last_update)}" if last_update is not None else "No export checked yet"
+    if include_sync_hint:
+        message += " · Checks every configured account immediately (read-only)."
+    st.caption(message)
+
+
+def render_manual_sync_button(repo: SQLiteJournalRepository, *, key: str) -> None:
+    action, context = st.columns([1, 8], vertical_alignment="center")
+    sync_requested = action.button("Sync MT5 now", key=key)
+    results = st.session_state.get("auto_sync_results", [])
+    if sync_requested:
+        results = MT5AutoSyncService(repo).sync_configured_exports()
+        st.session_state["auto_sync_results"] = results
+    with context:
+        render_live_sync_freshness(include_sync_hint=True)
+    if not sync_requested:
+        return
+
+    imported = [item for item in results if item.status == "imported"]
+    failures = [item for item in results if item.status == "failed"]
+    waiting = [item for item in results if item.status == "waiting"]
+    if imported:
+        created = sum(item.created_count for item in imported)
+        updated = sum(item.updated_count for item in imported)
+        st.success(f"Manual sync imported {created} created and {updated} updated MT5 position(s).")
+    elif not failures and waiting:
+        st.info("MT5 sync is waiting: " + "; ".join(item.message or item.account_name for item in waiting))
+    elif not failures and results:
+        st.success("MT5 journal is already up to date.")
+    elif not failures:
+        st.info("No approved MT5 accounts are configured for sync.")
+    render_sync_failures(results, prefix="MT5 sync needs attention")
+
+
+def render_journal_settings(repo: SQLiteJournalRepository) -> None:
     try:
         current = repo.get_journal_settings()
     except RuntimeError:
         current = None
 
-    st.subheader("Journal settings")
+    st.markdown("#### Journal defaults")
     with st.form("journal-settings"):
-        base_currency = st.text_input("Base currency", value=current.base_currency if current else "USD", max_chars=3).upper()
-        reporting_timezone = st.text_input("Reporting timezone", value=current.reporting_timezone if current else "UTC")
-        monthly_target = st.number_input("Monthly target", min_value=0.0, value=float(current.monthly_target) if current else 1000.0, step=100.0)
-        use_starting_balance = st.checkbox("Track balance growth and percentage drawdown", value=bool(current and current.starting_balance))
-        starting_balance = st.number_input(
-            "Opening account balance",
+        st.markdown("**Reporting**")
+        currency, timezone, target = st.columns([1, 2, 2])
+        base_currency = currency.text_input("Base currency", value=current.base_currency if current else "USD", max_chars=3).upper()
+        reporting_timezone = timezone.text_input("Reporting timezone", value=current.reporting_timezone if current else "UTC")
+        monthly_target = target.number_input("Monthly target", min_value=0.0, value=float(current.monthly_target) if current else 1000.0, step=100.0)
+
+        st.divider()
+        st.markdown("**Balance tracking**")
+        balance_choice, balance_value = st.columns([3, 2], vertical_alignment="bottom")
+        use_starting_balance = balance_choice.checkbox("Track balance growth and percentage drawdown", value=bool(current and current.starting_balance))
+        balance_choice.caption("Enter the balance immediately before your first imported trade.")
+        starting_balance = balance_value.number_input(
+            "Opening balance",
             min_value=0.01,
             value=float(current.starting_balance) if current and current.starting_balance else 1000.0,
             step=100.0,
             disabled=not use_starting_balance,
         )
-        st.caption("Optional. Enter the account balance immediately before your first imported trade.")
+
         st.divider()
-        use_baseline = st.checkbox("Apply a default planned-risk baseline to trades without an override", value=bool(current and current.default_planned_risk_amount))
-        default_risk = st.number_input("Default planned risk (1R)", min_value=0.01, value=float(current.default_planned_risk_amount) if current and current.default_planned_risk_amount else 10.0, step=1.0, disabled=not use_baseline)
-        st.caption("A trade-specific override takes priority. Changing this value immediately recalculates inherited R values.")
+        st.markdown("**Risk baseline**")
+        risk_choice, risk_value = st.columns([3, 2], vertical_alignment="bottom")
+        use_baseline = risk_choice.checkbox("Apply a default planned-risk baseline to all trades", value=bool(current and current.default_planned_risk_amount))
+        risk_choice.caption("Changing this value immediately recalculates R for every imported trade.")
+        default_risk = risk_value.number_input(
+            "Default risk (1R)",
+            min_value=0.01,
+            value=float(current.default_planned_risk_amount) if current and current.default_planned_risk_amount else 10.0,
+            step=1.0,
+            disabled=not use_baseline,
+        )
         if current and current.default_strategy_name:
-            st.caption(f"Default strategy: {current.default_strategy_name}. Manage it from the Strategies workspace.")
+            st.caption(f"Default strategy: {current.default_strategy_name}. Manage it in Settings → Strategies.")
         submitted = st.form_submit_button("Save journal settings")
     if submitted:
         try:
@@ -132,40 +227,70 @@ def render_settings(repo: SQLiteJournalRepository) -> None:
         else:
             st.success("Journal settings saved.")
 
-    st.subheader("Approved MT5 accounts")
+
+def render_mt5_account_settings(repo: SQLiteJournalRepository) -> None:
+    st.markdown("#### Approved MT5 accounts")
+    st.caption("Add each trading account once. Saving the same account ID and server updates its settings.")
+    common_files_location = find_mt5_common_files()
     with st.form("mt5-account"):
-        display_name = st.text_input("Display name", value="Primary account")
-        login = st.text_input("MT5 login")
-        broker_server = st.text_input("Broker server")
-        account_currency = st.text_input("Account currency", value="USD", max_chars=3).upper()
-        export_file_path = st.text_input("Common Files export path")
-        registered = st.form_submit_button("Approve account")
+        identity, currency = st.columns([3, 1])
+        display_name = identity.text_input("Account name", value="Primary account")
+        account_currency = currency.text_input("Currency", value="USD", max_chars=3).upper()
+        account_id, broker = st.columns(2)
+        login = account_id.text_input("MT5 account ID")
+        broker_server = broker.text_input("Broker server")
+        with st.expander("Advanced: custom export location"):
+            if common_files_location.path is None:
+                st.caption("MT5 Common Files was not detected. Set a custom path or `TRADING_JOURNAL_MT5_COMMON_FILES`.")
+            else:
+                st.caption(f"Detected Common Files ({common_files_location.source})")
+                st.caption(str(common_files_location.path))
+            generated_path_placeholder = default_mt5_export_path("000000000").replace("000000000", "<MT5-login>")
+            export_file_path = st.text_input(
+                "Custom export path (optional)",
+                placeholder=generated_path_placeholder,
+                help="Leave blank to use the EA default: trading_journal/<MT5-login>_positions.csv.",
+            )
+            st.caption("Default: `trading_journal/<MT5-login>_positions.csv` under MT5 Common Files.")
+        registered = st.form_submit_button("Save account")
     if registered:
-        if not login or not broker_server:
-            st.error("MT5 login and broker server are required.")
+        if not login.isdecimal() or not broker_server:
+            st.error("A numeric MT5 login and broker server are required.")
         else:
-            repo.register_mt5_account(display_name=display_name, login=login, broker_server=broker_server, account_currency=account_currency, export_file_path=export_file_path)
-            st.success("MT5 account approved for local imports.")
+            resolved_export_path = export_file_path.strip() or default_mt5_export_path(login)
+            repo.register_mt5_account(display_name=display_name, login=login, broker_server=broker_server, account_currency=account_currency, export_file_path=resolved_export_path)
+            st.success("MT5 account saved.")
 
     accounts = repo.list_mt5_accounts()
     if accounts:
-        st.dataframe(pd.DataFrame([account.__dict__ for account in accounts]), hide_index=True, width="stretch")
+        account_table = pd.DataFrame(
+            [
+                {
+                    "Account": account.display_name,
+                    "MT5 ID": account.login,
+                    "Server": account.broker_server,
+                    "Currency": account.account_currency,
+                    "Export file": Path(account.export_file_path).name if account.export_file_path else "—",
+                }
+                for account in accounts
+            ]
+        )
+        st.dataframe(account_table, hide_index=True, width="stretch")
 
 
-def render_import(repo: SQLiteJournalRepository) -> None:
-    st.subheader("Import MT5 trades")
-    st.info("Import is local and read-only. It never sends, changes, or blocks MT5 trades.")
-    export_path = st.text_input("Path to completed-position CSV export")
-    if st.button("Import completed positions", type="primary"):
-        try:
-            result = MT5ImportService(repo).import_csv(export_path)
-        except (ImportValidationError, RuntimeError) as error:
-            st.error(str(error))
-        else:
-            st.success(f"Import complete: {result.created_count} created, {result.updated_count} updated.")
+def render_settings(repo: SQLiteJournalRepository) -> None:
+    st.subheader("Settings")
+    st.caption("Configure journal defaults, approved MT5 accounts, and reusable strategies.")
+    general_tab, accounts_tab, strategies_tab = st.tabs(["General", "MT5 Accounts", "Strategies"])
+    with general_tab:
+        render_journal_settings(repo)
+    with accounts_tab:
+        render_mt5_account_settings(repo)
+    with strategies_tab:
+        render_strategy_settings(repo)
 
 
-def render_strategies(repo: SQLiteJournalRepository) -> None:
+def render_strategy_settings(repo: SQLiteJournalRepository) -> None:
     st.subheader("Strategy library")
     st.caption("Save reusable strategy definitions and, when available, their backtest evidence. Backtest fields are optional and do not alter live-trade results.")
     profiles = repo.list_strategy_profiles()
@@ -201,7 +326,7 @@ def render_strategies(repo: SQLiteJournalRepository) -> None:
             "Use as the journal default strategy",
             value=bool(selected and selected.id == default_strategy_id),
         )
-        st.caption("Only one default strategy can exist. Untagged trades inherit it until they receive a trade-level override.")
+        st.caption("Only one default strategy can exist. Every imported trade inherits it dynamically.")
         with st.expander("Add backtest evidence (optional)", expanded=has_backtest):
             st.caption("Leave this closed unless you want to record the evidence behind this strategy.")
             first, second = st.columns(2)
@@ -268,75 +393,6 @@ def render_strategies(repo: SQLiteJournalRepository) -> None:
         )
 
 
-def render_journal(repo: SQLiteJournalRepository) -> None:
-    st.subheader("Journal")
-    trades = repo.list_trades()
-    if not trades:
-        st.empty()
-        st.caption("No trades yet. Approve an account and import a local MT5 export.")
-        return
-    st.dataframe(pd.DataFrame([trade.__dict__ for trade in trades]), hide_index=True, width="stretch")
-    st.caption("Trades inherit the journal risk and strategy defaults unless they have their own override. Trades without risk remain outside R-based metrics.")
-
-    imported = repo.list_imported_trade_annotation_refs()
-    if not imported:
-        return
-    st.subheader("Complete imported trade")
-    options = {f"{item.symbol} · {item.broker_server} / {item.login} · #{item.position_id}": item for item in imported}
-    selected = options[st.selectbox("Imported position", list(options))]
-    try:
-        journal_settings = repo.get_journal_settings()
-        baseline = journal_settings.default_planned_risk_amount
-        default_strategy = journal_settings.default_strategy_name
-    except RuntimeError:
-        baseline = None
-        default_strategy = None
-    with st.form("imported-trade-enrichment"):
-        override_strategy = st.checkbox(
-            "Override the journal default strategy" if default_strategy else "Set a strategy for this trade",
-            value=selected.strategy is not None or selected.strategy_profile_id is not None,
-        )
-        if default_strategy and not override_strategy:
-            st.caption(f"This trade uses the journal default strategy: {default_strategy}.")
-        if override_strategy:
-            profiles = repo.list_strategy_profiles()
-            profiles_by_name = {profile.name: profile for profile in profiles}
-            strategy_options = [*profiles_by_name, "Custom strategy…"]
-            if selected.strategy_profile_id is not None:
-                selected_profile = next((profile for profile in profiles if profile.id == selected.strategy_profile_id), None)
-                current_strategy = selected_profile.name if selected_profile else "Custom strategy…"
-            else:
-                current_strategy = "Custom strategy…" if selected.strategy else strategy_options[0]
-            selected_strategy = st.selectbox("Trade strategy", strategy_options, index=strategy_options.index(current_strategy))
-            custom_strategy = st.text_input("Custom strategy name", value=selected.strategy or "") if selected_strategy == "Custom strategy…" else ""
-            strategy_profile_id = None if selected_strategy == "Custom strategy…" else profiles_by_name[selected_strategy].id
-            strategy = custom_strategy if selected_strategy == "Custom strategy…" else None
-        else:
-            strategy = None
-            strategy_profile_id = None
-        override_risk = st.checkbox("Override the journal risk baseline", value=selected.planned_risk_amount is not None)
-        if baseline and not override_risk:
-            st.caption(f"This trade uses the journal baseline: {baseline}.")
-        planned_risk = st.number_input("Planned risk amount", min_value=0.01, value=float(selected.planned_risk_amount or baseline or 10), step=1.0, disabled=not override_risk)
-        notes = st.text_area("Journal notes", value=selected.notes or "")
-        completed = st.form_submit_button("Save enrichment")
-    if completed:
-        try:
-            repo.annotate_imported_trade(
-                login=selected.login,
-                broker_server=selected.broker_server,
-                position_id=selected.position_id,
-                strategy=strategy or None,
-                strategy_profile_id=strategy_profile_id if override_strategy else None,
-                planned_risk_amount=str(planned_risk) if override_risk else None,
-                notes=notes or None,
-            )
-        except (ArithmeticError, ValueError):
-            st.error("Planned risk must be a positive number.")
-        else:
-            st.success("Imported trade enrichment saved.")
-
-
 def render_dashboard(repo: SQLiteJournalRepository) -> None:
     st.markdown('<div class="dashboard-kicker">CLOSED-TRADE REVIEW</div>', unsafe_allow_html=True)
     st.subheader("Performance dashboard")
@@ -345,6 +401,8 @@ def render_dashboard(repo: SQLiteJournalRepository) -> None:
     except RuntimeError:
         st.info("Configure journal settings before viewing reports.")
         return
+
+    render_manual_sync_button(repo, key="dashboard-manual-sync")
 
     today = date.today()
     dashboard_service = DashboardService(repo)
@@ -543,17 +601,14 @@ def main() -> None:
     st.title("Trading Journal")
     st.caption("Local-only journal with read-only MT5 imports.")
     repo = repository()
-    page = st.sidebar.radio("Workspace", ["Dashboard", "Journal", "Strategies", "MT5 Import", "Settings"])
+    page = st.sidebar.radio("Workspace", ["Dashboard", "Settings"])
+    if page == "Dashboard":
+        monitor_mt5_exports(repo)
+        render_auto_sync_notice()
     if page == "Dashboard":
         render_dashboard(repo)
-    elif page == "Strategies":
-        render_strategies(repo)
-    elif page == "Settings":
-        render_settings(repo)
-    elif page == "MT5 Import":
-        render_import(repo)
     else:
-        render_journal(repo)
+        render_settings(repo)
 
 
 if __name__ == "__main__":

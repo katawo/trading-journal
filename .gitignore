@@ -16,3 +16,6 @@ data/
 # Local Streamlit secrets and editor/OS files
 .streamlit/secrets.toml
 .DS_Store
+
+# MetaEditor compilation artifacts
+*.ex5

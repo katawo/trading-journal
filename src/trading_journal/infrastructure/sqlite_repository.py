@@ -90,12 +90,6 @@ class Trade(Base):
     swap: Mapped[str] = mapped_column(String, nullable=False)
     fees: Mapped[str] = mapped_column(String, nullable=False)
     net_pnl: Mapped[str] = mapped_column(String, nullable=False)
-    strategy: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    strategy_profile_id: Mapped[int | None] = mapped_column(ForeignKey("strategy_profiles.id"), nullable=True)
-    notes: Mapped[str | None] = mapped_column(String, nullable=True)
-    planned_risk_amount: Mapped[str | None] = mapped_column(String, nullable=True)
-    result_r: Mapped[str | None] = mapped_column(String, nullable=True)
-    journal_completed_at: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 class MT5ImportRun(Base):
@@ -141,18 +135,6 @@ class TradeListItem:
     strategy_source: str
     effective_risk: str | None
     risk_source: str
-
-
-@dataclass(frozen=True)
-class ImportedTradeAnnotationRef:
-    login: str
-    broker_server: str
-    position_id: str
-    symbol: str
-    strategy: str | None
-    strategy_profile_id: int | None
-    planned_risk_amount: str | None
-    notes: str | None
 
 
 @dataclass(frozen=True)
@@ -211,6 +193,7 @@ class SQLiteJournalRepository:
     def initialize(self) -> None:
         Base.metadata.create_all(self._engine)
         self._run_additive_migrations()
+        self._remove_trade_overrides()
         self._backfill_strategy_profile_references()
 
     def _run_additive_migrations(self) -> None:
@@ -219,7 +202,6 @@ class SQLiteJournalRepository:
             ("journal_settings", "starting_balance", "VARCHAR", ".pre-balance-analytics.bak"),
             ("journal_settings", "default_strategy_name", "VARCHAR(100)", ".pre-strategy-default.bak"),
             ("journal_settings", "default_strategy_profile_id", "INTEGER", ".pre-strategy-identity.bak"),
-            ("trades", "strategy_profile_id", "INTEGER", ".pre-strategy-identity.bak"),
         ]
         for table_name, column_name, column_type, backup_suffix in migrations:
             with self._engine.connect() as connection:
@@ -234,6 +216,69 @@ class SQLiteJournalRepository:
             with self._engine.begin() as connection:
                 connection.exec_driver_sql(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}")
 
+    def _remove_trade_overrides(self) -> None:
+        removed_columns = {
+            "strategy",
+            "strategy_profile_id",
+            "notes",
+            "planned_risk_amount",
+            "result_r",
+            "journal_completed_at",
+        }
+        with self._engine.connect() as connection:
+            trade_columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(trades)")}
+        if not trade_columns.intersection(removed_columns):
+            return
+
+        backup_path = self._database_path.with_suffix(self._database_path.suffix + ".pre-trade-override-removal.bak")
+        if self._database_path.exists() and not backup_path.exists():
+            with self._engine.connect() as connection:
+                connection.exec_driver_sql("PRAGMA wal_checkpoint(FULL)")
+            shutil.copy2(self._database_path, backup_path)
+
+        with self._engine.begin() as connection:
+            connection.exec_driver_sql(
+                """
+                CREATE TABLE trades_without_overrides (
+                    id INTEGER NOT NULL PRIMARY KEY,
+                    source VARCHAR(10) NOT NULL,
+                    mt5_account_id INTEGER,
+                    mt5_position_id VARCHAR(64),
+                    source_updated_at VARCHAR(64) NOT NULL,
+                    symbol VARCHAR(32) NOT NULL,
+                    direction VARCHAR(8) NOT NULL,
+                    entry_time VARCHAR(64) NOT NULL,
+                    exit_time VARCHAR(64) NOT NULL,
+                    entry_price VARCHAR NOT NULL,
+                    exit_price VARCHAR NOT NULL,
+                    volume VARCHAR NOT NULL,
+                    gross_pnl VARCHAR NOT NULL,
+                    commission VARCHAR NOT NULL,
+                    swap VARCHAR NOT NULL,
+                    fees VARCHAR NOT NULL,
+                    net_pnl VARCHAR NOT NULL,
+                    CONSTRAINT uq_mt5_position UNIQUE (mt5_account_id, mt5_position_id),
+                    FOREIGN KEY(mt5_account_id) REFERENCES mt5_accounts (id)
+                )
+                """
+            )
+            connection.exec_driver_sql(
+                """
+                INSERT INTO trades_without_overrides (
+                    id, source, mt5_account_id, mt5_position_id, source_updated_at,
+                    symbol, direction, entry_time, exit_time, entry_price, exit_price,
+                    volume, gross_pnl, commission, swap, fees, net_pnl
+                )
+                SELECT
+                    id, source, mt5_account_id, mt5_position_id, source_updated_at,
+                    symbol, direction, entry_time, exit_time, entry_price, exit_price,
+                    volume, gross_pnl, commission, swap, fees, net_pnl
+                FROM trades
+                """
+            )
+            connection.exec_driver_sql("DROP TABLE trades")
+            connection.exec_driver_sql("ALTER TABLE trades_without_overrides RENAME TO trades")
+
     def _backfill_strategy_profile_references(self) -> None:
         with self._sessions.begin() as session:
             profiles = session.scalars(select(StrategyProfile)).all()
@@ -244,11 +289,6 @@ class SQLiteJournalRepository:
                 if profile is not None:
                     settings.default_strategy_profile_id = profile.id
                     settings.default_strategy_name = profile.name
-            for trade in session.scalars(select(Trade).where(Trade.strategy_profile_id.is_(None), Trade.strategy.is_not(None))).all():
-                profile = profiles_by_name.get(normalize_strategy_name(trade.strategy or ""))
-                if profile is not None:
-                    trade.strategy_profile_id = profile.id
-                    trade.strategy = None
 
     def configure_journal(
         self,
@@ -329,7 +369,28 @@ class SQLiteJournalRepository:
     def list_mt5_accounts(self) -> list[AccountListItem]:
         with self._sessions() as session:
             accounts = session.scalars(select(MT5Account).where(MT5Account.active.is_(True)).order_by(MT5Account.display_name)).all()
-            return [AccountListItem(account.display_name, account.login, account.broker_server, account.account_currency, account.export_file_path) for account in accounts]
+            return [
+                AccountListItem(
+                    account.display_name,
+                    account.login,
+                    account.broker_server,
+                    account.account_currency,
+                    account.export_file_path,
+                )
+                for account in accounts
+            ]
+
+    def latest_mt5_import_hash(self, *, login: str, broker_server: str, source_file_path: str) -> str | None:
+        with self._sessions() as session:
+            account = session.scalar(select(MT5Account).where(MT5Account.login == login, MT5Account.broker_server == broker_server))
+            if account is None:
+                return None
+            return session.scalar(
+                select(MT5ImportRun.source_file_hash)
+                .where(MT5ImportRun.mt5_account_id == account.id, MT5ImportRun.source_file_path == source_file_path, MT5ImportRun.status == "succeeded")
+                .order_by(MT5ImportRun.id.desc())
+                .limit(1)
+            )
 
     def save_strategy_profile(
         self,
@@ -479,44 +540,16 @@ class SQLiteJournalRepository:
         default_strategy_id: int | None,
         default_strategy_name: str | None,
     ) -> TradeListItem:
-        effective_risk = trade.planned_risk_amount or baseline
-        risk_source = "Override" if trade.planned_risk_amount else "Baseline" if baseline else "Awaiting risk"
+        effective_risk = baseline
+        risk_source = "Baseline" if baseline else "Awaiting risk"
         result_r = None if effective_risk is None else _decimal_string(Decimal(trade.net_pnl) / Decimal(effective_risk))
-        if trade.strategy_profile_id is not None and trade.strategy_profile_id in profiles_by_id:
-            strategy = profiles_by_id[trade.strategy_profile_id].name
-            strategy_source = "Override"
-        elif trade.strategy:
-            strategy = trade.strategy
-            strategy_source = "Override"
-        elif default_strategy_id is not None and default_strategy_id in profiles_by_id:
+        if default_strategy_id is not None and default_strategy_id in profiles_by_id:
             strategy = profiles_by_id[default_strategy_id].name
             strategy_source = "Default"
         else:
             strategy = default_strategy_name
             strategy_source = "Default" if default_strategy_name else "Unassigned"
         return TradeListItem(trade.source, trade.mt5_position_id, trade.symbol, trade.direction, trade.exit_time, trade.net_pnl, result_r, strategy, strategy_source, effective_risk, risk_source)
-
-    def list_imported_trade_annotation_refs(self) -> list[ImportedTradeAnnotationRef]:
-        with self._sessions() as session:
-            rows = session.execute(
-                select(Trade, MT5Account)
-                .join(MT5Account, Trade.mt5_account_id == MT5Account.id)
-                .where(Trade.source == "mt5")
-                .order_by(Trade.exit_time.desc())
-            ).all()
-            return [
-                ImportedTradeAnnotationRef(
-                    login=account.login,
-                    broker_server=account.broker_server,
-                    position_id=trade.mt5_position_id or "",
-                    symbol=trade.symbol,
-                    strategy=trade.strategy,
-                    strategy_profile_id=trade.strategy_profile_id,
-                    planned_risk_amount=trade.planned_risk_amount,
-                    notes=trade.notes,
-                )
-                for trade, account in rows
-            ]
 
     def list_trade_performance(self) -> list[TradePerformanceItem]:
         with self._sessions() as session:
@@ -569,48 +602,9 @@ class SQLiteJournalRepository:
                 else:
                     for field, value in values.items():
                         setattr(trade, field, value)
-                    if trade.planned_risk_amount:
-                        trade.result_r = _decimal_string(Decimal(trade.net_pnl) / Decimal(trade.planned_risk_amount))
                     updated += 1
             session.add(MT5ImportRun(mt5_account_id=account_id, source_file_path=source_path, source_file_hash=source_hash, status="succeeded", created_count=created, updated_count=updated, skipped_count=0, error_count=0, created_at=now))
         return ImportResult(created_count=created, updated_count=updated)
-
-    def annotate_imported_trade(
-        self,
-        *,
-        login: str,
-        broker_server: str,
-        position_id: str,
-        strategy: str | None,
-        planned_risk_amount: str | None,
-        notes: str | None,
-        strategy_profile_id: int | None = None,
-    ) -> None:
-        with self._sessions.begin() as session:
-            account = session.scalar(select(MT5Account).where(MT5Account.login == login, MT5Account.broker_server == broker_server))
-            trade = None if account is None else session.scalar(select(Trade).where(Trade.mt5_account_id == account.id, Trade.mt5_position_id == position_id))
-            if trade is None:
-                raise KeyError("Imported trade was not found")
-            if strategy_profile_id is not None:
-                profile = session.get(StrategyProfile, strategy_profile_id)
-                if profile is None:
-                    raise ValueError("Strategy profile was not found")
-                trade.strategy_profile_id = profile.id
-                trade.strategy = None
-            else:
-                trade.strategy_profile_id = None
-                trade.strategy = self._optional_text(strategy)
-            trade.notes = notes
-            trade.planned_risk_amount = planned_risk_amount
-            if planned_risk_amount:
-                risk = Decimal(planned_risk_amount)
-                if risk <= 0:
-                    raise ValueError("Planned risk must be greater than zero")
-                trade.result_r = _decimal_string(Decimal(trade.net_pnl) / risk)
-                trade.journal_completed_at = datetime.now(timezone.utc).isoformat()
-            else:
-                trade.result_r = None
-                trade.journal_completed_at = None
 
     def get_trade_by_mt5_position(self, login: str, broker_server: str, position_id: str) -> ImportedTradeView | None:
         with self._sessions() as session:
@@ -623,7 +617,7 @@ class SQLiteJournalRepository:
             default_strategy_name = None if settings is None else settings.default_strategy_name
             profiles_by_id = {profile.id: profile for profile in session.scalars(select(StrategyProfile)).all()}
             item = self._to_trade_list_item(trade, baseline, profiles_by_id, default_strategy_id, default_strategy_name)
-            return ImportedTradeView(net_pnl=trade.net_pnl, result_r=item.result_r, strategy=item.strategy, notes=trade.notes, is_journal_complete=item.effective_risk is not None)
+            return ImportedTradeView(net_pnl=trade.net_pnl, result_r=item.result_r, strategy=item.strategy)
 
     def count_trades(self) -> int:
         with self._sessions() as session:

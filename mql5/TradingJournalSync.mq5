@@ -1,7 +1,8 @@
-#property script_show_inputs
 #property strict
 
+// Relative to MT5 Common Files. Each account receives its own CSV filename.
 input string CommonFilesSubfolder = "trading_journal";
+input int InpSafetyExportSeconds = 60;
 
 string ExportFileName()
   {
@@ -42,9 +43,9 @@ bool ExportPosition(const ulong position_id,const int handle)
    datetime entry_time=0;
    datetime exit_time=0;
 
-   for(uint index=0;index<HistoryDealsTotal();index++)
+   for(int index=0;index<HistoryDealsTotal();index++)
      {
-      ulong ticket=HistoryDealGetTicket(index);
+      ulong ticket=HistoryDealGetTicket((uint)index);
       long deal_type=HistoryDealGetInteger(ticket,DEAL_TYPE);
       if(deal_type!=DEAL_TYPE_BUY && deal_type!=DEAL_TYPE_SELL)
          continue;
@@ -78,8 +79,8 @@ bool ExportPosition(const ulong position_id,const int handle)
         }
      }
 
-   // Only emit positions that are flat. Open positions and non-trading account
-   // operations deliberately stay out of the journal import.
+   // The journal receives completed positions only. Open positions and account
+   // operations deliberately remain outside this read-only export.
    if(entry_volume<=0.0 || exit_volume+0.00000001<entry_volume || entry_time==0 || exit_time==0 || direction=="")
       return false;
 
@@ -105,18 +106,18 @@ bool ExportPosition(const ulong position_id,const int handle)
    return true;
   }
 
-void OnStart()
+bool ExportCompletedPositions()
   {
    if(!HistorySelect(0,TimeCurrent()))
      {
-      PrintFormat("History selection failed: %d",GetLastError());
-      return;
+      PrintFormat("Trading Journal history selection failed: %d",GetLastError());
+      return false;
      }
 
    ulong position_ids[];
-   for(uint index=0;index<HistoryDealsTotal();index++)
+   for(int index=0;index<HistoryDealsTotal();index++)
      {
-      ulong ticket=HistoryDealGetTicket(index);
+      ulong ticket=HistoryDealGetTicket((uint)index);
       long deal_type=HistoryDealGetInteger(ticket,DEAL_TYPE);
       long entry=HistoryDealGetInteger(ticket,DEAL_ENTRY);
       ulong position_id=(ulong)HistoryDealGetInteger(ticket,DEAL_POSITION_ID);
@@ -135,8 +136,8 @@ void OnStart()
    int handle=FileOpen(temporary_name,FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_COMMON,',',CP_UTF8);
    if(handle==INVALID_HANDLE)
      {
-      PrintFormat("Unable to create export: %d",GetLastError());
-      return;
+      PrintFormat("Trading Journal cannot create export: %d",GetLastError());
+      return false;
      }
    FileWrite(handle,"schema_version","account_login","broker_server","account_currency","position_id","symbol","direction","entry_time","exit_time","entry_price","exit_price","volume","gross_pnl","commission","swap","fees","net_pnl");
 
@@ -146,10 +147,47 @@ void OnStart()
          exported++;
    FileClose(handle);
 
+   // Do not publish an empty snapshot. The app will simply remain in its
+   // waiting state until the account has its first completed position.
+   if(exported==0)
+     {
+      FileDelete(temporary_name,FILE_COMMON);
+      return true;
+     }
+
    if(!FileMove(temporary_name,FILE_COMMON,export_name,FILE_COMMON|FILE_REWRITE))
      {
-      PrintFormat("Unable to publish export: %d",GetLastError());
-      return;
+      PrintFormat("Trading Journal cannot publish export: %d",GetLastError());
+      return false;
      }
    PrintFormat("Trading Journal export complete: %d completed positions",exported);
+   return true;
+  }
+
+int OnInit()
+  {
+   int seconds=(InpSafetyExportSeconds<1 ? 1 : InpSafetyExportSeconds);
+   EventSetTimer(seconds);
+   ExportCompletedPositions();
+   return INIT_SUCCEEDED;
+  }
+
+void OnDeinit(const int reason)
+  {
+   EventKillTimer();
+  }
+
+void OnTimer()
+  {
+   ExportCompletedPositions();
+  }
+
+void OnTradeTransaction(const MqlTradeTransaction &transaction,
+                        const MqlTradeRequest &request,
+                        const MqlTradeResult &result)
+  {
+   // A deal event can be an entry or a partial close. Exporting a full snapshot
+   // keeps the app's completed-position aggregation correct in both cases.
+   if(transaction.type==TRADE_TRANSACTION_DEAL_ADD)
+      ExportCompletedPositions();
   }

@@ -31,9 +31,15 @@ HEADER = [
 ]
 
 
-def write_export(path: Path, *, currency: str = "USD", net_pnl: str = "98.00") -> None:
+def write_export(
+    path: Path,
+    *,
+    currency: str = "USD",
+    net_pnl: str = "98.00",
+    schema_version: str = "1",
+) -> None:
     row = {
-        "schema_version": "1",
+        "schema_version": schema_version,
         "account_login": "123456",
         "broker_server": "DemoBroker-Live",
         "account_currency": currency,
@@ -84,22 +90,14 @@ def test_imports_closed_position_and_waits_for_planned_risk(repository: SQLiteJo
     assert trade is not None
     assert trade.net_pnl == "98.00"
     assert trade.result_r is None
-    assert trade.is_journal_complete is False
+    assert trade.strategy is None
 
 
-def test_reimport_refreshes_execution_data_and_preserves_annotations(repository: SQLiteJournalRepository, tmp_path: Path) -> None:
+def test_reimport_refreshes_execution_data(repository: SQLiteJournalRepository, tmp_path: Path) -> None:
     export_path = tmp_path / "positions.csv"
     write_export(export_path, net_pnl="98.00")
     service = MT5ImportService(repository)
     service.import_csv(export_path)
-    repository.annotate_imported_trade(
-        login="123456",
-        broker_server="DemoBroker-Live",
-        position_id="9001",
-        strategy="Pullback",
-        planned_risk_amount="49.00",
-        notes="Waited for confirmation.",
-    )
     write_export(export_path, net_pnl="102.00")
 
     result = service.import_csv(export_path)
@@ -109,10 +107,8 @@ def test_reimport_refreshes_execution_data_and_preserves_annotations(repository:
     assert result.updated_count == 1
     assert trade is not None
     assert trade.net_pnl == "102.00"
-    assert trade.strategy == "Pullback"
-    assert trade.notes == "Waited for confirmation."
-    assert trade.result_r == "2.081632653061224489795918367"
-    assert trade.is_journal_complete is True
+    assert trade.strategy is None
+    assert trade.result_r is None
 
 
 def test_rejects_currency_mismatch_without_creating_trade(repository: SQLiteJournalRepository, tmp_path: Path) -> None:
@@ -120,6 +116,16 @@ def test_rejects_currency_mismatch_without_creating_trade(repository: SQLiteJour
     write_export(export_path, currency="EUR")
 
     with pytest.raises(ImportValidationError, match="currency"):
+        MT5ImportService(repository).import_csv(export_path)
+
+    assert repository.count_trades() == 0
+
+
+def test_rejects_an_unsupported_schema_version_without_creating_trade(repository: SQLiteJournalRepository, tmp_path: Path) -> None:
+    export_path = tmp_path / "positions.csv"
+    write_export(export_path, schema_version="2")
+
+    with pytest.raises(ImportValidationError, match="Unsupported MT5 export schema version; expected 1"):
         MT5ImportService(repository).import_csv(export_path)
 
     assert repository.count_trades() == 0

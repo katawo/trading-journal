@@ -35,15 +35,13 @@ class MT5PositionExport(BaseModel):
 
 
 class ImportedTradeView(BaseModel):
-    """Read model used by the UI and tests."""
+    """Read model for an imported position and its journal-wide derived values."""
 
     model_config = ConfigDict(from_attributes=True)
 
     net_pnl: str
     result_r: str | None
     strategy: str | None
-    notes: str | None
-    is_journal_complete: bool
 
 
 class ImportResult(BaseModel):

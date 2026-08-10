@@ -15,22 +15,22 @@ Set `TRADING_JOURNAL_DB` to choose a database location; it defaults to `data/tra
 
 ## Import MT5 history
 
-1. Copy `mql5/TradingJournalExporter.mq5` to the MT5 Scripts directory and compile it in MetaEditor.
-2. Run it in each approved MT5 terminal. It writes `trading_journal/positions.csv` under MT5 Common Files.
-3. In the app, configure the journal's base currency and approve the account by its exact login and broker server.
-4. Paste the local Common Files CSV path in **MT5 Import** and import it.
+1. Copy `mql5/TradingJournalSync.mq5` to the MT5 `Experts` directory and compile it in MetaEditor.
+2. Attach it once to any chart in the terminal you trade from. It writes `trading_journal/<MT5-login>_positions.csv` under MT5 Common Files after trade-deal events, plus a 60-second safety refresh.
+3. In **Settings → General**, configure the journal's base currency, then approve the account in **Settings → MT5 Accounts** using its exact login and broker server. Leave the custom export-path field blank to use the matching account-specific default. The app detects native Windows `%APPDATA%` and Linux Wine locations (including `WINEPREFIX`, `~/.wine`, and `~/.mt5`); its detected source is shown in the advanced export-location panel. If your terminal is elsewhere, start the app with `TRADING_JOURNAL_MT5_COMMON_FILES` set to its `Terminal/Common/Files` directory.
+4. Keep **Dashboard** open. The app checks the configured export every 15 seconds and imports a changed snapshot automatically.
 
-The importer accepts completed positions only, never sends orders, and preserves journal annotations when an MT5 position is re-imported.
+The sync EA and importer accept completed positions only and never send orders. Re-importing refreshes the MT5-owned execution data. The journal never stores an MT5 password. `mql5/TradingJournalExporter.mq5` remains available for one-off manual exports.
 
 ## Risk baseline and reports
 
-In **Settings**, you can enable a journal-wide default planned risk (1R). It applies dynamically to every trade without a trade-level override; changing it recalculates inherited R values without affecting overrides. In **Journal**, enable **Override the journal risk baseline** only for trades that need a different risk amount.
+In **Settings**, you can enable a journal-wide default planned risk (1R). It applies dynamically to every imported trade, and changing it recalculates every R value. The current dashboard does not provide individual-trade editing.
 
-The **Dashboard** provides period filters, headline performance metrics, and a **Daily** or **Per trade** chart view. The per-trade view shows each completed position's P&L and its post-close drawdown; it is not floating or intra-trade MT5 drawdown. Its target progress is calculated against the monthly target for every calendar month in the selected period. Enable **Track balance growth and percentage drawdown** in Settings and enter the balance immediately before your first imported trade to add balance growth and percentage drawdown. Trades without either a baseline or an override remain visible but are excluded from R metrics.
+The **Dashboard** provides period filters, headline performance metrics, and a **Daily** or **Per trade** chart view. The per-trade view is the read-only closed-trade detail, showing each completed position's P&L and post-close drawdown; it is not floating or intra-trade MT5 drawdown. Its target progress is calculated against the monthly target for every calendar month in the selected period. Enable **Track balance growth and percentage drawdown** in Settings and enter the balance immediately before your first imported trade to add balance growth and percentage drawdown. Trades without a journal risk baseline remain visible but are excluded from R metrics.
 
 ## Strategies and backtests
 
-Use **Strategies** to maintain each strategy’s description and optional backtest period, sample size, win rate, expectancy, net R, and notes. Select one saved profile as the journal default; all untagged trades inherit it dynamically. A trade-level strategy override always takes priority. Saved-profile assignments use stable IDs, so a profile can be renamed without breaking its linked trades or default. The dashboard shows the live result beside that strategy’s backtest context; backtest data is informational and never changes live P&L or R.
+Use **Settings → Strategies** to maintain each strategy’s description and optional backtest period, sample size, win rate, expectancy, net R, and notes. Select one saved profile as the journal default; every imported trade inherits it dynamically. The default uses a stable ID, so a profile can be renamed without breaking the journal assignment. The dashboard shows the live result beside that strategy’s backtest context; backtest data is informational and never changes live P&L or R.
 
 ## Quality approach
 
