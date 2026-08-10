@@ -1,0 +1,18 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.venv/
+*.egg-info/
+
+# Local journal state and exports
+data/
+*.sqlite3
+
+# Local Streamlit secrets and editor/OS files
+.streamlit/secrets.toml
+.DS_Store
