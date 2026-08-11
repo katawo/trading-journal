@@ -1,6 +1,4 @@
-alembic>=1.18,<2
-pydantic>=2.13,<3
-plotly>=6.0,<7
-sqlalchemy>=2.0,<3
-streamlit>=1.61,<2
-pytest>=9,<10
+# Streamlit Community Cloud prioritises requirements.txt. Installing the
+# project makes the src/trading_journal package importable and resolves its
+# runtime dependencies from pyproject.toml.
+-e .
