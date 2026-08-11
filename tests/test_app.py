@@ -108,6 +108,23 @@ def test_workspace_navigation_switches_from_settings_back_to_dashboard(monkeypat
     assert not any(item.label == "Account name" for item in app.text_input)
 
 
+def test_guidance_page_explains_the_post_trade_three_pillar_workflow(monkeypatch, tmp_path):
+    monkeypatch.setenv("TRADING_JOURNAL_DB", str(tmp_path / "journal.db"))
+
+    app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
+    app.switch_page("app_pages/guidance.py").run()
+
+    assert not app.exception
+    guide = "\n".join(item.value for item in app.markdown)
+    assert "Operating the three-pillar journal" in guide
+    assert "Psychology, Risk Management, and Trading System" in guide
+    assert "post-trade and advisory" in guide
+    assert "Worked example" in guide
+    assert "94.17" in guide
+    assert "single source of truth" in guide
+    assert not app.selectbox
+
+
 def test_account_can_be_saved_before_its_balance_baseline_is_known(monkeypatch, tmp_path):
     database_path = tmp_path / "journal.db"
     monkeypatch.setenv("TRADING_JOURNAL_DB", str(database_path))

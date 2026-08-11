@@ -1,5 +1,7 @@
 # Three-Pillar Trading Performance Framework
 
+> **Status: conceptual background.** The current product workflow, scores, weights, hard-rule behaviour, and roadmap gates are defined exclusively in [the operating guide](three_pillar_framework_guide.md). If this background material differs from that guide, the guide takes precedence.
+
 **Psychology • Risk Management • Trading System**
 
 A simple framework for assessing trading quality, protecting capital, validating an edge, and improving the trader over time.

@@ -849,6 +849,7 @@ def main() -> None:
                 st.Page("app_pages/dashboard.py", title="Dashboard", icon=":material/dashboard:", default=True),
                 st.Page("app_pages/framework.py", title="Framework", icon=":material/fact_check:"),
                 st.Page("app_pages/settings.py", title="Settings", icon=":material/settings:"),
+                st.Page("app_pages/guidance.py", title="Guide", icon=":material/menu_book:"),
             ]
         },
         position="sidebar",
