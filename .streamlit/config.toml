@@ -1,43 +1,77 @@
 [theme]
-base = "light"
-primaryColor = "#0d6b54"
-backgroundColor = "#fcfcf8"
-secondaryBackgroundColor = "#f1f3ee"
-textColor = "#14211b"
-linkColor = "#0d6b54"
-borderColor = "#d5dad4"
-dataframeBorderColor = "#d5dad4"
-dataframeHeaderBackgroundColor = "#f1f3ee"
-font = "sans-serif"
-headingFont = "serif"
-codeFont = "monospace"
-baseFontSize = 15
+base = "dark"
+font = "'IBM Plex Mono':https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap"
+headingFont = "'DM Serif Display':https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&display=swap"
+codeFont = "'IBM Plex Mono':https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap"
+baseFontSize = 16
 baseFontWeight = 400
-headingFontSizes = ["38px", "28px", "22px", "18px", "15px", "13px"]
+headingFontSizes = ["42px", "32px", "25px", "20px", "16px", "14px"]
 headingFontWeights = [650, 650, 650, 650, 650, 650]
 baseRadius = "medium"
 buttonRadius = "small"
 showWidgetBorder = true
 showSidebarBorder = true
 linkUnderline = false
-greenColor = "#0d6b54"
-greenBackgroundColor = "#e4f1ea"
-greenTextColor = "#07523f"
-redColor = "#bd3c36"
-redBackgroundColor = "#fbe9e7"
-redTextColor = "#8f241f"
-orangeColor = "#9a5d0b"
-orangeBackgroundColor = "#fff2dd"
-orangeTextColor = "#704104"
-blueColor = "#285f84"
-blueBackgroundColor = "#e6f0f7"
-blueTextColor = "#194968"
-grayColor = "#66736b"
-chartCategoricalColors = ["#0d6b54", "#285f84", "#9a5d0b", "#bd3c36", "#6b5575", "#607b44", "#66736b"]
 
-[theme.sidebar]
-backgroundColor = "#f4f5f0"
-secondaryBackgroundColor = "#e6ebe5"
-textColor = "#14211b"
-borderColor = "#d5dad4"
-primaryColor = "#0d6b54"
+[theme.light]
+primaryColor = "#b32639"
+backgroundColor = "#f7f6f0"
+secondaryBackgroundColor = "#eeeee7"
+textColor = "#19201b"
+linkColor = "#9b1f30"
+borderColor = "#cbd2ca"
+dataframeBorderColor = "#cbd2ca"
+dataframeHeaderBackgroundColor = "#e6e7df"
+greenColor = "#087a52"
+greenBackgroundColor = "#e2f4e9"
+greenTextColor = "#07583c"
+redColor = "#c73545"
+redBackgroundColor = "#f8e4e5"
+redTextColor = "#8b1725"
+orangeColor = "#a65f00"
+orangeBackgroundColor = "#fff0d8"
+orangeTextColor = "#704000"
+blueColor = "#1666a5"
+blueBackgroundColor = "#e3eff8"
+blueTextColor = "#124a77"
+grayColor = "#667168"
+
+[theme.light.sidebar]
+backgroundColor = "#e9eae3"
+secondaryBackgroundColor = "#ddded6"
+textColor = "#19201b"
+borderColor = "#cbd2ca"
+primaryColor = "#b32639"
+
+[theme.dark]
+primaryColor = "#c73545"
+backgroundColor = "#0b0f0e"
+secondaryBackgroundColor = "#141a18"
+textColor = "#f4f0e7"
+linkColor = "#ff747c"
+borderColor = "#303b36"
+dataframeBorderColor = "#303b36"
+dataframeHeaderBackgroundColor = "#171f1c"
+greenColor = "#48d597"
+greenBackgroundColor = "#10271d"
+greenTextColor = "#7ff0b5"
+redColor = "#ff6871"
+redBackgroundColor = "#32171a"
+redTextColor = "#ff9a9f"
+orangeColor = "#ffb547"
+orangeBackgroundColor = "#30230f"
+orangeTextColor = "#ffd28a"
+blueColor = "#7ab7ff"
+blueBackgroundColor = "#16283a"
+blueTextColor = "#acd3ff"
+grayColor = "#aab5ad"
+
+[theme.dark.sidebar]
+backgroundColor = "#070a09"
+secondaryBackgroundColor = "#121815"
+textColor = "#f4f0e7"
+borderColor = "#303b36"
+primaryColor = "#c73545"
+
+[client]
+toolbarMode = "viewer"

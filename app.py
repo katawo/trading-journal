@@ -19,6 +19,8 @@ from trading_journal.presentation.framework import render_framework_dashboard, r
 _CURRENCY_SYMBOLS = {"USD": "$", "EUR": "€", "GBP": "£", "JPY": "¥", "AUD": "A$", "CAD": "C$", "CHF": "CHF", "NZD": "NZ$"}
 _AUTO_SYNC_INTERVAL_SECONDS = 15
 _FRESHNESS_INTERVAL_SECONDS = 1
+_CHART_POSITIVE = "#0e9163"
+_CHART_NEGATIVE = "#c73545"
 
 
 def format_number(value: str | Decimal, decimal_places: int = 2) -> str:
@@ -44,62 +46,36 @@ def format_account_label(account: AccountListItem) -> str:
 
 
 def style_chart(figure: go.Figure, *, yaxis_title: str) -> go.Figure:
+    """Keep data semantics while Streamlit supplies the active chart theme.
+
+    The browser can switch Streamlit's Light/Dark theme without a Python rerun.
+    Avoid baking a server-side palette into Plotly so that switch remains
+    coherent with the rest of the application.
+    """
     figure.update_layout(
         height=330,
         margin=dict(l=12, r=12, t=42, b=12),
-        paper_bgcolor="#ffffff",
-        plot_bgcolor="#ffffff",
-        font=dict(family="Avenir Next, Noto Sans, Segoe UI, sans-serif", color="#26332c", size=12),
-        title=dict(font=dict(family="Iowan Old Style, Palatino Linotype, Book Antiqua, Georgia, serif", color="#14211b", size=17), x=0.02, y=0.96),
+        title=dict(x=0.02, y=0.96),
         hovermode="x unified",
-        hoverlabel=dict(bgcolor="#14211b", font=dict(color="#ffffff"), bordercolor="#14211b"),
         showlegend=False,
     )
-    figure.update_xaxes(showgrid=False, zeroline=False, tickfont=dict(color="#536158"), linecolor="#d5dad4")
-    figure.update_yaxes(title=yaxis_title, gridcolor="#e7ebe6", zeroline=True, zerolinecolor="#d5dad4", tickfont=dict(color="#536158"))
+    figure.update_xaxes(showgrid=False, zeroline=False)
+    figure.update_yaxes(title=yaxis_title, zeroline=True)
     return figure
 
 
 def apply_application_style() -> None:
-    st.markdown(
-        """
+    st.html("""
         <style>
-        :root { --ink: #14211b; --muted: #66736b; --paper: #ffffff; --canvas: #fcfcf8; --line: #d5dad4; --evergreen: #0d6b54; --amber: #9a5d0b; --coral: #bd3c36; }
-        .stApp { background: var(--canvas); color: var(--ink); font-family: "Avenir Next", "Noto Sans", "Segoe UI", sans-serif; }
-        [data-testid="stHeader"] { background: rgba(252, 252, 248, 0.92); border-bottom: 1px solid rgba(213, 218, 212, 0.85); }
         [data-testid="stAppViewContainer"] > .main .block-container { max-width: 1480px; padding-top: 2.6rem; padding-bottom: 4rem; }
-        [data-testid="stSidebar"] { background: #f4f5f0; border-right: 1px solid var(--line); }
         [data-testid="stSidebar"] [data-testid="stSidebarNav"] { padding-top: 1.75rem; }
-        [data-testid="stSidebar"] [data-testid="stSidebarNav"] a { border-radius: 8px; margin: 0.12rem 0.75rem; padding: 0.48rem 0.65rem; font-weight: 600; color: var(--ink); }
-        [data-testid="stSidebar"] [data-testid="stSidebarNav"] a:hover { background: #e6ebe5; }
-        [data-testid="stSidebar"] [data-testid="stSidebarNav"] a[aria-current="page"] { background: #dcece3; color: #07523f; }
-        h1, h2, h3 { font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif; color: var(--ink); letter-spacing: -0.03em; }
-        h1 { font-size: 2.55rem !important; margin-bottom: 0.15rem !important; }
+        [data-testid="stSidebar"] [data-testid="stSidebarNav"] a { border-radius: 8px; margin: 0.12rem 0.75rem; padding: 0.48rem 0.65rem; font-weight: 600; }
+        h1, h2, h3 { letter-spacing: -0.03em; }
+        h1 { font-size: 2.8rem !important; margin-bottom: 0.15rem !important; }
         h2 { margin-top: 1.35rem !important; }
-        [data-testid="stCaptionContainer"] { color: var(--muted); }
-        [data-testid="stMetric"] { background: var(--paper); border-color: var(--line); border-radius: 10px; padding: 0.9rem 1rem; box-shadow: none; }
-        [data-testid="stMetricLabel"] p { color: var(--muted); font-family: "Avenir Next", "Noto Sans", "Segoe UI", sans-serif; font-size: 0.68rem; font-weight: 750; letter-spacing: 0.075em; text-transform: uppercase; }
-        [data-testid="stMetricValue"] { font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif; color: var(--ink); font-size: 1.85rem; letter-spacing: -0.035em; }
-        [data-testid="stMetricDelta"] { font-family: "Avenir Next", "Noto Sans", "Segoe UI", sans-serif; }
-        [data-testid="stDataFrame"] { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--paper); }
-        [data-testid="stTextInput"] input, [data-testid="stNumberInput"] input, [data-baseweb="select"] > div { background: #ffffff; border-color: var(--line); }
         .stButton > button { border-radius: 6px; font-weight: 650; }
-        .stButton > button[kind="primary"] { background: var(--evergreen); border-color: var(--evergreen); }
-        .stButton > button[kind="primary"]:hover { background: #07523f; border-color: #07523f; }
-        [class*="st-key-delete-mt5-account-"] button[kind="primary"] { background: var(--coral); border-color: var(--coral); }
-        [class*="st-key-delete-mt5-account-"] button[kind="primary"]:hover { background: #8f241f; border-color: #8f241f; }
-        .dashboard-kicker { color: var(--evergreen); font-family: "Avenir Next", "Noto Sans", "Segoe UI", sans-serif; font-size: 0.7rem; font-weight: 800; letter-spacing: 0.14em; margin-bottom: -0.1rem; }
-        .dashboard-period { color: var(--muted); font-size: 0.88rem; font-weight: 600; margin-top: -0.2rem; margin-bottom: 0.55rem; }
-        .framework-status { display: flex; align-items: baseline; gap: 0.7rem; border: 1px solid var(--line); border-left-width: 4px; border-radius: 8px; padding: 0.72rem 0.9rem; margin: 0.35rem 0 1rem; color: var(--ink); background: #ffffff; }
-        .framework-status strong { font-family: "Avenir Next", "Noto Sans", "Segoe UI", sans-serif; font-size: 0.7rem; letter-spacing: 0.11em; }
-        .framework-status span { color: #526057; font-size: 0.88rem; }
-        .framework-status--clear { border-left-color: var(--evergreen); }
-        .framework-status--caution, .framework-status--unconfigured { border-left-color: var(--amber); background: #fff9ef; }
-        .framework-status--stop { border-left-color: var(--coral); background: #fff6f5; }
         </style>
-        """,
-        unsafe_allow_html=True,
-    )
+        """)
 
 
 def repository() -> SQLiteJournalRepository:
@@ -754,10 +730,10 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
                     y=timeline[curve_column],
                     customdata=timeline["hover_label"],
                     mode="lines+markers",
-                    line=dict(color="#0d6b54", width=3),
-                    marker=dict(color="#0d6b54", size=7, line=dict(color="#fffdf8", width=1.5)),
+                    line=dict(color=_CHART_POSITIVE, width=3),
+                    marker=dict(color=_CHART_POSITIVE, size=7),
                     fill=None if curve_is_balance else "tozeroy",
-                    fillcolor="rgba(13, 107, 84, 0.10)" if not curve_is_balance else None,
+                    fillcolor="rgba(14, 145, 99, 0.14)" if not curve_is_balance else None,
                     hovertemplate=f"%{{customdata}}<br><b>{currency} %{{y:,.2f}}</b><extra></extra>",
                 )
             )
@@ -771,10 +747,10 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
                     y=-timeline["drawdown"],
                     customdata=timeline[["hover_label", "drawdown"]],
                     mode="lines+markers",
-                    line=dict(color="#bd3c36", width=3),
-                    marker=dict(color="#bd3c36", size=7, line=dict(color="#ffffff", width=1.5)),
+                    line=dict(color=_CHART_NEGATIVE, width=3),
+                    marker=dict(color=_CHART_NEGATIVE, size=7),
                     fill="tozeroy",
-                    fillcolor="rgba(189, 60, 54, 0.12)",
+                    fillcolor="rgba(199, 53, 69, 0.16)",
                     hovertemplate=f"%{{customdata[0]}}<br><b>−{currency} %{{customdata[1]:,.2f}}</b><extra></extra>",
                 )
             )
@@ -784,7 +760,7 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
     left, right = st.columns(2)
     with left:
         with st.container(border=True):
-            bar_colours = ["#0d6b54" if value >= 0 else "#bd3c36" for value in pnl_data["net_pnl"]]
+            bar_colours = [_CHART_POSITIVE if value >= 0 else _CHART_NEGATIVE for value in pnl_data["net_pnl"]]
             daily_figure = go.Figure(
                 go.Bar(
                     x=pnl_x,
@@ -804,7 +780,7 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
                 go.Bar(
                     x=strategies["strategy"],
                     y=strategies["net_pnl"],
-                    marker_color=["#0d6b54" if value >= 0 else "#bd3c36" for value in strategies["net_pnl"]],
+                    marker_color=[_CHART_POSITIVE if value >= 0 else _CHART_NEGATIVE for value in strategies["net_pnl"]],
                     marker_line_width=0,
                     hovertemplate=f"%{{x}}<br><b>{currency} %{{y:,.2f}}</b><extra></extra>",
                 )
