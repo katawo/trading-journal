@@ -10,7 +10,7 @@ from trading_journal.infrastructure.sqlite_repository import SQLiteJournalReposi
 def _repository(tmp_path) -> SQLiteJournalRepository:
     repository = SQLiteJournalRepository(tmp_path / "journal.db")
     repository.initialize()
-    repository.configure_journal(base_currency="USD", reporting_timezone="UTC")
+    repository.configure_journal(reporting_time_basis="utc")
     return repository
 
 

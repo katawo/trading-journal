@@ -18,6 +18,7 @@ HEADER = [
     "direction",
     "entry_time",
     "exit_time",
+    "server_utc_offset_minutes",
     "entry_price",
     "exit_price",
     "volume",
@@ -26,12 +27,21 @@ HEADER = [
     "swap",
     "fees",
     "net_pnl",
+    "entry_stop_price",
+    "entry_target_price",
+    "close_stop_price",
+    "entry_magic_number",
+    "entry_deal_count",
+    "exit_reason",
+    "initial_risk_amount",
+    "initial_reward_amount",
+    "account_balance",
 ]
 
 
 def write_export(path: Path, *, net_pnl: str = "98.00") -> None:
     row = {
-        "schema_version": "1",
+        "schema_version": "4",
         "account_login": "123456",
         "broker_server": "DemoBroker-Live",
         "account_currency": "USD",
@@ -40,6 +50,7 @@ def write_export(path: Path, *, net_pnl: str = "98.00") -> None:
         "direction": "long",
         "entry_time": "2026-08-10T08:00:00+00:00",
         "exit_time": "2026-08-10T10:00:00+00:00",
+        "server_utc_offset_minutes": "0",
         "entry_price": "1.10000",
         "exit_price": "1.10100",
         "volume": "1.00",
@@ -48,6 +59,15 @@ def write_export(path: Path, *, net_pnl: str = "98.00") -> None:
         "swap": "-0.25",
         "fees": "-0.25",
         "net_pnl": net_pnl,
+        "entry_stop_price": "",
+        "entry_target_price": "",
+        "close_stop_price": "",
+        "entry_magic_number": "",
+        "entry_deal_count": "",
+        "exit_reason": "client",
+        "initial_risk_amount": "",
+        "initial_reward_amount": "",
+        "account_balance": "1000.00",
     }
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=HEADER)
@@ -58,7 +78,7 @@ def write_export(path: Path, *, net_pnl: str = "98.00") -> None:
 def configured_repository(tmp_path: Path, export_path: Path) -> SQLiteJournalRepository:
     repository = SQLiteJournalRepository(tmp_path / "journal.db")
     repository.initialize()
-    repository.configure_journal(base_currency="USD", reporting_timezone="UTC")
+    repository.configure_journal(reporting_time_basis="utc")
     repository.register_mt5_account(
         display_name="Primary",
         login="123456",

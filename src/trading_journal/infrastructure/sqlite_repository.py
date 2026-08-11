@@ -5,26 +5,59 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 import json
 from pathlib import Path
-import shutil
+from typing import Mapping
 
 from sqlalchemy import Boolean, ForeignKey, Integer, String, Text, UniqueConstraint, create_engine, delete, event, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
+from trading_journal.application.reporting_time import REPORTING_TIME_BASES, normalize_server_timestamp
 from trading_journal.domain.models import ImportResult, ImportedTradeView, MT5PositionExport
 
 
 _UNSET = object()
-SYSTEM_FAILURE_CODES = frozenset(
+ASSESSMENT_GRADES = frozenset({"pass", "partial", "fail"})
+PSYCHOLOGY_CRITERIA = (
+    "rule_adherence",
+    "impulse_control",
+    "emotional_control",
+    "patience_discipline",
+)
+RISK_CRITERIA = (
+    "policy_adherence",
+    "position_size_accuracy",
+    "stop_discipline",
+    "exposure_limit_compliance",
+)
+SYSTEM_CRITERIA = (
+    "setup_validity",
+    "context_alignment",
+    "entry_fidelity",
+    "invalidation_fidelity",
+    "management_exit_fidelity",
+)
+ASSESSMENT_CRITERIA = PSYCHOLOGY_CRITERIA + RISK_CRITERIA + SYSTEM_CRITERIA
+VIOLATION_CODES = frozenset(
     {
-        "market_context",
-        "session",
-        "timeframe",
-        "regime",
-        "location",
-        "confirmation",
-        "entry_trigger",
-        "invalidation",
-        "target",
+        "fomo_or_chase",
+        "revenge",
+        "emotional_sizing",
+        "post_loss_reset",
+        "daily_limit",
+        "weekly_limit",
+        "drawdown_limit",
+        "open_exposure",
+        "correlation_exposure",
+        "stop_widened",
+        "mandatory_setup_absent",
+        "shutdown_breach",
+    }
+)
+HARD_RULE_CODES = frozenset(
+    {
+        "oversized_revenge",
+        "mandatory_setup_absent",
+        "stop_widened",
+        "shutdown_breach",
     }
 )
 
@@ -42,23 +75,21 @@ class Base(DeclarativeBase):
 
 
 class JournalDatabaseResetRequiredError(RuntimeError):
-    """Raised when a database predates the removal of monthly targets."""
+    """Raised when a database predates the clean three-pillar schema."""
 
 
 class JournalSettings(Base):
     __tablename__ = "journal_settings"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    base_currency: Mapped[str] = mapped_column(String(3), nullable=False)
-    reporting_timezone: Mapped[str] = mapped_column(String(64), nullable=False)
-    starting_balance: Mapped[str | None] = mapped_column(String, nullable=True)
+    reporting_time_basis: Mapped[str] = mapped_column(String(16), nullable=False, default="server")
     default_strategy_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     default_strategy_profile_id: Mapped[int | None] = mapped_column(ForeignKey("strategy_profiles.id"), nullable=True)
 
 
 class MT5Account(Base):
     __tablename__ = "mt5_accounts"
-    __table_args__ = (UniqueConstraint("login", "broker_server", name="uq_mt5_account_identity"),)
+    __table_args__ = (UniqueConstraint("login", name="uq_mt5_account_login"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     display_name: Mapped[str] = mapped_column(String(100), nullable=False)
@@ -67,6 +98,7 @@ class MT5Account(Base):
     account_currency: Mapped[str] = mapped_column(String(3), nullable=False)
     opening_balance: Mapped[str | None] = mapped_column(String, nullable=True)
     latest_mt5_balance: Mapped[str | None] = mapped_column(String, nullable=True)
+    latest_server_utc_offset_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     export_file_path: Mapped[str] = mapped_column(String(1024), nullable=False, default="")
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
@@ -109,6 +141,7 @@ class Trade(Base):
     direction: Mapped[str] = mapped_column(String(8), nullable=False)
     entry_time: Mapped[str] = mapped_column(String(64), nullable=False)
     exit_time: Mapped[str] = mapped_column(String(64), nullable=False)
+    server_utc_offset_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
     entry_price: Mapped[str] = mapped_column(String, nullable=False)
     exit_price: Mapped[str] = mapped_column(String, nullable=False)
     volume: Mapped[str] = mapped_column(String, nullable=False)
@@ -164,7 +197,7 @@ class AccountRiskPolicy(Base):
 
 
 class PostTradeAssessment(Base):
-    """A review of one immutable, already-imported MT5 closed position."""
+    """One complete, post-trade assessment of an imported closed position."""
 
     __tablename__ = "post_trade_assessments"
     __table_args__ = (UniqueConstraint("trade_id", name="uq_post_trade_assessment_trade"),)
@@ -175,12 +208,9 @@ class PostTradeAssessment(Base):
     risk_policy_id: Mapped[int | None] = mapped_column(ForeignKey("account_risk_policies.id"), nullable=True)
     strategy_profile_id: Mapped[int] = mapped_column(ForeignKey("strategy_profiles.id"), nullable=False)
     strategy_snapshot: Mapped[str] = mapped_column(Text, nullable=False)
-    system_confirmed: Mapped[bool] = mapped_column(Boolean, nullable=False)
-    system_failure_codes: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
-    impulse_violation: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    revenge_violation: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    emotional_size_violation: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    stop_widened_violation: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    criterion_grades: Mapped[str] = mapped_column(Text, nullable=False)
+    violation_codes: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    hard_rule_codes: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     declared_actual_risk_amount: Mapped[str | None] = mapped_column(String, nullable=True)
     post_review_note: Mapped[str] = mapped_column(Text, nullable=False)
     corrective_action: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -201,16 +231,48 @@ class PostTradeAssessmentRevision(Base):
     risk_policy_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     strategy_profile_id: Mapped[int] = mapped_column(Integer, nullable=False)
     strategy_snapshot: Mapped[str] = mapped_column(Text, nullable=False)
-    system_confirmed: Mapped[bool] = mapped_column(Boolean, nullable=False)
-    system_failure_codes: Mapped[str] = mapped_column(Text, nullable=False)
-    impulse_violation: Mapped[bool] = mapped_column(Boolean, nullable=False)
-    revenge_violation: Mapped[bool] = mapped_column(Boolean, nullable=False)
-    emotional_size_violation: Mapped[bool] = mapped_column(Boolean, nullable=False)
-    stop_widened_violation: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    criterion_grades: Mapped[str] = mapped_column(Text, nullable=False)
+    violation_codes: Mapped[str] = mapped_column(Text, nullable=False)
+    hard_rule_codes: Mapped[str] = mapped_column(Text, nullable=False)
     declared_actual_risk_amount: Mapped[str | None] = mapped_column(String, nullable=True)
     post_review_note: Mapped[str] = mapped_column(Text, nullable=False)
     corrective_action: Mapped[str | None] = mapped_column(Text, nullable=True)
     archived_at: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
+class FrameworkRuleSettings(Base):
+    """Trader-wide hard-rule configuration. All flags are advisory in this app."""
+
+    __tablename__ = "framework_rule_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    oversized_revenge_hard: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    mandatory_setup_hard: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    stop_widened_hard: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    shutdown_breach_hard: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    repeated_critical_threshold: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
+
+
+class FrameworkPeriodReview(Base):
+    """A saved weekly or monthly reflection with immutable calculated metrics."""
+
+    __tablename__ = "framework_period_reviews"
+    __table_args__ = (UniqueConstraint("mt5_account_id", "cadence", "period_start", "period_end", name="uq_framework_period"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    mt5_account_id: Mapped[int] = mapped_column(ForeignKey("mt5_accounts.id"), nullable=False)
+    cadence: Mapped[str] = mapped_column(String(12), nullable=False)
+    period_start: Mapped[str] = mapped_column(String(10), nullable=False)
+    period_end: Mapped[str] = mapped_column(String(10), nullable=False)
+    psychology_score: Mapped[str | None] = mapped_column(String, nullable=True)
+    risk_score: Mapped[str | None] = mapped_column(String, nullable=True)
+    system_score: Mapped[str | None] = mapped_column(String, nullable=True)
+    readiness_score: Mapped[str | None] = mapped_column(String, nullable=True)
+    alert_codes: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    recurring_issues: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    review_note: Mapped[str] = mapped_column(Text, nullable=False)
+    priority_action: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[str] = mapped_column(String(64), nullable=False)
 
 
 class PillarRoadmapEvidence(Base):
@@ -243,6 +305,7 @@ class AccountListItem:
     export_file_path: str
     opening_balance: str | None
     latest_mt5_balance: str | None
+    latest_server_utc_offset_minutes: int | None
 
     @property
     def funded_capital(self) -> str | None:
@@ -267,9 +330,7 @@ class TradeListItem:
 
 @dataclass(frozen=True)
 class JournalSettingsView:
-    base_currency: str
-    reporting_timezone: str
-    starting_balance: str | None
+    reporting_time_basis: str
     default_strategy_name: str | None
     default_strategy_profile_id: int | None
 
@@ -298,6 +359,7 @@ class StrategyProfileView:
 @dataclass(frozen=True)
 class TradePerformanceItem:
     exit_time: str
+    server_utc_offset_minutes: int
     position_id: str | None
     symbol: str
     net_pnl: str
@@ -344,6 +406,7 @@ class ClosedTradeReviewItem:
     direction: str
     entry_time: str
     exit_time: str
+    server_utc_offset_minutes: int
     entry_price: str
     exit_price: str
     volume: str
@@ -367,12 +430,9 @@ class PostTradeAssessmentView:
     risk_policy_id: int | None
     strategy_profile_id: int
     strategy_snapshot: "StrategyEvidenceSnapshot"
-    system_confirmed: bool
-    system_failure_codes: tuple[str, ...]
-    impulse_violation: bool
-    revenge_violation: bool
-    emotional_size_violation: bool
-    stop_widened_violation: bool
+    criterion_grades: dict[str, str]
+    violation_codes: tuple[str, ...]
+    hard_rule_codes: tuple[str, ...]
     declared_actual_risk_amount: str | None
     post_review_note: str
     corrective_action: str | None
@@ -387,12 +447,9 @@ class PostTradeAssessmentRevisionView:
     risk_policy_id: int | None
     strategy_profile_id: int
     strategy_snapshot: "StrategyEvidenceSnapshot"
-    system_confirmed: bool
-    system_failure_codes: tuple[str, ...]
-    impulse_violation: bool
-    revenge_violation: bool
-    emotional_size_violation: bool
-    stop_widened_violation: bool
+    criterion_grades: dict[str, str]
+    violation_codes: tuple[str, ...]
+    hard_rule_codes: tuple[str, ...]
     declared_actual_risk_amount: str | None
     post_review_note: str
     corrective_action: str | None
@@ -403,6 +460,33 @@ class PostTradeAssessmentRevisionView:
 class PostTradeAssessmentOutcome:
     assessment: PostTradeAssessmentView
     trade: ClosedTradeReviewItem
+
+
+@dataclass(frozen=True)
+class FrameworkRuleSettingsView:
+    oversized_revenge_hard: bool
+    mandatory_setup_hard: bool
+    stop_widened_hard: bool
+    shutdown_breach_hard: bool
+    repeated_critical_threshold: int
+
+
+@dataclass(frozen=True)
+class FrameworkPeriodReviewView:
+    id: int
+    account_id: int
+    cadence: str
+    period_start: str
+    period_end: str
+    psychology_score: str | None
+    risk_score: str | None
+    system_score: str | None
+    readiness_score: str | None
+    alert_codes: tuple[str, ...]
+    recurring_issues: tuple[str, ...]
+    review_note: str
+    priority_action: str
+    created_at: str
 
 
 @dataclass(frozen=True)
@@ -429,190 +513,73 @@ class SQLiteJournalRepository:
         self._sessions = sessionmaker(self._engine, expire_on_commit=False)
 
     def initialize(self) -> None:
-        self._require_reset_for_removed_monthly_target()
+        self._require_clean_framework_schema()
         Base.metadata.create_all(self._engine)
-        self._remove_trade_overrides()
-        self._run_additive_migrations()
-        self._backfill_risk_policy_limits()
-        self._backfill_strategy_profile_references()
+        with self._sessions.begin() as session:
+            if session.get(JournalSettings, 1) is None:
+                session.add(JournalSettings(id=1, reporting_time_basis="server"))
 
-    def _require_reset_for_removed_monthly_target(self) -> None:
-        """Do not mutate a legacy database after removing its required settings column."""
+    def _require_clean_framework_schema(self) -> None:
+        """Greenfield-only persistence: an old database must be reset, never migrated."""
         if not self._database_path.exists():
             return
-        with self._engine.connect() as connection:
-            columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(journal_settings)")}
-        if "monthly_target" in columns:
-            raise JournalDatabaseResetRequiredError(
-                "This journal database uses the removed monthly-target schema. "
-                "Reset it before starting the app: make reset-db CONFIRM_RESET=yes"
-            )
-
-    def _run_additive_migrations(self) -> None:
-        migrations = [
-            ("journal_settings", "starting_balance", "VARCHAR", ".pre-balance-analytics.bak"),
-            ("journal_settings", "default_strategy_name", "VARCHAR(100)", ".pre-strategy-default.bak"),
-            ("journal_settings", "default_strategy_profile_id", "INTEGER", ".pre-strategy-identity.bak"),
-            ("mt5_accounts", "opening_balance", "VARCHAR", ".pre-account-balance.bak"),
-            ("mt5_accounts", "latest_mt5_balance", "VARCHAR", ".pre-live-account-balance.bak"),
-            ("post_trade_assessments", "version", "INTEGER NOT NULL DEFAULT 1", ".pre-review-versioning.bak"),
-            ("trades", "entry_stop_price", "VARCHAR", ".pre-auto-evidence.bak"),
-            ("trades", "entry_target_price", "VARCHAR", ".pre-auto-evidence.bak"),
-            ("trades", "close_stop_price", "VARCHAR", ".pre-auto-evidence.bak"),
-            ("trades", "entry_magic_number", "VARCHAR(32)", ".pre-auto-evidence.bak"),
-            ("trades", "entry_deal_count", "INTEGER", ".pre-auto-evidence.bak"),
-            ("trades", "exit_reason", "VARCHAR(32)", ".pre-auto-evidence.bak"),
-            ("trades", "initial_risk_amount", "VARCHAR", ".pre-auto-evidence.bak"),
-            ("trades", "initial_reward_amount", "VARCHAR", ".pre-auto-evidence.bak"),
-            ("trades", "auto_risk_policy_id", "INTEGER", ".pre-auto-evidence.bak"),
-            ("account_risk_policies", "maximum_risk_per_trade_percent", "VARCHAR", ".pre-risk-policy-limit.bak"),
-        ]
-        for table_name, column_name, column_type, backup_suffix in migrations:
-            with self._engine.connect() as connection:
-                columns = {row[1] for row in connection.exec_driver_sql(f"PRAGMA table_info({table_name})")}
-            if column_name in columns:
-                continue
-            backup_path = self._database_path.with_suffix(self._database_path.suffix + backup_suffix)
-            if self._database_path.exists() and not backup_path.exists():
-                with self._engine.connect() as connection:
-                    connection.exec_driver_sql("PRAGMA wal_checkpoint(FULL)")
-                shutil.copy2(self._database_path, backup_path)
-            with self._engine.begin() as connection:
-                connection.exec_driver_sql(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}")
-
-    def _backfill_risk_policy_limits(self) -> None:
-        """Preserve the prior single-risk behaviour when adding a separate limit."""
-        with self._engine.connect() as connection:
-            tables = {row[0] for row in connection.exec_driver_sql("SELECT name FROM sqlite_master WHERE type = 'table'")}
-            if "account_risk_policies" not in tables:
-                return
-            columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(account_risk_policies)")}
-        if "maximum_risk_per_trade_percent" not in columns:
-            return
-        with self._engine.begin() as connection:
-            connection.exec_driver_sql(
-                """
-                UPDATE account_risk_policies
-                SET maximum_risk_per_trade_percent = risk_per_trade_percent
-                WHERE maximum_risk_per_trade_percent IS NULL
-                   OR TRIM(maximum_risk_per_trade_percent) = ''
-                """
-            )
-
-    def _remove_trade_overrides(self) -> None:
-        removed_columns = {
-            "strategy",
-            "strategy_profile_id",
-            "notes",
-            "planned_risk_amount",
-            "result_r",
-            "journal_completed_at",
+        expected_columns = {
+            "journal_settings": {"reporting_time_basis"},
+            "mt5_accounts": {"latest_server_utc_offset_minutes"},
+            "trades": {"server_utc_offset_minutes"},
+            "post_trade_assessments": {"criterion_grades", "violation_codes", "hard_rule_codes"},
+            "post_trade_assessment_revisions": {"criterion_grades", "violation_codes", "hard_rule_codes"},
         }
         with self._engine.connect() as connection:
-            trade_columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(trades)")}
-        if not trade_columns.intersection(removed_columns):
-            return
-
-        backup_path = self._database_path.with_suffix(self._database_path.suffix + ".pre-trade-override-removal.bak")
-        if self._database_path.exists() and not backup_path.exists():
-            with self._engine.connect() as connection:
-                connection.exec_driver_sql("PRAGMA wal_checkpoint(FULL)")
-            shutil.copy2(self._database_path, backup_path)
-
-        with self._engine.begin() as connection:
-            connection.exec_driver_sql(
-                """
-                CREATE TABLE trades_without_overrides (
-                    id INTEGER NOT NULL PRIMARY KEY,
-                    source VARCHAR(10) NOT NULL,
-                    mt5_account_id INTEGER,
-                    mt5_position_id VARCHAR(64),
-                    source_updated_at VARCHAR(64) NOT NULL,
-                    symbol VARCHAR(32) NOT NULL,
-                    direction VARCHAR(8) NOT NULL,
-                    entry_time VARCHAR(64) NOT NULL,
-                    exit_time VARCHAR(64) NOT NULL,
-                    entry_price VARCHAR NOT NULL,
-                    exit_price VARCHAR NOT NULL,
-                    volume VARCHAR NOT NULL,
-                    gross_pnl VARCHAR NOT NULL,
-                    commission VARCHAR NOT NULL,
-                    swap VARCHAR NOT NULL,
-                    fees VARCHAR NOT NULL,
-                    net_pnl VARCHAR NOT NULL,
-                    entry_stop_price VARCHAR,
-                    entry_target_price VARCHAR,
-                    close_stop_price VARCHAR,
-                    entry_magic_number VARCHAR(32),
-                    entry_deal_count INTEGER,
-                    exit_reason VARCHAR(32),
-                    initial_risk_amount VARCHAR,
-                    initial_reward_amount VARCHAR,
-                    auto_risk_policy_id INTEGER,
-                    CONSTRAINT uq_mt5_position UNIQUE (mt5_account_id, mt5_position_id),
-                    FOREIGN KEY(mt5_account_id) REFERENCES mt5_accounts (id)
+            tables = {row[0] for row in connection.exec_driver_sql("SELECT name FROM sqlite_master WHERE type = 'table'")}
+            existing_journal_tables = {"journal_settings", "mt5_accounts", "trades", "account_risk_policies", "post_trade_assessments"}
+            if tables.intersection(existing_journal_tables) and "framework_rule_settings" not in tables:
+                raise JournalDatabaseResetRequiredError(
+                    "This database predates the greenfield three-pillar framework. "
+                    "Reset it before starting the app: make reset-db CONFIRM_RESET=yes"
                 )
-                """
-            )
-            connection.exec_driver_sql(
-                """
-                INSERT INTO trades_without_overrides (
-                    id, source, mt5_account_id, mt5_position_id, source_updated_at,
-                    symbol, direction, entry_time, exit_time, entry_price, exit_price,
-                    volume, gross_pnl, commission, swap, fees, net_pnl,
-                    entry_stop_price, entry_target_price, close_stop_price,
-                    entry_magic_number, entry_deal_count, exit_reason,
-                    initial_risk_amount, initial_reward_amount, auto_risk_policy_id
+            for table_name, required in expected_columns.items():
+                if table_name not in tables:
+                    continue
+                columns = {row[1] for row in connection.exec_driver_sql(f"PRAGMA table_info({table_name})")}
+                if not required.issubset(columns):
+                    raise JournalDatabaseResetRequiredError(
+                        "This database predates the greenfield three-pillar framework. "
+                        "Reset it before starting the app: make reset-db CONFIRM_RESET=yes"
+                    )
+            if "mt5_accounts" in tables:
+                unique_indexes = connection.exec_driver_sql("PRAGMA index_list(mt5_accounts)").fetchall()
+                has_unique_login = any(
+                    index[2]
+                    and [column[2] for column in connection.exec_driver_sql(f"PRAGMA index_info({index[1]})")] == ["login"]
+                    for index in unique_indexes
                 )
-                SELECT
-                    id, source, mt5_account_id, mt5_position_id, source_updated_at,
-                    symbol, direction, entry_time, exit_time, entry_price, exit_price,
-                    volume, gross_pnl, commission, swap, fees, net_pnl,
-                    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL
-                FROM trades
-                """
-            )
-            connection.exec_driver_sql("DROP TABLE trades")
-            connection.exec_driver_sql("ALTER TABLE trades_without_overrides RENAME TO trades")
-
-    def _backfill_strategy_profile_references(self) -> None:
-        with self._sessions.begin() as session:
-            profiles = session.scalars(select(StrategyProfile)).all()
-            profiles_by_name = {profile.normalized_name: profile for profile in profiles}
-            settings = session.get(JournalSettings, 1)
-            if settings and settings.default_strategy_profile_id is None and settings.default_strategy_name:
-                profile = profiles_by_name.get(normalize_strategy_name(settings.default_strategy_name))
-                if profile is not None:
-                    settings.default_strategy_profile_id = profile.id
-                    settings.default_strategy_name = profile.name
+                if not has_unique_login:
+                    raise JournalDatabaseResetRequiredError(
+                        "This database uses the previous MT5 account identity rule. "
+                        "Reset it before starting the app: make reset-db CONFIRM_RESET=yes"
+                    )
 
     def configure_journal(
         self,
         *,
-        base_currency: str,
-        reporting_timezone: str,
-        starting_balance: str | None | object = _UNSET,
+        reporting_time_basis: str,
     ) -> None:
-        if starting_balance is not _UNSET and starting_balance is not None and Decimal(starting_balance) <= 0:
-            raise ValueError("Starting balance must be greater than zero")
+        if reporting_time_basis not in REPORTING_TIME_BASES:
+            raise ValueError("Reporting time must be UTC, Server Timezone, or Local Timezone")
         with self._sessions.begin() as session:
             settings = session.get(JournalSettings, 1)
             if settings is None:
                 session.add(
                     JournalSettings(
                         id=1,
-                        base_currency=base_currency.upper(),
-                        reporting_timezone=reporting_timezone,
-                        starting_balance=None if starting_balance is _UNSET else starting_balance,
+                        reporting_time_basis=reporting_time_basis,
                         default_strategy_name=None,
                         default_strategy_profile_id=None,
                     )
                 )
             else:
-                settings.base_currency = base_currency.upper()
-                settings.reporting_timezone = reporting_timezone
-                if starting_balance is not _UNSET:
-                    settings.starting_balance = starting_balance
+                settings.reporting_time_basis = reporting_time_basis
 
     def get_journal_settings(self) -> JournalSettingsView:
         with self._sessions() as session:
@@ -625,15 +592,10 @@ class SQLiteJournalRepository:
                 if profile is not None:
                     default_strategy_name = profile.name
             return JournalSettingsView(
-                settings.base_currency,
-                settings.reporting_timezone,
-                settings.starting_balance,
+                settings.reporting_time_basis,
                 default_strategy_name,
                 settings.default_strategy_profile_id,
             )
-
-    def journal_base_currency(self) -> str:
-        return self.get_journal_settings().base_currency
 
     def register_mt5_account(
         self,
@@ -649,7 +611,7 @@ class SQLiteJournalRepository:
             self._required_decimal(opening_balance, "Funded capital", minimum=Decimal("0.01"))
         )
         with self._sessions.begin() as session:
-            existing = session.scalar(select(MT5Account).where(MT5Account.login == login, MT5Account.broker_server == broker_server))
+            existing = session.scalar(select(MT5Account).where(MT5Account.login == login))
             if existing is None:
                 session.add(
                     MT5Account(
@@ -663,6 +625,8 @@ class SQLiteJournalRepository:
                     )
                 )
             else:
+                if existing.broker_server != broker_server:
+                    raise ValueError("This MT5 account ID is already registered with a different broker server")
                 existing.display_name = display_name
                 existing.account_currency = account_currency.upper()
                 existing.export_file_path = export_file_path
@@ -706,12 +670,11 @@ class SQLiteJournalRepository:
             duplicate = session.scalar(
                 select(MT5Account).where(
                     MT5Account.login == login,
-                    MT5Account.broker_server == broker_server,
                     MT5Account.id != account_id,
                 )
             )
             if duplicate is not None:
-                raise ValueError("Another account already uses this MT5 account ID and broker server")
+                raise ValueError("Another account already uses this MT5 account ID")
 
             account.display_name = display_name
             account.login = login
@@ -759,6 +722,7 @@ class SQLiteJournalRepository:
                     account.export_file_path,
                     account.opening_balance,
                     account.latest_mt5_balance,
+                    account.latest_server_utc_offset_minutes,
                 )
                 for account in accounts
             ]
@@ -906,22 +870,25 @@ class SQLiteJournalRepository:
         trade_id: int,
         risk_policy_id: int | None,
         strategy_profile_id: int,
-        system_confirmed: bool,
-        system_failure_codes: tuple[str, ...],
-        impulse_violation: bool,
-        revenge_violation: bool,
-        emotional_size_violation: bool,
-        stop_widened_violation: bool,
+        criterion_grades: Mapping[str, str],
+        violation_codes: tuple[str, ...],
+        hard_rule_codes: tuple[str, ...],
         declared_actual_risk_amount: str | None,
         post_review_note: str,
         corrective_action: str | None,
     ) -> PostTradeAssessmentView:
         """Create or correct the review for one already-imported closed position."""
-        unknown_failure_codes = set(system_failure_codes) - SYSTEM_FAILURE_CODES
-        if unknown_failure_codes:
-            raise ValueError("Unknown Trading System failure code")
-        if system_confirmed and system_failure_codes:
-            raise ValueError("A confirmed Trading System cannot contain failure codes")
+        normalized_grades = self._normalize_criterion_grades(criterion_grades)
+        normalized_violations = self._normalize_codes(violation_codes, VIOLATION_CODES, "violation")
+        normalized_hard_rules = self._normalize_codes(hard_rule_codes, HARD_RULE_CODES, "hard-rule")
+        if ("mandatory_setup_absent" in normalized_hard_rules) != ("mandatory_setup_absent" in normalized_violations):
+            normalized_violations = tuple(sorted(set(normalized_violations) | {"mandatory_setup_absent"}))
+        if "stop_widened" in normalized_hard_rules:
+            normalized_violations = tuple(sorted(set(normalized_violations) | {"stop_widened"}))
+        if any(grade == "fail" for grade in normalized_grades.values()) and not normalized_violations:
+            raise ValueError("Add at least one reason tag when a criterion fails")
+        if (any(grade != "pass" for grade in normalized_grades.values()) or normalized_hard_rules) and not self._optional_text(corrective_action):
+            raise ValueError("A corrective action is required for a partial, failed, or hard-rule review")
         actual_risk = None if declared_actual_risk_amount is None or not declared_actual_risk_amount.strip() else _decimal_string(
             self._required_decimal(declared_actual_risk_amount, "Actual risk", minimum=Decimal("0.00000001"))
         )
@@ -945,12 +912,9 @@ class SQLiteJournalRepository:
                     risk_policy_id=risk_policy_id,
                     strategy_profile_id=strategy_profile_id,
                     strategy_snapshot=self._strategy_snapshot_json(strategy),
-                    system_confirmed=system_confirmed,
-                    system_failure_codes=json.dumps(sorted(set(system_failure_codes))),
-                    impulse_violation=impulse_violation,
-                    revenge_violation=revenge_violation,
-                    emotional_size_violation=emotional_size_violation,
-                    stop_widened_violation=stop_widened_violation,
+                    criterion_grades=json.dumps(normalized_grades, sort_keys=True),
+                    violation_codes=json.dumps(normalized_violations),
+                    hard_rule_codes=json.dumps(normalized_hard_rules),
                     declared_actual_risk_amount=actual_risk,
                     post_review_note=review_note,
                     corrective_action=self._optional_text(corrective_action),
@@ -967,12 +931,9 @@ class SQLiteJournalRepository:
                         risk_policy_id=row.risk_policy_id,
                         strategy_profile_id=row.strategy_profile_id,
                         strategy_snapshot=row.strategy_snapshot,
-                        system_confirmed=row.system_confirmed,
-                        system_failure_codes=row.system_failure_codes,
-                        impulse_violation=row.impulse_violation,
-                        revenge_violation=row.revenge_violation,
-                        emotional_size_violation=row.emotional_size_violation,
-                        stop_widened_violation=row.stop_widened_violation,
+                        criterion_grades=row.criterion_grades,
+                        violation_codes=row.violation_codes,
+                        hard_rule_codes=row.hard_rule_codes,
                         declared_actual_risk_amount=row.declared_actual_risk_amount,
                         post_review_note=row.post_review_note,
                         corrective_action=row.corrective_action,
@@ -982,12 +943,9 @@ class SQLiteJournalRepository:
                 row.risk_policy_id = risk_policy_id
                 row.strategy_profile_id = strategy_profile_id
                 row.strategy_snapshot = self._strategy_snapshot_json(strategy)
-                row.system_confirmed = system_confirmed
-                row.system_failure_codes = json.dumps(sorted(set(system_failure_codes)))
-                row.impulse_violation = impulse_violation
-                row.revenge_violation = revenge_violation
-                row.emotional_size_violation = emotional_size_violation
-                row.stop_widened_violation = stop_widened_violation
+                row.criterion_grades = json.dumps(normalized_grades, sort_keys=True)
+                row.violation_codes = json.dumps(normalized_violations)
+                row.hard_rule_codes = json.dumps(normalized_hard_rules)
                 row.declared_actual_risk_amount = actual_risk
                 row.post_review_note = review_note
                 row.corrective_action = self._optional_text(corrective_action)
@@ -995,6 +953,128 @@ class SQLiteJournalRepository:
                 row.version += 1
             session.flush()
             return self._to_post_trade_assessment_view(row)
+
+    @staticmethod
+    def _normalize_criterion_grades(values: Mapping[str, str]) -> dict[str, str]:
+        unknown = set(values) - set(ASSESSMENT_CRITERIA)
+        missing = set(ASSESSMENT_CRITERIA) - set(values)
+        invalid = {key for key, value in values.items() if value not in ASSESSMENT_GRADES}
+        if unknown or missing or invalid:
+            raise ValueError("Every three-pillar criterion must be explicitly rated Pass, Partial, or Fail")
+        return {key: values[key] for key in ASSESSMENT_CRITERIA}
+
+    @staticmethod
+    def _normalize_codes(values: tuple[str, ...], allowed: frozenset[str], label: str) -> tuple[str, ...]:
+        unknown = set(values) - allowed
+        if unknown:
+            raise ValueError(f"Unknown {label} code")
+        return tuple(sorted(set(values)))
+
+    def get_framework_rule_settings(self) -> FrameworkRuleSettingsView:
+        with self._sessions.begin() as session:
+            row = session.get(FrameworkRuleSettings, 1)
+            if row is None:
+                row = FrameworkRuleSettings(id=1)
+                session.add(row)
+                session.flush()
+            return self._to_framework_rule_settings_view(row)
+
+    def save_framework_rule_settings(
+        self,
+        *,
+        oversized_revenge_hard: bool,
+        mandatory_setup_hard: bool,
+        stop_widened_hard: bool,
+        shutdown_breach_hard: bool,
+        repeated_critical_threshold: int,
+    ) -> FrameworkRuleSettingsView:
+        if repeated_critical_threshold < 2:
+            raise ValueError("Repeated critical violation threshold must be at least two")
+        with self._sessions.begin() as session:
+            row = session.get(FrameworkRuleSettings, 1)
+            if row is None:
+                row = FrameworkRuleSettings(id=1)
+                session.add(row)
+            row.oversized_revenge_hard = oversized_revenge_hard
+            row.mandatory_setup_hard = mandatory_setup_hard
+            row.stop_widened_hard = stop_widened_hard
+            row.shutdown_breach_hard = shutdown_breach_hard
+            row.repeated_critical_threshold = repeated_critical_threshold
+            session.flush()
+            return self._to_framework_rule_settings_view(row)
+
+    def save_framework_period_review(
+        self,
+        *,
+        account_id: int,
+        cadence: str,
+        period_start: str,
+        period_end: str,
+        psychology_score: str | None,
+        risk_score: str | None,
+        system_score: str | None,
+        readiness_score: str | None,
+        alert_codes: tuple[str, ...],
+        recurring_issues: tuple[str, ...],
+        review_note: str,
+        priority_action: str,
+    ) -> FrameworkPeriodReviewView:
+        if cadence not in {"weekly", "monthly"}:
+            raise ValueError("Period review cadence must be weekly or monthly")
+        try:
+            start = date.fromisoformat(period_start)
+            end = date.fromisoformat(period_end)
+        except ValueError as error:
+            raise ValueError("Period start and end dates must use YYYY-MM-DD") from error
+        if end < start:
+            raise ValueError("Period end must not be before its start")
+        note = self._required_text(review_note, "Period review")
+        action = self._required_text(priority_action, "Priority corrective action")
+        with self._sessions.begin() as session:
+            account = session.get(MT5Account, account_id)
+            if account is None or not account.active:
+                raise ValueError("Approved MT5 account was not found")
+            row = session.scalar(
+                select(FrameworkPeriodReview).where(
+                    FrameworkPeriodReview.mt5_account_id == account_id,
+                    FrameworkPeriodReview.cadence == cadence,
+                    FrameworkPeriodReview.period_start == period_start,
+                    FrameworkPeriodReview.period_end == period_end,
+                )
+            )
+            payload = {
+                "psychology_score": psychology_score,
+                "risk_score": risk_score,
+                "system_score": system_score,
+                "readiness_score": readiness_score,
+                "alert_codes": json.dumps(sorted(set(alert_codes))),
+                "recurring_issues": json.dumps(sorted(set(recurring_issues))),
+                "review_note": note,
+                "priority_action": action,
+            }
+            if row is None:
+                row = FrameworkPeriodReview(
+                    mt5_account_id=account_id,
+                    cadence=cadence,
+                    period_start=period_start,
+                    period_end=period_end,
+                    created_at=datetime.now(timezone.utc).isoformat(),
+                    **payload,
+                )
+                session.add(row)
+            else:
+                for field, value in payload.items():
+                    setattr(row, field, value)
+            session.flush()
+            return self._to_framework_period_review_view(row)
+
+    def list_framework_period_reviews(self, account_id: int, cadence: str | None = None) -> list[FrameworkPeriodReviewView]:
+        with self._sessions() as session:
+            statement = select(FrameworkPeriodReview).where(FrameworkPeriodReview.mt5_account_id == account_id)
+            if cadence is not None:
+                statement = statement.where(FrameworkPeriodReview.cadence == cadence)
+            rows = session.scalars(statement.order_by(FrameworkPeriodReview.period_end.desc(), FrameworkPeriodReview.id.desc())).all()
+            return [self._to_framework_period_review_view(row) for row in rows]
 
     def list_pillar_roadmap_evidence(self, account_id: int) -> list[PillarRoadmapEvidenceView]:
         with self._sessions() as session:
@@ -1291,6 +1371,7 @@ class SQLiteJournalRepository:
             direction=row.direction,
             entry_time=row.entry_time,
             exit_time=row.exit_time,
+            server_utc_offset_minutes=row.server_utc_offset_minutes,
             entry_price=row.entry_price,
             exit_price=row.exit_price,
             volume=row.volume,
@@ -1315,12 +1396,9 @@ class SQLiteJournalRepository:
             risk_policy_id=row.risk_policy_id,
             strategy_profile_id=row.strategy_profile_id,
             strategy_snapshot=SQLiteJournalRepository._strategy_snapshot_from_json(row.strategy_snapshot),
-            system_confirmed=row.system_confirmed,
-            system_failure_codes=tuple(json.loads(row.system_failure_codes)),
-            impulse_violation=row.impulse_violation,
-            revenge_violation=row.revenge_violation,
-            emotional_size_violation=row.emotional_size_violation,
-            stop_widened_violation=row.stop_widened_violation,
+            criterion_grades=dict(json.loads(row.criterion_grades)),
+            violation_codes=tuple(json.loads(row.violation_codes)),
+            hard_rule_codes=tuple(json.loads(row.hard_rule_codes)),
             declared_actual_risk_amount=row.declared_actual_risk_amount,
             post_review_note=row.post_review_note,
             corrective_action=row.corrective_action,
@@ -1336,16 +1414,42 @@ class SQLiteJournalRepository:
             risk_policy_id=row.risk_policy_id,
             strategy_profile_id=row.strategy_profile_id,
             strategy_snapshot=SQLiteJournalRepository._strategy_snapshot_from_json(row.strategy_snapshot),
-            system_confirmed=row.system_confirmed,
-            system_failure_codes=tuple(json.loads(row.system_failure_codes)),
-            impulse_violation=row.impulse_violation,
-            revenge_violation=row.revenge_violation,
-            emotional_size_violation=row.emotional_size_violation,
-            stop_widened_violation=row.stop_widened_violation,
+            criterion_grades=dict(json.loads(row.criterion_grades)),
+            violation_codes=tuple(json.loads(row.violation_codes)),
+            hard_rule_codes=tuple(json.loads(row.hard_rule_codes)),
             declared_actual_risk_amount=row.declared_actual_risk_amount,
             post_review_note=row.post_review_note,
             corrective_action=row.corrective_action,
             archived_at=row.archived_at,
+        )
+
+    @staticmethod
+    def _to_framework_rule_settings_view(row: FrameworkRuleSettings) -> FrameworkRuleSettingsView:
+        return FrameworkRuleSettingsView(
+            row.oversized_revenge_hard,
+            row.mandatory_setup_hard,
+            row.stop_widened_hard,
+            row.shutdown_breach_hard,
+            row.repeated_critical_threshold,
+        )
+
+    @staticmethod
+    def _to_framework_period_review_view(row: FrameworkPeriodReview) -> FrameworkPeriodReviewView:
+        return FrameworkPeriodReviewView(
+            row.id,
+            row.mt5_account_id,
+            row.cadence,
+            row.period_start,
+            row.period_end,
+            row.psychology_score,
+            row.risk_score,
+            row.system_score,
+            row.readiness_score,
+            tuple(json.loads(row.alert_codes)),
+            tuple(json.loads(row.recurring_issues)),
+            row.review_note,
+            row.priority_action,
+            row.created_at,
         )
 
     @staticmethod
@@ -1487,6 +1591,7 @@ class SQLiteJournalRepository:
                 performance.append(
                     TradePerformanceItem(
                         exit_time=trade.exit_time,
+                        server_utc_offset_minutes=trade.server_utc_offset_minutes,
                         position_id=trade.mt5_position_id,
                         symbol=trade.symbol,
                         net_pnl=trade.net_pnl,
@@ -1514,6 +1619,8 @@ class SQLiteJournalRepository:
                 raise ValueError("Approved MT5 account was not found")
             if live_account_balance is not None:
                 account.latest_mt5_balance = _decimal_string(live_account_balance)
+            if positions:
+                account.latest_server_utc_offset_minutes = positions[0].server_utc_offset_minutes
             active_policy = session.scalar(
                 select(AccountRiskPolicy)
                 .where(AccountRiskPolicy.mt5_account_id == account_id, AccountRiskPolicy.active.is_(True))
@@ -1525,8 +1632,6 @@ class SQLiteJournalRepository:
                     "source_updated_at": now,
                     "symbol": position.symbol,
                     "direction": position.direction,
-                    "entry_time": position.entry_time,
-                    "exit_time": position.exit_time,
                     "entry_price": _decimal_string(position.entry_price),
                     "exit_price": _decimal_string(position.exit_price),
                     "volume": _decimal_string(position.volume),
@@ -1536,26 +1641,31 @@ class SQLiteJournalRepository:
                     "fees": _decimal_string(position.fees),
                     "net_pnl": _decimal_string(position.net_pnl),
                 }
-                if position.schema_version >= 2:
-                    values.update(
-                        {
-                            "entry_stop_price": self._optional_decimal_string(position.entry_stop_price),
-                            "entry_target_price": self._optional_decimal_string(position.entry_target_price),
-                            "close_stop_price": self._optional_decimal_string(position.close_stop_price),
-                            "entry_magic_number": self._optional_text(position.entry_magic_number),
-                            "entry_deal_count": position.entry_deal_count,
-                            "exit_reason": self._optional_text(position.exit_reason),
-                            "initial_risk_amount": self._optional_decimal_string(position.initial_risk_amount),
-                            "initial_reward_amount": self._optional_decimal_string(position.initial_reward_amount),
-                        }
-                    )
+                values.update(
+                    {
+                        "entry_stop_price": self._optional_decimal_string(position.entry_stop_price),
+                        "entry_target_price": self._optional_decimal_string(position.entry_target_price),
+                        "close_stop_price": self._optional_decimal_string(position.close_stop_price),
+                        "entry_magic_number": self._optional_text(position.entry_magic_number),
+                        "entry_deal_count": position.entry_deal_count,
+                        "exit_reason": self._optional_text(position.exit_reason),
+                        "initial_risk_amount": self._optional_decimal_string(position.initial_risk_amount),
+                        "initial_reward_amount": self._optional_decimal_string(position.initial_reward_amount),
+                    }
+                )
                 if trade is None:
+                    imported_times = {
+                        "entry_time": normalize_server_timestamp(position.entry_time, position.server_utc_offset_minutes),
+                        "exit_time": normalize_server_timestamp(position.exit_time, position.server_utc_offset_minutes),
+                        "server_utc_offset_minutes": position.server_utc_offset_minutes,
+                    }
                     session.add(
                         Trade(
                             source="mt5",
                             mt5_account_id=account_id,
                             mt5_position_id=position.position_id,
                             auto_risk_policy_id=active_policy.id if active_policy else None,
+                            **imported_times,
                             **values,
                         )
                     )

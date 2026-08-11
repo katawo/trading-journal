@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
-from zoneinfo import ZoneInfo
 
+from trading_journal.application.reporting_time import reporting_date, reporting_datetime
 from trading_journal.infrastructure.sqlite_repository import SQLiteJournalRepository, TradePerformanceItem, normalize_strategy_name
 
 
@@ -90,10 +90,10 @@ class DashboardService:
     def build_report(self, *, start_date: str, end_date: str, account_id: int | None = None) -> DashboardReport:
         settings = self._repository.get_journal_settings()
         account_id = self._single_account_id(account_id)
-        timezone = ZoneInfo(settings.reporting_timezone)
+        time_basis = settings.reporting_time_basis
         start = date.fromisoformat(start_date)
         end = date.fromisoformat(end_date)
-        dated_trades = [(trade, self._trade_date(trade, timezone)) for trade in self._repository.list_trade_performance(account_id)]
+        dated_trades = [(trade, self._trade_date(trade, time_basis)) for trade in self._repository.list_trade_performance(account_id)]
         trades = [trade for trade, trade_date in dated_trades if start <= trade_date <= end]
 
         pnl_total = sum((Decimal(trade.net_pnl) for trade in trades), Decimal("0"))
@@ -114,7 +114,7 @@ class DashboardService:
         strategies: dict[str, tuple[Decimal, Decimal | None]] = {}
         profiles_by_name = {normalize_strategy_name(profile.name): profile for profile in self._repository.list_strategy_profiles()}
         for trade in trades:
-            trade_date = self._trade_date(trade, timezone).isoformat()
+            trade_date = self._trade_date(trade, time_basis).isoformat()
             pnl = Decimal(trade.net_pnl)
             daily[trade_date] = daily.get(trade_date, Decimal("0")) + pnl
             if trade.result_r is not None:
@@ -153,7 +153,7 @@ class DashboardService:
             per_trade.append(
                 TradePerformancePoint(
                     sequence=sequence,
-                    exit_time=trade.exit_time,
+                    exit_time=reporting_datetime(trade.exit_time, trade.server_utc_offset_minutes, time_basis).isoformat(),
                     position_id=trade.position_id,
                     symbol=trade.symbol,
                     net_pnl=_decimal_string(trade_pnl),
@@ -239,16 +239,19 @@ class DashboardService:
     def earliest_trade_date(self, account_id: int | None = None) -> date | None:
         account_id = self._single_account_id(account_id)
         settings = self._repository.get_journal_settings()
-        timezone = ZoneInfo(settings.reporting_timezone)
-        dates = [self._trade_date(trade, timezone) for trade in self._repository.list_trade_performance(account_id)]
+        dates = [self._trade_date(trade, settings.reporting_time_basis) for trade in self._repository.list_trade_performance(account_id)]
         return min(dates) if dates else None
 
+    def current_report_date(self, account_id: int) -> date:
+        """Return today in the same clock used to group this account's trades."""
+        settings = self._repository.get_journal_settings()
+        account = next((item for item in self._repository.list_mt5_accounts() if item.id == account_id), None)
+        offset = 0 if account is None or account.latest_server_utc_offset_minutes is None else account.latest_server_utc_offset_minutes
+        return reporting_datetime(datetime.now(timezone.utc).isoformat(), offset, settings.reporting_time_basis).date()
+
     @staticmethod
-    def _trade_date(trade: TradePerformanceItem, reporting_timezone: ZoneInfo) -> date:
-        timestamp = datetime.fromisoformat(trade.exit_time.replace("Z", "+00:00"))
-        if timestamp.tzinfo is None:
-            return timestamp.replace(tzinfo=reporting_timezone).date()
-        return timestamp.astimezone(reporting_timezone).date()
+    def _trade_date(trade: TradePerformanceItem, reporting_time_basis: str) -> date:
+        return reporting_date(trade.exit_time, trade.server_utc_offset_minutes, reporting_time_basis)
 
     def _single_account_id(self, account_id: int | None) -> int:
         if account_id is not None:

@@ -8,20 +8,22 @@ import pytest
 
 from trading_journal.application.framework import FrameworkService, ROADMAP_ITEMS
 from trading_journal.domain.models import MT5PositionExport
-from trading_journal.infrastructure.sqlite_repository import SQLiteJournalRepository
+from trading_journal.infrastructure.sqlite_repository import (
+    ASSESSMENT_CRITERIA,
+    JournalDatabaseResetRequiredError,
+    SQLiteJournalRepository,
+)
+
+
+ALL_PASS = {criterion: "pass" for criterion in ASSESSMENT_CRITERIA}
 
 
 def _repository(tmp_path):
     repository = SQLiteJournalRepository(tmp_path / "journal.db")
     repository.initialize()
-    repository.configure_journal(base_currency="USD", reporting_timezone="UTC")
+    repository.configure_journal(reporting_time_basis="utc")
     repository.register_mt5_account(
-        display_name="Primary",
-        login="123456",
-        broker_server="DemoBroker-Live",
-        account_currency="USD",
-        export_file_path="",
-        opening_balance="1000",
+        display_name="Primary", login="123456", broker_server="DemoBroker-Live", account_currency="USD", export_file_path="", opening_balance="1000"
     )
     account = repository.find_active_mt5_account("123456", "DemoBroker-Live")
     assert account is not None
@@ -46,14 +48,14 @@ def _policy(repository: SQLiteJournalRepository, account_id: int):
 def _strategy(repository: SQLiteJournalRepository):
     return repository.save_strategy_profile(
         name="Trend continuation",
-        description="Trade a pullback only with a confirmed continuation.",
+        description="Trade a confirmed pullback continuation.",
         backtest_start_date="2024-01-01",
         backtest_end_date="2025-01-01",
         backtest_trade_count=120,
         backtest_win_rate="52",
         backtest_expectancy_r="0.25",
         backtest_net_r="30",
-        backtest_notes="Representative sample including costs.",
+        backtest_notes="Representative sample including modeled costs.",
     )
 
 
@@ -61,29 +63,26 @@ def _import_position(
     repository: SQLiteJournalRepository,
     account_id: int,
     *,
-    position_id="1001",
-    net_pnl="20",
-    exit_time="2026-08-10T09:00:00+00:00",
-    schema_version=1,
-    initial_risk_amount=None,
-    initial_reward_amount=None,
-    entry_stop_price=None,
-    close_stop_price=None,
-    entry_magic_number=None,
-    direction="long",
-    account_balance=None,
+    position_id: str = "1001",
+    net_pnl: str = "20",
+    exit_time: str = "2026-08-10T09:00:00+00:00",
+    initial_risk_amount: str | None = None,
+    initial_reward_amount: str | None = None,
+    entry_stop_price: str | None = None,
+    close_stop_price: str | None = None,
+    account_balance: str | None = None,
 ) -> int:
     repository.upsert_mt5_positions(
         account_id,
         [
             MT5PositionExport(
-                schema_version=schema_version,
+                schema_version=3,
                 account_login="123456",
                 broker_server="DemoBroker-Live",
                 account_currency="USD",
                 position_id=position_id,
                 symbol="XAUUSD",
-                direction=direction,
+                direction="long",
                 entry_time="2026-08-10T08:00:00+00:00",
                 exit_time=exit_time,
                 entry_price="3300",
@@ -98,768 +97,307 @@ def _import_position(
                 initial_reward_amount=initial_reward_amount,
                 entry_stop_price=entry_stop_price,
                 close_stop_price=close_stop_price,
-                entry_magic_number=entry_magic_number,
-                entry_deal_count=1 if schema_version >= 2 else None,
+                entry_deal_count=1,
                 account_balance=account_balance,
             )
         ],
         "positions.csv",
         f"hash-{position_id}",
-        live_account_balance=Decimal(account_balance) if account_balance is not None else None,
+        live_account_balance=Decimal(account_balance) if account_balance else None,
     )
     return next(item.id for item in repository.list_closed_trades_for_review(account_id) if item.position_id == position_id)
 
 
-def _review(repository, account_id, trade_id, policy, strategy, *, actual_risk="10", system_confirmed=True, **violations):
+def _review(
+    repository: SQLiteJournalRepository,
+    account_id: int,
+    trade_id: int,
+    policy,
+    strategy,
+    *,
+    grades: dict[str, str] | None = None,
+    tags: tuple[str, ...] = (),
+    hard_rules: tuple[str, ...] = (),
+    actual_risk: str | None = "10",
+    action: str | None = None,
+):
     return repository.save_post_trade_assessment(
         account_id=account_id,
         trade_id=trade_id,
         risk_policy_id=policy.id,
         strategy_profile_id=strategy.id,
-        system_confirmed=system_confirmed,
-        system_failure_codes=() if system_confirmed else ("entry_trigger",),
-        impulse_violation=violations.get("impulse", False),
-        revenge_violation=violations.get("revenge", False),
-        emotional_size_violation=violations.get("emotional_size", False),
-        stop_widened_violation=violations.get("stop_widened", False),
+        criterion_grades=ALL_PASS if grades is None else grades,
+        violation_codes=tags,
+        hard_rule_codes=hard_rules,
         declared_actual_risk_amount=actual_risk,
-        post_review_note="Reviewed against the process, independent of P&L.",
-        corrective_action=violations.get("corrective_action"),
+        post_review_note="Reviewed independently of trade P&L.",
+        corrective_action=action,
     )
 
 
-def test_risk_monitoring_includes_every_imported_closed_position(tmp_path) -> None:
+def test_full_assessment_requires_every_explicit_grade(tmp_path) -> None:
     repository, account_id = _repository(tmp_path)
-    _policy(repository, account_id)
-    _import_position(repository, account_id, net_pnl="-20")
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    trade_id = _import_position(repository, account_id)
 
-    snapshot = FrameworkService(repository).risk_snapshot(account_id, now=datetime(2026, 8, 10, tzinfo=timezone.utc))
-
-    assert snapshot.daily_r == "-1"
-    assert snapshot.state == "clear"
-    assert "1 closed position(s) still need a full review" in snapshot.message
+    with pytest.raises(ValueError, match="Every three-pillar criterion"):
+        _review(repository, account_id, trade_id, policy, strategy, grades={"rule_adherence": "pass"})
 
 
-def test_risk_monitoring_uses_chronological_trades_and_maximum_drawdown(tmp_path) -> None:
+def test_failed_criterion_requires_reason_and_corrective_action(tmp_path) -> None:
     repository, account_id = _repository(tmp_path)
-    _policy(repository, account_id)
-    _import_position(repository, account_id, position_id="profit", net_pnl="100", exit_time="2026-08-08T09:00:00+00:00")
-    _import_position(repository, account_id, position_id="loss", net_pnl="-150", exit_time="2026-08-09T09:00:00+00:00")
-    _import_position(repository, account_id, position_id="recovery", net_pnl="200", exit_time="2026-08-10T09:00:00+00:00")
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    trade_id = _import_position(repository, account_id)
+    grades = {**ALL_PASS, "entry_fidelity": "fail"}
 
-    snapshot = FrameworkService(repository).risk_snapshot(account_id, now=datetime(2026, 8, 11, tzinfo=timezone.utc))
+    with pytest.raises(ValueError, match="reason tag"):
+        _review(repository, account_id, trade_id, policy, strategy, grades=grades)
+    with pytest.raises(ValueError, match="corrective action"):
+        _review(repository, account_id, trade_id, policy, strategy, grades=grades, tags=("fomo_or_chase",))
 
-    assert snapshot.current_drawdown_percent == "0"
-    assert snapshot.max_drawdown_percent == "13.63636363636363636363636364"
-    assert snapshot.consecutive_losses == 0
-    assert snapshot.state == "stop"
+    assessment = _review(repository, account_id, trade_id, policy, strategy, grades=grades, tags=("fomo_or_chase",), action="Wait for the entry trigger.")
+    assert assessment.criterion_grades["entry_fidelity"] == "fail"
 
 
-def test_risk_monitoring_counts_the_latest_loss_streak(tmp_path) -> None:
+def test_trade_score_uses_documented_weights_and_keeps_raw_scores(tmp_path) -> None:
     repository, account_id = _repository(tmp_path)
-    _policy(repository, account_id)
-    _import_position(repository, account_id, position_id="profit", net_pnl="100", exit_time="2026-08-08T09:00:00+00:00")
-    _import_position(repository, account_id, position_id="loss", net_pnl="-50", exit_time="2026-08-09T09:00:00+00:00")
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    trade_id = _import_position(repository, account_id)
+    grades = {**ALL_PASS, "rule_adherence": "partial"}
+    _review(repository, account_id, trade_id, policy, strategy, grades=grades, tags=("fomo_or_chase",), action="Use the written rules.")
 
-    snapshot = FrameworkService(repository).risk_snapshot(account_id, now=datetime(2026, 8, 11, tzinfo=timezone.utc))
+    score = FrameworkService(repository).trade_process_scores(account_id)[0]
 
-    assert snapshot.current_drawdown_percent == "4.545454545454545454545454545"
-    assert snapshot.max_drawdown_percent == "4.545454545454545454545454545"
-    assert snapshot.consecutive_losses == 1
+    assert score.psychology_score == "82.5"
+    assert score.risk_score == score.system_score == "100"
+    assert score.overall_score == "94.16666666666666666666666667"
+    assert score.process_status == "PASS"
+    assert score.classification == "Good Win"
 
 
-def test_post_trade_assessment_is_attached_directly_to_one_imported_position(tmp_path) -> None:
+def test_hard_rule_fails_process_even_for_a_profitable_trade(tmp_path) -> None:
     repository, account_id = _repository(tmp_path)
-    policy = _policy(repository, account_id)
-    strategy = _strategy(repository)
-    trade_id = _import_position(repository, account_id, net_pnl="-15")
-
-    review = _review(repository, account_id, trade_id, policy, strategy, actual_risk="5")
-    snapshot = FrameworkService(repository).risk_snapshot(account_id, now=datetime(2026, 8, 10, tzinfo=timezone.utc))
-
-    assert review.trade_id == trade_id
-    assert repository.get_post_trade_assessment_for_trade(trade_id) == review
-    assert snapshot.daily_r == "-3"
-    assert snapshot.state == "stop"
-
-
-def test_post_trade_review_rejects_another_accounts_position(tmp_path) -> None:
-    repository, first_account_id = _repository(tmp_path)
-    policy = _policy(repository, first_account_id)
-    strategy = _strategy(repository)
-    repository.register_mt5_account(
-        display_name="Secondary",
-        login="654321",
-        broker_server="DemoBroker-Live",
-        account_currency="USD",
-        export_file_path="",
-        opening_balance="1000",
-    )
-    second = repository.find_active_mt5_account("654321", "DemoBroker-Live")
-    assert second is not None
-    trade_id = _import_position(repository, second.id)
-
-    with pytest.raises(ValueError, match="not found for this account"):
-        _review(repository, first_account_id, trade_id, policy, strategy)
-
-
-def test_reviewed_trade_scores_are_available_before_the_roadmap_sample_is_complete(tmp_path) -> None:
-    repository, account_id = _repository(tmp_path)
-    policy = _policy(repository, account_id)
-    strategy = _strategy(repository)
-    _review(repository, account_id, _import_position(repository, account_id), policy, strategy)
-
-    scores = FrameworkService(repository).pillar_scores(account_id)
-
-    assert all(score.score == "100" for score in scores)
-    assert all(score.reviewed_count == 1 for score in scores)
-    assert all(score.unreviewed_count == 0 for score in scores)
-    assert all("Roadmap evidence still requires 10+ reviewed trades" in score.detail for score in scores)
-
-
-def test_only_real_loss_sl_losses_receive_a_risk_only_auto_review(tmp_path) -> None:
-    repository, account_id = _repository(tmp_path)
-    _policy(repository, account_id)
-    _import_position(repository, account_id, position_id="winner", net_pnl="200")
-    _import_position(repository, account_id, position_id="loser", net_pnl="-20")
-
-    service = FrameworkService(repository)
-    trade_scores = service.trade_process_scores(account_id)
-    pillar_scores = service.pillar_scores(account_id)
-
-    by_trade = {score.trade_id: score for score in trade_scores}
-    winner = next(score for score in by_trade.values() if score.auto_risk.real_loss_sl_amount is None)
-    loser = next(score for score in by_trade.values() if score.auto_risk.real_loss_sl_amount is not None)
-
-    assert winner.assessment_state == "not_scored"
-    assert winner.overall_score is None
-    assert winner.psychology_score is winner.risk_score is winner.system_score is None
-    assert loser.assessment_state == "auto_reviewed"
-    assert loser.risk_score == "0"
-    assert loser.psychology_score is loser.system_score is loser.overall_score is None
-    assert all(score.score is None for score in pillar_scores)
-    risk = next(score for score in pillar_scores if score.pillar == "risk")
-    assert risk.reviewed_total == 0 and risk.unreviewed_total == 1
-    assert risk.auto_reviewed_total == 1
-    assert all(score.reviewed_total == 0 for score in pillar_scores)
-
-
-def test_mt5_initial_risk_is_automatically_checked_without_using_pnl(tmp_path) -> None:
-    repository, account_id = _repository(tmp_path)
-    _policy(repository, account_id)
-    trade_id = _import_position(
-        repository,
-        account_id,
-        schema_version=2,
-        net_pnl="200",
-        initial_risk_amount="10",
-        initial_reward_amount="20",
-        entry_stop_price="3290",
-        close_stop_price="3280",
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    trade_id = _import_position(repository, account_id, net_pnl="40")
+    grades = {**ALL_PASS, "setup_validity": "fail"}
+    _review(
+        repository, account_id, trade_id, policy, strategy, grades=grades,
+        tags=("mandatory_setup_absent",), hard_rules=("mandatory_setup_absent",), action="Do not take this setup again.",
     )
 
-    score = next(item for item in FrameworkService(repository).trade_process_scores(account_id) if item.trade_id == trade_id)
+    score = FrameworkService(repository).trade_process_scores(account_id)[0]
 
-    assert score.assessment_state == "auto_reviewed"
-    assert score.risk_score == "100"
-    assert score.overall_score is None
-    assert score.auto_risk.state == "within_policy"
-    assert score.auto_risk.initial_rr == "2"
-    assert score.auto_risk.observed_stop_widened is True
-
-
-def test_review_register_risk_amounts_keep_policy_and_actual_risk_separate(tmp_path) -> None:
-    repository, account_id = _repository(tmp_path)
-    policy = _policy(repository, account_id)
-    strategy = _strategy(repository)
-    trade_id = _import_position(repository, account_id, schema_version=2, initial_risk_amount="8")
-
-    automatic_score = next(item for item in FrameworkService(repository).trade_process_scores(account_id) if item.trade_id == trade_id)
-
-    assert automatic_score.policy_risk_amount == "10"
-    assert automatic_score.actual_risk_amount == "8"
-
-    _review(repository, account_id, trade_id, policy, strategy, actual_risk="6")
-    reviewed_score = next(item for item in FrameworkService(repository).trade_process_scores(account_id) if item.trade_id == trade_id)
-
-    assert reviewed_score.policy_risk_amount == "10"
-    assert reviewed_score.actual_risk_amount == "6"
+    assert score.system_score == "70"
+    assert score.overall_score is not None
+    assert score.process_status == "FAIL"
+    assert score.system_hard_block
+    assert score.classification == "Bad Win"
 
 
-def test_unconfigured_automatic_risk_evidence_remains_in_needs_review(tmp_path) -> None:
-    repository, account_id = _repository(tmp_path)
-    trade_id = _import_position(repository, account_id, schema_version=2, initial_risk_amount="10")
-
-    score = next(item for item in FrameworkService(repository).trade_process_scores(account_id) if item.trade_id == trade_id)
-
-    assert score.assessment_state == "not_scored"
-    assert score.risk_score is None
-    assert score.auto_risk.state == "unavailable"
-    assert score.auto_risk.risk_basis == "specific_preset_sl"
-
-
-def test_automatic_risk_alert_uses_initial_risk_not_the_trade_result(tmp_path) -> None:
+def test_automatic_risk_evidence_is_advisory_and_never_creates_a_pillar_score(tmp_path) -> None:
     repository, account_id = _repository(tmp_path)
     _policy(repository, account_id)
-    trade_id = _import_position(repository, account_id, schema_version=2, net_pnl="200", initial_risk_amount="10.01")
-
-    score = next(item for item in FrameworkService(repository).trade_process_scores(account_id) if item.trade_id == trade_id)
-
-    assert score.assessment_state == "auto_reviewed"
-    assert score.risk_score == "0"
-    assert score.auto_risk.state == "over_policy"
-    assert score.overall_score is None
-
-
-def test_loss_without_mt5_initial_risk_is_marked_as_real_loss_sl(tmp_path) -> None:
-    repository, account_id = _repository(tmp_path)
-    _policy(repository, account_id)
-    trade_id = _import_position(repository, account_id, schema_version=2, net_pnl="-8.50")
-
-    score = next(item for item in FrameworkService(repository).trade_process_scores(account_id) if item.trade_id == trade_id)
-
-    assert score.assessment_state == "auto_reviewed"
-    assert score.risk_score == "100"
-    assert score.overall_score is None
-    assert score.auto_risk.state == "within_policy"
-    assert score.auto_risk.risk_basis == "real_loss_sl"
-    assert score.auto_risk.real_loss_sl_amount == "8.5"
-    assert score.auto_risk.specific_preset_sl_amount is None
-    assert "not an MT5-recorded initial stop" in score.auto_risk.detail
-
-
-def test_review_uses_real_loss_sl_when_actual_risk_is_not_declared(tmp_path) -> None:
-    repository, account_id = _repository(tmp_path)
-    policy = _policy(repository, account_id)
-    strategy = _strategy(repository)
-    trade_id = _import_position(repository, account_id, schema_version=2, net_pnl="-8")
-    _review(repository, account_id, trade_id, policy, strategy, actual_risk=None)
-
-    score = next(item for item in FrameworkService(repository).trade_process_scores(account_id) if item.trade_id == trade_id)
-
-    assert score.risk_score == "100"
-
-
-def test_real_loss_sl_auto_review_never_advances_the_roadmap(tmp_path) -> None:
-    repository, account_id = _repository(tmp_path)
-    _policy(repository, account_id)
-    _import_position(repository, account_id, schema_version=2, net_pnl="-8")
-
-    service = FrameworkService(repository)
-    risk = next(item for item in service.pillar_scores(account_id) if item.pillar == "risk")
-    roadmap = {item.pillar: item for item in service.roadmap_status(account_id)}
-
-    assert risk.score is None
-    assert risk.reviewed_total == 0
-    assert risk.auto_reviewed_total == 1
-    assert roadmap["risk"].gate == "Complete the current level evidence items."
-
-
-def test_profitable_trade_without_an_entry_stop_uses_live_account_balance_sl(tmp_path) -> None:
-    repository, account_id = _repository(tmp_path)
-    _policy(repository, account_id)
-    trade_id = _import_position(
-        repository,
-        account_id,
-        schema_version=3,
-        net_pnl="200",
-        account_balance="1000",
-    )
+    trade_id = _import_position(repository, account_id, initial_risk_amount="8", initial_reward_amount="16", entry_stop_price="3290")
 
     service = FrameworkService(repository)
     score = next(item for item in service.trade_process_scores(account_id) if item.trade_id == trade_id)
-    snapshot = service.risk_snapshot(account_id, now=datetime(2026, 8, 10, tzinfo=timezone.utc))
+    pillars = service.pillar_scores(account_id)
 
-    assert score.assessment_state == "auto_reviewed"
-    assert score.risk_score == "0"
-    assert score.overall_score is None
-    assert score.auto_risk.risk_basis == "live_account_balance_sl"
-    assert score.auto_risk.live_account_balance_sl_amount == "1000"
-    assert snapshot.daily_r == "0.2"
+    assert score.assessment_state == "automatic_evidence"
+    assert score.auto_risk.state == "within_policy"
+    assert score.risk_score is score.overall_score is None
+    assert all(item.score is None for item in pillars)
 
 
-def test_latest_live_account_balance_recalculates_eligible_auto_review_and_r_monitoring(tmp_path) -> None:
+def test_risk_snapshot_clears_an_expired_daily_limit_breach(tmp_path) -> None:
     repository, account_id = _repository(tmp_path)
     _policy(repository, account_id)
-    trade_id = _import_position(
-        repository,
-        account_id,
-        schema_version=3,
-        net_pnl="200",
-        account_balance="1000",
-    )
-    _import_position(
-        repository,
-        account_id,
-        position_id="1001",
-        schema_version=3,
-        net_pnl="200",
-        account_balance="2000",
-    )
-
+    _import_position(repository, account_id, position_id="breach-1", net_pnl="-20", exit_time="2026-08-01T09:00:00+00:00")
+    _import_position(repository, account_id, position_id="breach-2", net_pnl="-20", exit_time="2026-08-01T10:00:00+00:00")
     service = FrameworkService(repository)
-    score = next(item for item in service.trade_process_scores(account_id) if item.trade_id == trade_id)
-    snapshot = service.risk_snapshot(account_id, now=datetime(2026, 8, 10, tzinfo=timezone.utc))
 
-    assert score.auto_risk.live_account_balance_sl_amount == "2000"
-    assert snapshot.daily_r == "0.1"
+    breached_day = service.risk_snapshot(account_id, now=datetime(2026, 8, 1, 12, tzinfo=timezone.utc))
+    later_day = service.risk_snapshot(account_id, now=datetime(2026, 8, 3, 12, tzinfo=timezone.utc))
+
+    assert breached_day.state == "stop"
+    assert later_day.state == "clear"
 
 
-def test_specific_preset_sl_takes_precedence_over_live_account_balance_sl(tmp_path) -> None:
+def test_real_loss_and_live_balance_evidence_have_explicit_confidence(tmp_path) -> None:
     repository, account_id = _repository(tmp_path)
     _policy(repository, account_id)
-    trade_id = _import_position(
-        repository,
-        account_id,
-        schema_version=3,
-        net_pnl="200",
-        initial_risk_amount="10",
-        entry_stop_price="3290",
-        account_balance="1000",
-    )
+    loser = _import_position(repository, account_id, position_id="loss", net_pnl="-8")
+    winner = _import_position(repository, account_id, position_id="win", net_pnl="8", account_balance="1000")
+    scores = {item.trade_id: item for item in FrameworkService(repository).trade_process_scores(account_id)}
 
-    score = next(item for item in FrameworkService(repository).trade_process_scores(account_id) if item.trade_id == trade_id)
-
-    assert score.assessment_state == "auto_reviewed"
-    assert score.risk_score == "100"
-    assert score.auto_risk.risk_basis == "specific_preset_sl"
-    assert score.auto_risk.specific_preset_sl_amount == "10"
-    assert score.auto_risk.live_account_balance_sl_amount is None
+    assert scores[loser].auto_risk.risk_basis == "real_loss_sl"
+    assert scores[loser].auto_risk.confidence == "inferred"
+    assert scores[winner].auto_risk.risk_basis == "live_account_balance_sl"
+    assert scores[winner].auto_risk.confidence == "conservative"
 
 
-def test_recorded_entry_stop_without_calculated_risk_does_not_use_live_account_balance_sl(tmp_path) -> None:
+def test_period_scores_use_the_documented_components(tmp_path) -> None:
     repository, account_id = _repository(tmp_path)
-    _policy(repository, account_id)
-    trade_id = _import_position(
-        repository,
-        account_id,
-        schema_version=3,
-        net_pnl="20",
-        entry_stop_price="3290",
-        account_balance="1000",
-    )
-
-    score = next(item for item in FrameworkService(repository).trade_process_scores(account_id) if item.trade_id == trade_id)
-
-    assert score.assessment_state == "not_scored"
-    assert score.auto_risk.risk_basis == "unavailable"
-    assert score.auto_risk.live_account_balance_sl_amount is None
-
-
-def test_review_uses_mt5_initial_risk_when_actual_risk_is_not_declared(tmp_path) -> None:
-    repository, account_id = _repository(tmp_path)
-    policy = _policy(repository, account_id)
-    strategy = _strategy(repository)
-    trade_id = _import_position(repository, account_id, schema_version=2, initial_risk_amount="10")
-    _review(repository, account_id, trade_id, policy, strategy, actual_risk=None)
-
-    score = next(item for item in FrameworkService(repository).trade_process_scores(account_id) if item.trade_id == trade_id)
-
-    assert score.risk_score == "100"
-
-
-def test_review_uses_its_attached_policy_risk_when_no_sl_source_or_actual_risk_exists(tmp_path) -> None:
-    repository, account_id = _repository(tmp_path)
-    policy = _policy(repository, account_id)
-    strategy = _strategy(repository)
-    trade_id = _import_position(repository, account_id, schema_version=1, net_pnl="20")
-    _review(repository, account_id, trade_id, policy, strategy, actual_risk=None)
-
-    score = next(item for item in FrameworkService(repository).trade_process_scores(account_id) if item.trade_id == trade_id)
-
-    assert score.risk_score == "100"
-
-
-def test_standard_risk_normalizes_dashboard_r_while_maximum_risk_controls_compliance(tmp_path) -> None:
-    repository, account_id = _repository(tmp_path)
-    policy = repository.save_account_risk_policy(
-        account_id=account_id,
-        standard_risk_per_trade_percent="0.5",
-        maximum_risk_per_trade_percent="1",
-        daily_loss_limit_r="2",
-        weekly_loss_limit_r="4",
-        max_drawdown_percent="10",
-        max_open_risk_r="1",
-        max_consecutive_losses=3,
-        minimum_rr="1.5",
-        correlation_policy=None,
-    )
-    trade_id = _import_position(repository, account_id, schema_version=2, initial_risk_amount="8")
-
-    imported = {trade.position_id: trade for trade in repository.list_trades()}["1001"]
-    score = next(item for item in FrameworkService(repository).trade_process_scores(account_id) if item.trade_id == trade_id)
-
-    assert policy.standard_risk_per_trade_percent == "0.5"
-    assert policy.maximum_risk_per_trade_percent == "1"
-    assert imported.effective_risk == "5.0"
-    assert imported.result_r == "4"
-    assert score.policy_risk_amount == "10"
-    assert score.actual_risk_amount == "8"
-    assert score.assessment_state == "auto_reviewed"
-    assert score.risk_score == "100"
-
-
-def test_risk_policy_rejects_a_maximum_below_standard_risk(tmp_path) -> None:
-    repository, account_id = _repository(tmp_path)
-
-    with pytest.raises(ValueError, match="at least the standard risk"):
-        repository.save_account_risk_policy(
-            account_id=account_id,
-            standard_risk_per_trade_percent="1",
-            maximum_risk_per_trade_percent="0.5",
-            daily_loss_limit_r="2",
-            weekly_loss_limit_r="4",
-            max_drawdown_percent="10",
-            max_open_risk_r="1",
-            max_consecutive_losses=3,
-            minimum_rr="1.5",
-            correlation_policy=None,
-        )
-
-
-def test_risk_snapshot_uses_the_saved_reviews_policy_risk_after_a_policy_change(tmp_path) -> None:
-    repository, account_id = _repository(tmp_path)
-    first_policy = _policy(repository, account_id)
-    strategy = _strategy(repository)
-    trade_id = _import_position(repository, account_id, schema_version=1, net_pnl="20")
-    _review(repository, account_id, trade_id, first_policy, strategy, actual_risk=None)
-    repository.save_account_risk_policy(
-        account_id=account_id,
-        standard_risk_per_trade_percent="0.5",
-        maximum_risk_per_trade_percent="0.5",
-        daily_loss_limit_r="2",
-        weekly_loss_limit_r="4",
-        max_drawdown_percent="10",
-        max_open_risk_r="1",
-        max_consecutive_losses=3,
-        minimum_rr="1.5",
-        correlation_policy=None,
-    )
-
-    snapshot = FrameworkService(repository).risk_snapshot(account_id, now=datetime(2026, 8, 10, tzinfo=timezone.utc))
-
-    assert snapshot.daily_r == "2"
-
-
-def test_non_positive_live_balance_is_not_used_as_an_sl_source(tmp_path) -> None:
-    repository, account_id = _repository(tmp_path)
-    _policy(repository, account_id)
-    trade_id = _import_position(
-        repository,
-        account_id,
-        schema_version=3,
-        net_pnl="20",
-        account_balance="0",
-    )
-
-    score = next(item for item in FrameworkService(repository).trade_process_scores(account_id) if item.trade_id == trade_id)
-
-    assert score.assessment_state == "not_scored"
-    assert score.auto_risk.risk_basis == "unavailable"
-    assert score.auto_risk.live_account_balance_sl_amount is None
-
-
-def test_automatic_risk_review_retains_its_first_imported_policy_version(tmp_path) -> None:
-    repository, account_id = _repository(tmp_path)
-    first_policy = _policy(repository, account_id)
-    trade_id = _import_position(repository, account_id, schema_version=2, initial_risk_amount="10")
-    repository.save_account_risk_policy(
-        account_id=account_id,
-        standard_risk_per_trade_percent="0.5",
-        maximum_risk_per_trade_percent="0.5",
-        daily_loss_limit_r="2",
-        weekly_loss_limit_r="4",
-        max_drawdown_percent="10",
-        max_open_risk_r="1",
-        max_consecutive_losses=3,
-        minimum_rr="1.5",
-        correlation_policy=None,
-    )
-
-    score = next(item for item in FrameworkService(repository).trade_process_scores(account_id) if item.trade_id == trade_id)
-
-    assert score.auto_risk.policy_version == first_policy.version
-    assert score.risk_score == "100"
-
-
-def test_mt5_magic_number_maps_a_strategy_without_confirming_its_setup(tmp_path) -> None:
-    repository, account_id = _repository(tmp_path)
-    strategy = _strategy(repository)
-    repository.save_strategy_profile(
-        name=strategy.name,
-        description=strategy.description,
-        backtest_start_date=strategy.backtest_start_date,
-        backtest_end_date=strategy.backtest_end_date,
-        backtest_trade_count=strategy.backtest_trade_count,
-        backtest_win_rate=strategy.backtest_win_rate,
-        backtest_expectancy_r=strategy.backtest_expectancy_r,
-        backtest_net_r=strategy.backtest_net_r,
-        backtest_notes=strategy.backtest_notes,
-        magic_numbers="4242",
-        strategy_id=strategy.id,
-    )
-    trade_id = _import_position(repository, account_id, schema_version=2, entry_magic_number="4242")
-
-    score = next(item for item in FrameworkService(repository).trade_process_scores(account_id) if item.trade_id == trade_id)
-
-    assert score.mapped_strategy is not None
-    assert score.mapped_strategy.id == strategy.id
-    assert score.assessment_state == "not_scored"
-
-
-def test_review_creates_score_and_unreviewed_import_is_excluded_from_average(tmp_path) -> None:
-    repository, account_id = _repository(tmp_path)
-    policy = _policy(repository, account_id)
-    strategy = _strategy(repository)
-    reviewed_trade_id = _import_position(repository, account_id, position_id="reviewed")
-    _import_position(repository, account_id, position_id="unreviewed")
-    _review(repository, account_id, reviewed_trade_id, policy, strategy)
-
-    service = FrameworkService(repository)
-    trade_scores = {score.trade_id: score for score in service.trade_process_scores(account_id)}
-    scores = service.pillar_scores(account_id)
-
-    assert trade_scores[reviewed_trade_id].assessment_state == "reviewed"
-    assert trade_scores[reviewed_trade_id].overall_score == "100"
-    assert all(score.score == "100" for score in scores)
-    assert all(score.reviewed_count == 1 and score.unreviewed_count == 1 for score in scores)
-
-
-def test_rebased_balance_recalculates_historical_risk_score(tmp_path) -> None:
-    repository, account_id = _repository(tmp_path)
-    policy = _policy(repository, account_id)
-    strategy = _strategy(repository)
-    for sequence in range(10):
-        trade_id = _import_position(repository, account_id, position_id=f"score-{sequence}", net_pnl="0")
-        _review(repository, account_id, trade_id, policy, strategy, actual_risk="10")
-
-    before = {item.pillar: item for item in FrameworkService(repository).pillar_scores(account_id)}["risk"]
-    repository.register_mt5_account(
-        display_name="Primary",
-        login="123456",
-        broker_server="DemoBroker-Live",
-        account_currency="USD",
-        export_file_path="",
-        opening_balance="500",
-    )
-    after = {item.pillar: item for item in FrameworkService(repository).pillar_scores(account_id)}["risk"]
-
-    assert before.score == "100"
-    assert after.score == "30"
-
-
-def test_system_score_remains_separate_from_stop_discipline(tmp_path) -> None:
-    repository, account_id = _repository(tmp_path)
-    policy = _policy(repository, account_id)
-    strategy = _strategy(repository)
-    for sequence in range(10):
-        trade_id = _import_position(repository, account_id, position_id=f"review-{sequence}")
-        _review(repository, account_id, trade_id, policy, strategy, stop_widened=sequence == 0)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    for index in range(20):
+        trade_id = _import_position(repository, account_id, position_id=f"trade-{index}", exit_time=f"2026-08-{index + 1:02d}T09:00:00+00:00")
+        _review(repository, account_id, trade_id, policy, strategy)
 
     scores = {item.pillar: item for item in FrameworkService(repository).pillar_scores(account_id)}
 
-    assert scores["risk"].score == "97"
-    assert scores["system"].score == "100"
+    assert all(item.score == "100" for item in scores.values())
+    assert scores["psychology"].component_scores[-1] == ("Post-loss discipline", "100")
+    assert scores["system"].component_scores[-1] == ("Edge evidence", "100")
 
 
-def test_roadmap_requires_post_trade_evidence_before_execution_level(tmp_path) -> None:
+def test_repeated_critical_breaches_cap_numeric_score_and_fail_pillar(tmp_path) -> None:
     repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    for index in range(2):
+        trade_id = _import_position(repository, account_id, position_id=f"trade-{index}")
+        _review(repository, account_id, trade_id, policy, strategy, tags=("stop_widened",), hard_rules=("stop_widened",), action="Do not widen stops.")
+
+    risk = {item.pillar: item for item in FrameworkService(repository).pillar_scores(account_id)}["risk"]
+
+    assert risk.hard_block
+    assert risk.score == "59"
+    assert risk.status == "fail"
+
+
+def test_weekly_period_review_captures_scores_and_resolves_repeated_cap(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    for index in range(2):
+        trade_id = _import_position(repository, account_id, position_id=f"trade-{index}", exit_time=f"2026-08-0{index + 3}T09:00:00+00:00")
+        _review(repository, account_id, trade_id, policy, strategy, tags=("stop_widened",), hard_rules=("stop_widened",), action="Do not widen stops.")
+
     service = FrameworkService(repository)
-    for level in (1, 2):
-        for item_key, _ in ROADMAP_ITEMS["psychology"][level]:
-            repository.save_pillar_roadmap_evidence(
-                pillar="psychology",
-                level=level,
-                item_key=item_key,
-                completed=True,
-                evidence_note="Recorded in the local journal.",
-            )
-
-    level_three = {item.pillar: item for item in service.roadmap_status(account_id)}["psychology"]
-
-    assert level_three.current_level == 3
-    assert not level_three.can_complete_current_level
-    assert "20 post-trade reviews" in level_three.gate
-
-
-def test_unreviewed_imports_do_not_unlock_a_roadmap_gate(tmp_path) -> None:
-    repository, account_id = _repository(tmp_path)
-    service = FrameworkService(repository)
-    for sequence in range(20):
-        _import_position(repository, account_id, position_id=f"unreviewed-{sequence}")
-    for level in (1, 2):
-        for item_key, _ in ROADMAP_ITEMS["psychology"][level]:
-            repository.save_pillar_roadmap_evidence(
-                pillar="psychology",
-                level=level,
-                item_key=item_key,
-                completed=True,
-                evidence_note="Recorded in the local journal.",
-            )
-
-    level_three = {item.pillar: item for item in service.roadmap_status(account_id)}["psychology"]
-
-    assert level_three.current_level == 3
-    assert not level_three.can_complete_current_level
-    assert "20 post-trade reviews" in level_three.gate
-
-
-def test_post_trade_assessment_keeps_strategy_snapshot_and_failure_evidence(tmp_path) -> None:
-    repository, account_id = _repository(tmp_path)
-    policy = _policy(repository, account_id)
-    strategy = _strategy(repository)
-    trade_id = _import_position(repository, account_id)
-    review = _review(repository, account_id, trade_id, policy, strategy, system_confirmed=False)
-
-    repository.save_strategy_profile(
-        name="Trend continuation",
-        description=None,
-        backtest_start_date=None,
-        backtest_end_date=None,
-        backtest_trade_count=None,
-        backtest_win_rate=None,
-        backtest_expectancy_r=None,
-        backtest_net_r=None,
-        backtest_notes=None,
-        strategy_id=strategy.id,
+    status = service.period_review_status(account_id, "weekly", now=datetime(2026, 8, 10, tzinfo=timezone.utc))
+    assert status.due
+    service.save_period_review(
+        account_id=account_id, cadence="weekly", review_note="Stops widened twice.", priority_action="Use fixed stop orders.", now=datetime(2026, 8, 10, tzinfo=timezone.utc)
     )
-    saved = repository.get_post_trade_assessment_for_trade(trade_id)
+    saved = repository.list_framework_period_reviews(account_id)
 
-    assert saved is not None
-    assert saved.id == review.id
-    assert saved.strategy_snapshot.description == "Trade a pullback only with a confirmed continuation."
-    assert saved.system_failure_codes == ("entry_trigger",)
+    assert len(saved) == 1
+    assert saved[0].cadence == "weekly"
+    assert saved[0].priority_action == "Use fixed stop orders."
 
 
-def test_correcting_a_review_archives_the_prior_version(tmp_path) -> None:
+def test_readiness_is_the_lowest_complete_pillar_and_requires_window(tmp_path) -> None:
     repository, account_id = _repository(tmp_path)
-    policy = _policy(repository, account_id)
-    strategy = _strategy(repository)
-    trade_id = _import_position(repository, account_id)
-    first = _review(repository, account_id, trade_id, policy, strategy, actual_risk="10")
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    for index in range(20):
+        trade_id = _import_position(repository, account_id, position_id=f"trade-{index}")
+        grades = {**ALL_PASS, "context_alignment": "partial"} if index == 0 else ALL_PASS
+        action = "Review context." if index == 0 else None
+        tags = ("fomo_or_chase",) if index == 0 else ()
+        _review(repository, account_id, trade_id, policy, strategy, grades=grades, tags=tags, action=action)
 
-    corrected = _review(repository, account_id, trade_id, policy, strategy, actual_risk="12", impulse=True)
+    readiness = FrameworkService(repository).readiness(account_id)
+
+    assert readiness.status == "ready"
+    assert Decimal(readiness.score) < Decimal("100")
+
+
+def test_readiness_remains_incomplete_until_the_selected_sample_is_full(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    trade_id = _import_position(repository, account_id)
+    _review(repository, account_id, trade_id, policy, strategy)
+
+    readiness = FrameworkService(repository).readiness(account_id, window=20)
+
+    assert readiness.score is None
+    assert readiness.status == "incomplete"
+
+
+def test_period_review_snapshots_the_completed_period_not_later_trades(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    for day in (3, 4):
+        trade_id = _import_position(repository, account_id, position_id=f"period-{day}", exit_time=f"2026-08-{day:02d}T09:00:00+00:00")
+        _review(repository, account_id, trade_id, policy, strategy)
+    later_trade = _import_position(repository, account_id, position_id="later", exit_time="2026-08-10T09:00:00+00:00")
+    grades = {**ALL_PASS, "rule_adherence": "partial"}
+    _review(repository, account_id, later_trade, policy, strategy, grades=grades, tags=("fomo_or_chase",), action="Wait for the written setup.")
+
+    FrameworkService(repository).save_period_review(
+        account_id=account_id,
+        cadence="weekly",
+        review_note="The prior week was clean.",
+        priority_action="Keep the same process.",
+        now=datetime(2026, 8, 10, tzinfo=timezone.utc),
+    )
+
+    saved = repository.list_framework_period_reviews(account_id)[0]
+    assert saved.period_start == "2026-08-03"
+    assert saved.period_end == "2026-08-09"
+    assert saved.psychology_score == "100"
+
+
+def test_roadmap_execution_gate_requires_score_sample_and_no_hard_rule(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    service = FrameworkService(repository)
+    for level in (1, 2):
+        for item_key, _ in ROADMAP_ITEMS["psychology"][level]:
+            repository.save_pillar_roadmap_evidence(account_id=account_id, pillar="psychology", level=level, item_key=item_key, completed=True, evidence_note="Documented evidence.")
+
+    status = {item.pillar: item for item in service.roadmap_status(account_id)}["psychology"]
+
+    assert status.current_level == 3
+    assert not status.can_complete_current_level
+    assert "20 full reviews" in status.gate
+
+
+def test_corrections_archive_complete_prior_assessment(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    trade_id = _import_position(repository, account_id)
+    first = _review(repository, account_id, trade_id, policy, strategy)
+    grades = {**ALL_PASS, "impulse_control": "partial"}
+    corrected = _review(repository, account_id, trade_id, policy, strategy, grades=grades, tags=("fomo_or_chase",), action="Wait for the setup.")
     history = repository.list_post_trade_assessment_revisions(trade_id)
 
     assert first.version == 1
     assert corrected.version == 2
-    assert len(history) == 1
-    assert history[0].version == 1
-    assert history[0].declared_actual_risk_amount == "10"
-    assert not history[0].impulse_violation
+    assert history[0].criterion_grades["impulse_control"] == "pass"
 
 
-def test_repository_exposes_post_trade_reviews_only(tmp_path) -> None:
-    repository, _ = _repository(tmp_path)
+def test_greenfield_database_rejects_legacy_framework_schema(tmp_path) -> None:
+    database = tmp_path / "legacy.db"
+    with sqlite3.connect(database) as connection:
+        connection.execute("CREATE TABLE post_trade_assessments (id INTEGER PRIMARY KEY, system_confirmed BOOLEAN)")
 
-    assert not hasattr(repository, "start_trading_session")
-    assert not hasattr(repository, "create_trade_assessment")
-    assert not hasattr(repository, "link_trade_assessment")
-
-
-def test_existing_post_trade_reviews_gain_a_version_column_safely(tmp_path) -> None:
-    database_path = tmp_path / "legacy-review.db"
-    with sqlite3.connect(database_path) as connection:
-        connection.executescript(
-            """
-            CREATE TABLE post_trade_assessments (
-                id INTEGER NOT NULL PRIMARY KEY,
-                mt5_account_id INTEGER NOT NULL,
-                trade_id INTEGER NOT NULL,
-                risk_policy_id INTEGER,
-                strategy_profile_id INTEGER NOT NULL,
-                strategy_snapshot TEXT NOT NULL,
-                system_confirmed BOOLEAN NOT NULL,
-                system_failure_codes TEXT NOT NULL,
-                impulse_violation BOOLEAN NOT NULL,
-                revenge_violation BOOLEAN NOT NULL,
-                emotional_size_violation BOOLEAN NOT NULL,
-                stop_widened_violation BOOLEAN NOT NULL,
-                declared_actual_risk_amount VARCHAR,
-                post_review_note TEXT NOT NULL,
-                corrective_action TEXT,
-                created_at VARCHAR(64) NOT NULL,
-                updated_at VARCHAR(64) NOT NULL
-            );
-            """
-        )
-
-    SQLiteJournalRepository(database_path).initialize()
-
-    with sqlite3.connect(database_path) as connection:
-        columns = {row[1] for row in connection.execute("PRAGMA table_info(post_trade_assessments)")}
-    assert "version" in columns
-    assert database_path.with_suffix(".db.pre-review-versioning.bak").exists()
+    with pytest.raises(JournalDatabaseResetRequiredError, match="greenfield three-pillar"):
+        SQLiteJournalRepository(database).initialize()
 
 
-def test_existing_trade_table_gains_auto_evidence_columns_safely(tmp_path) -> None:
-    database_path = tmp_path / "legacy-trades.db"
-    with sqlite3.connect(database_path) as connection:
-        connection.executescript(
-            """
-            CREATE TABLE trades (
-                id INTEGER NOT NULL PRIMARY KEY,
-                source VARCHAR(10) NOT NULL,
-                mt5_account_id INTEGER,
-                mt5_position_id VARCHAR(64),
-                source_updated_at VARCHAR(64) NOT NULL,
-                symbol VARCHAR(32) NOT NULL,
-                direction VARCHAR(8) NOT NULL,
-                entry_time VARCHAR(64) NOT NULL,
-                exit_time VARCHAR(64) NOT NULL,
-                entry_price VARCHAR NOT NULL,
-                exit_price VARCHAR NOT NULL,
-                volume VARCHAR NOT NULL,
-                gross_pnl VARCHAR NOT NULL,
-                commission VARCHAR NOT NULL,
-                swap VARCHAR NOT NULL,
-                fees VARCHAR NOT NULL,
-                net_pnl VARCHAR NOT NULL
-            );
-            """
-        )
-
-    SQLiteJournalRepository(database_path).initialize()
-
-    with sqlite3.connect(database_path) as connection:
-        columns = {row[1] for row in connection.execute("PRAGMA table_info(trades)")}
-    assert {"entry_stop_price", "entry_magic_number", "initial_risk_amount", "auto_risk_policy_id"}.issubset(columns)
-    assert database_path.with_suffix(".db.pre-auto-evidence.bak").exists()
-
-
-def test_roadmap_evidence_is_trader_wide_except_for_risk(tmp_path) -> None:
-    repository, first_account_id = _repository(tmp_path)
-    repository.register_mt5_account(
-        display_name="Secondary",
-        login="654321",
-        broker_server="DemoBroker-Live",
-        account_currency="USD",
-        export_file_path="",
-        opening_balance="2000",
+def test_psychology_and_system_scores_are_trader_wide_while_risk_is_account_scoped(tmp_path) -> None:
+    repository, primary_id = _repository(tmp_path)
+    repository.register_mt5_account(display_name="Secondary", login="654321", broker_server="DemoBroker-Live", account_currency="USD", export_file_path="", opening_balance="1000")
+    secondary = repository.find_active_mt5_account("654321", "DemoBroker-Live")
+    assert secondary is not None
+    primary_policy, secondary_policy = _policy(repository, primary_id), _policy(repository, secondary.id)
+    strategy = _strategy(repository)
+    primary_trade = _import_position(repository, primary_id, position_id="primary")
+    _review(repository, primary_id, primary_trade, primary_policy, strategy)
+    # The importer helper has a fixed export identity; create the second trade through the repository's existing account export handling.
+    repository.upsert_mt5_positions(
+        secondary.id,
+        [
+            MT5PositionExport(
+                schema_version=3, account_login="654321", broker_server="DemoBroker-Live", account_currency="USD", position_id="secondary", symbol="XAUUSD", direction="long",
+                entry_time="2026-08-10T08:00:00+00:00", exit_time="2026-08-10T09:00:00+00:00", entry_price="3300", exit_price="3320", volume="0.1",
+                gross_pnl="20", commission="0", swap="0", fees="0", net_pnl="20", entry_deal_count=1,
+            )
+        ], "positions.csv", "secondary-hash"
     )
-    second = repository.find_active_mt5_account("654321", "DemoBroker-Live")
-    assert second is not None
-    repository.save_pillar_roadmap_evidence(
-        account_id=first_account_id,
-        pillar="psychology",
-        level=1,
-        item_key="triggers",
-        completed=True,
-        evidence_note="Defined personal triggers.",
-    )
-    repository.save_pillar_roadmap_evidence(
-        account_id=first_account_id,
-        pillar="risk",
-        level=1,
-        item_key="policy",
-        completed=True,
-        evidence_note="Defined limits for the primary account.",
-    )
+    secondary_trade = next(item.id for item in repository.list_closed_trades_for_review(secondary.id) if item.position_id == "secondary")
+    _review(repository, secondary.id, secondary_trade, secondary_policy, strategy)
 
-    first_evidence = {(item.pillar, item.item_key) for item in repository.list_pillar_roadmap_evidence(first_account_id)}
-    second_evidence = {(item.pillar, item.item_key) for item in repository.list_pillar_roadmap_evidence(second.id)}
+    scores = {item.pillar: item for item in FrameworkService(repository).pillar_scores(primary_id)}
 
-    assert ("psychology", "triggers") in first_evidence
-    assert ("psychology", "triggers") in second_evidence
-    assert ("risk", "policy") in first_evidence
-    assert ("risk", "policy") not in second_evidence
+    assert scores["psychology"].reviewed_total == 2
+    assert scores["system"].reviewed_total == 2
+    assert scores["risk"].reviewed_total == 1

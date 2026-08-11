@@ -35,7 +35,7 @@ def position(position_id: str, *, net_pnl: str, exit_time: str, strategy: str | 
 def configured_repository(tmp_path: Path, standard_risk_percent: str = "10") -> SQLiteJournalRepository:
     repository = SQLiteJournalRepository(tmp_path / "journal.db")
     repository.initialize()
-    repository.configure_journal(base_currency="USD", reporting_timezone="UTC")
+    repository.configure_journal(reporting_time_basis="utc")
     repository.register_mt5_account(
         display_name="Primary",
         login="123456",
@@ -73,7 +73,7 @@ def configured_repository(tmp_path: Path, standard_risk_percent: str = "10") -> 
 def test_fresh_journal_settings_schema_excludes_monthly_target(tmp_path: Path) -> None:
     repository = SQLiteJournalRepository(tmp_path / "journal.db")
     repository.initialize()
-    repository.configure_journal(base_currency="USD", reporting_timezone="UTC")
+    repository.configure_journal(reporting_time_basis="utc")
 
     connection = sqlite3.connect(tmp_path / "journal.db")
     columns = {row[1] for row in connection.execute("PRAGMA table_info(journal_settings)")}
@@ -105,7 +105,7 @@ def test_legacy_monthly_target_database_requires_reset(tmp_path: Path) -> None:
     assert row == ("USD", "UTC", "1000")
 
 
-def test_existing_account_is_migrated_with_a_nullable_balance_baseline(tmp_path: Path) -> None:
+def test_existing_account_schema_is_rejected_in_greenfield_mode(tmp_path: Path) -> None:
     database_path = tmp_path / "old-account.db"
     connection = sqlite3.connect(database_path)
     connection.execute(
@@ -120,16 +120,11 @@ def test_existing_account_is_migrated_with_a_nullable_balance_baseline(tmp_path:
     connection.close()
 
     repository = SQLiteJournalRepository(database_path)
-    repository.initialize()
-
-    accounts = repository.list_mt5_accounts()
-    assert accounts[0].opening_balance is None
-    assert accounts[0].latest_mt5_balance is None
-    assert database_path.with_suffix(".db.pre-account-balance.bak").exists()
-    assert database_path.with_suffix(".db.pre-live-account-balance.bak").exists()
+    with pytest.raises(JournalDatabaseResetRequiredError, match="greenfield three-pillar"):
+        repository.initialize()
 
 
-def test_existing_risk_policy_uses_its_prior_standard_as_the_new_maximum(tmp_path: Path) -> None:
+def test_existing_risk_policy_schema_is_rejected_in_greenfield_mode(tmp_path: Path) -> None:
     database_path = tmp_path / "old-risk-policy.db"
     connection = sqlite3.connect(database_path)
     connection.execute(
@@ -162,13 +157,8 @@ def test_existing_risk_policy_uses_its_prior_standard_as_the_new_maximum(tmp_pat
     connection.close()
 
     repository = SQLiteJournalRepository(database_path)
-    repository.initialize()
-
-    connection = sqlite3.connect(database_path)
-    value = connection.execute("SELECT maximum_risk_per_trade_percent FROM account_risk_policies WHERE id = 1").fetchone()[0]
-    connection.close()
-    assert value == "0.5"
-    assert database_path.with_suffix(".db.pre-risk-policy-limit.bak").exists()
+    with pytest.raises(JournalDatabaseResetRequiredError, match="greenfield three-pillar"):
+        repository.initialize()
 
 
 def test_account_policy_supplies_r_and_preserves_imported_policy_context(tmp_path: Path) -> None:
@@ -210,7 +200,7 @@ def test_account_policy_supplies_r_and_preserves_imported_policy_context(tmp_pat
     assert after["1003"].result_r == "1"
 
 
-def test_existing_trade_overrides_are_removed_during_initialization(tmp_path: Path) -> None:
+def test_initialization_does_not_rewrite_existing_clean_trade_tables(tmp_path: Path) -> None:
     repository = configured_repository(tmp_path, standard_risk_percent="10")
     database_path = tmp_path / "journal.db"
     connection = sqlite3.connect(database_path)
@@ -234,8 +224,7 @@ def test_existing_trade_overrides_are_removed_during_initialization(tmp_path: Pa
     connection = sqlite3.connect(database_path)
     columns = {row[1] for row in connection.execute("PRAGMA table_info(trades)")}
     connection.close()
-    assert not columns.intersection({"strategy", "strategy_profile_id", "notes", "planned_risk_amount", "result_r", "journal_completed_at"})
-    assert database_path.with_suffix(".db.pre-trade-override-removal.bak").exists()
+    assert columns.issuperset({"strategy", "strategy_profile_id", "notes", "planned_risk_amount", "result_r", "journal_completed_at"})
     assert {trade.position_id: trade.result_r for trade in repository.list_trades()} == {"1001": "2", "1002": "-0.5"}
 
 

@@ -39,7 +39,7 @@ V2_HEADER = HEADER + [
     "initial_risk_amount",
     "initial_reward_amount",
 ]
-V3_HEADER = V2_HEADER + ["account_balance"]
+V4_HEADER = V2_HEADER + ["account_balance", "server_utc_offset_minutes"]
 
 
 def write_export(
@@ -47,7 +47,7 @@ def write_export(
     *,
     currency: str = "USD",
     net_pnl: str = "98.00",
-    schema_version: str = "1",
+    schema_version: str = "4",
     initial_risk_amount: str = "",
     account_balance: str = "1000.00",
     second_account_balance: str | None = None,
@@ -79,8 +79,9 @@ def write_export(
         "initial_risk_amount": initial_risk_amount,
         "initial_reward_amount": "200.00" if initial_risk_amount else "",
         "account_balance": account_balance,
+        "server_utc_offset_minutes": "180",
     }
-    fieldnames = V3_HEADER if schema_version == "3" else V2_HEADER if schema_version == "2" else HEADER
+    fieldnames = V4_HEADER
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
@@ -96,7 +97,7 @@ def write_export(
 def repository(tmp_path: Path) -> SQLiteJournalRepository:
     repository = SQLiteJournalRepository(tmp_path / "journal.db")
     repository.initialize()
-    repository.configure_journal(base_currency="USD", reporting_timezone="UTC")
+    repository.configure_journal(reporting_time_basis="utc")
     repository.register_mt5_account(
         display_name="Primary",
         login="123456",
@@ -122,19 +123,20 @@ def test_imports_closed_position_and_waits_for_planned_risk(repository: SQLiteJo
     assert trade.strategy is None
 
 
-def test_mt5_account_identity_includes_both_login_and_broker_server(repository: SQLiteJournalRepository) -> None:
-    repository.register_mt5_account(
-        display_name="Same login on another server",
-        login="123456",
-        broker_server="DemoBroker-Other",
-        account_currency="USD",
-        export_file_path="",
-    )
+def test_mt5_account_id_is_unique_across_broker_servers(repository: SQLiteJournalRepository) -> None:
+    with pytest.raises(ValueError, match="account ID"):
+        repository.register_mt5_account(
+            display_name="Same login on another server",
+            login="123456",
+            broker_server="DemoBroker-Other",
+            account_currency="USD",
+            export_file_path="",
+        )
 
     accounts = repository.list_mt5_accounts()
 
-    assert len(accounts) == 2
-    assert {account.broker_server for account in accounts} == {"DemoBroker-Live", "DemoBroker-Other"}
+    assert len(accounts) == 1
+    assert accounts[0].broker_server == "DemoBroker-Live"
 
 
 def test_unimported_mt5_account_can_be_deleted_with_account_only_setup(repository: SQLiteJournalRepository) -> None:
@@ -216,9 +218,9 @@ def test_rejects_currency_mismatch_without_creating_trade(repository: SQLiteJour
 
 def test_rejects_an_unsupported_schema_version_without_creating_trade(repository: SQLiteJournalRepository, tmp_path: Path) -> None:
     export_path = tmp_path / "positions.csv"
-    write_export(export_path, schema_version="4")
+    write_export(export_path, schema_version="3")
 
-    with pytest.raises(ImportValidationError, match="Unsupported MT5 export schema version; expected 1 or 2 or 3"):
+    with pytest.raises(ImportValidationError, match="Unsupported MT5 export schema version; expected 4"):
         MT5ImportService(repository).import_csv(export_path)
 
     assert repository.count_trades() == 0
@@ -226,7 +228,7 @@ def test_rejects_an_unsupported_schema_version_without_creating_trade(repository
 
 def test_imports_schema_v2_execution_evidence(repository: SQLiteJournalRepository, tmp_path: Path) -> None:
     export_path = tmp_path / "positions.csv"
-    write_export(export_path, schema_version="2", initial_risk_amount="100.00")
+    write_export(export_path, schema_version="4", initial_risk_amount="100.00")
 
     result = MT5ImportService(repository).import_csv(export_path)
     trade = repository.list_closed_trades_for_review(repository.find_active_mt5_account("123456", "DemoBroker-Live").id)[0]
@@ -247,7 +249,7 @@ def test_schema_v2_rejects_a_non_positive_initial_risk_amount(
     repository: SQLiteJournalRepository, tmp_path: Path, initial_risk_amount: str
 ) -> None:
     export_path = tmp_path / "positions.csv"
-    write_export(export_path, schema_version="2", initial_risk_amount=initial_risk_amount)
+    write_export(export_path, schema_version="4", initial_risk_amount=initial_risk_amount)
 
     with pytest.raises(ImportValidationError, match="greater than 0"):
         MT5ImportService(repository).import_csv(export_path)
@@ -257,7 +259,7 @@ def test_schema_v2_rejects_a_non_positive_initial_risk_amount(
 
 def test_imports_schema_v3_live_account_balance_and_refreshes_it(repository: SQLiteJournalRepository, tmp_path: Path) -> None:
     export_path = tmp_path / "positions.csv"
-    write_export(export_path, schema_version="3", account_balance="1250.50")
+    write_export(export_path, schema_version="4", account_balance="1250.50")
 
     MT5ImportService(repository).import_csv(export_path)
     account = repository.find_active_mt5_account("123456", "DemoBroker-Live")
@@ -265,7 +267,7 @@ def test_imports_schema_v3_live_account_balance_and_refreshes_it(repository: SQL
     assert account is not None
     assert repository.get_latest_mt5_balance(account.id) == "1250.50"
 
-    write_export(export_path, schema_version="3", account_balance="1300.00")
+    write_export(export_path, schema_version="4", account_balance="1300.00")
     MT5ImportService(repository).import_csv(export_path)
 
     assert repository.get_latest_mt5_balance(account.id) == "1300.00"
@@ -273,12 +275,12 @@ def test_imports_schema_v3_live_account_balance_and_refreshes_it(repository: SQL
 
 def test_schema_v3_rejects_missing_or_inconsistent_live_account_balance(repository: SQLiteJournalRepository, tmp_path: Path) -> None:
     export_path = tmp_path / "positions.csv"
-    write_export(export_path, schema_version="3", account_balance="")
+    write_export(export_path, schema_version="4", account_balance="")
 
     with pytest.raises(ImportValidationError, match="requires an account balance"):
         MT5ImportService(repository).import_csv(export_path)
 
-    write_export(export_path, schema_version="3", account_balance="1000", second_account_balance="1200")
+    write_export(export_path, schema_version="4", account_balance="1000", second_account_balance="1200")
     with pytest.raises(ImportValidationError, match="one current account balance"):
         MT5ImportService(repository).import_csv(export_path)
 
@@ -288,7 +290,7 @@ def test_schema_v3_accepts_a_non_positive_balance_but_keeps_it_as_a_snapshot(
     repository: SQLiteJournalRepository, tmp_path: Path, account_balance: str
 ) -> None:
     export_path = tmp_path / "positions.csv"
-    write_export(export_path, schema_version="3", account_balance=account_balance)
+    write_export(export_path, schema_version="4", account_balance=account_balance)
 
     result = MT5ImportService(repository).import_csv(export_path)
     account = repository.find_active_mt5_account("123456", "DemoBroker-Live")

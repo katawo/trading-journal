@@ -956,14 +956,14 @@ Review questions:
 
 Settings is the single configuration workspace. It has three tabs:
 
-- **General** — journal currency and reporting timezone
+- **MT5 Accounts** — account currency and the journal-wide reporting time basis
 - **MT5 Accounts** — approved accounts and their export file locations
 - **Strategies** — reusable strategy profiles, the one journal-default strategy, and optional backtest evidence
 
 ## Account Settings
 
-- Journal base currency
-- Journal reporting timezone
+- Account deposit currency (used for that account's monetary reports)
+- Journal reporting time basis: UTC, Server Timezone, or Local Timezone
 
 ## MT5 Account Settings
 
@@ -973,7 +973,7 @@ Settings is the single configuration workspace. It has three tabs:
 - Active / inactive import status
 - Export file location
 
-Only accounts explicitly registered here may be imported. An account whose MT5 deposit currency differs from the journal base currency is rejected; V1 does not perform currency conversion.
+Only accounts explicitly registered here may be imported. The export currency must match that account's configured deposit currency. The journal performs no currency conversion or cross-account monetary aggregation.
 
 ## Risk Settings
 
@@ -1012,8 +1012,7 @@ Examples:
 
 ```text
 id
-journal_base_currency
-reporting_timezone
+reporting_time_basis
 default_risk_percent
 base_r_value
 daily_loss_limit_r
@@ -1040,7 +1039,7 @@ created_at
 updated_at
 ```
 
-Each `(mt5_login, broker_server)` pair is unique and must match an explicitly registered account.
+Each `mt5_login` is unique and must match an explicitly registered account. The broker server is retained as part of the exact export-source check.
 
 ---
 
@@ -1231,8 +1230,8 @@ The app should validate:
 - Setup should belong to the selected strategy
 - Grade must be valid
 - R calculation requires planned risk
-- MT5 import file must use supported schema version `1` and a registered `(login, broker server)` account
-- MT5 import currency must match the journal base currency
+- MT5 import file must use supported schema version `4`, include the MT5 server UTC offset, and match a registered `(login, broker server)` account
+- MT5 import currency must match the configured account currency
 - Imported position records must have a unique `(mt5_account_id, mt5_position_id)` identity
 - Corrupt, incomplete, unknown-account, or currency-mismatched imports must make no database changes
 - Imported execution/P&L fields are read-only; the current app has no individual-trade annotations or overrides
@@ -1485,7 +1484,7 @@ Possible additions:
 
 V1 is complete when the user can:
 
-1. Set journal base currency and reporting timezone.
+1. Register an account with its deposit currency and choose the journal reporting time basis.
 2. Define risk rules.
 3. Define strategies and setups.
 4. Whitelist local MT5 accounts and import their completed positions manually.
@@ -1650,17 +1649,17 @@ Use pytest for domain, database, and importer tests, plus Streamlit AppTest for 
 
 - Import a valid completed MT5 position.
 - Aggregate multiple entries, partial closes, commission, swap, fees, and net P&L into one journal trade.
-- Reject an unknown account, broker-server mismatch, base-currency mismatch, invalid schema, corrupt CSV, or incomplete temporary export without changing the database.
+- Reject an unknown account, broker-server mismatch, account-currency mismatch, invalid schema, corrupt CSV, or incomplete temporary export without changing the database.
 - Re-import the same position safely and refresh MT5-owned execution data.
 - Exclude open positions, pending orders, and non-trading balance/credit operations.
 - Verify imported P&L is visible immediately and R/process metrics remain excluded until funded capital and an account Risk policy are configured.
-- Verify all reporting-period grouping uses the configured journal timezone.
+- Verify all reporting-period grouping uses the selected UTC, Server Timezone, or Local Timezone basis.
 
 ## Regression Tests
 
 - Verify manual trades and imported trades cannot share the same source identity.
 - Verify imported execution values cannot be edited through the UI.
-- Verify migration upgrade paths preserve existing journal data and create a recoverable database backup before schema changes.
+- Verify an earlier journal schema is rejected with an explicit reset instruction. The three-pillar release is greenfield and must not migrate or reinterpret old assessment data.
 - Verify no importer path submits, edits, or blocks an MT5 trade.
 
 ---
@@ -1679,21 +1678,23 @@ This is a **post-trade journal only**. MT5 is the execution terminal. The app ne
 
 1. MT5 exports a completed position to the local CSV.
 2. The app imports that immutable position.
-3. Open **Framework → Review closed trades**, filter the register by **Needs review**, **Auto-reviewed**, **Reviewed**, or **All**, then select a trade row.
-4. Record or correct the three-pillar evidence in the post-trade modal: strategy validity, actual risk when known, rule breaches, review note, and corrective action.
-5. Use the Dashboard, Framework scorecards, and Roadmap to spot repeated process failures.
+3. Open **Framework → Review trades**, filter the register by **Needs review**, **Automatic risk evidence**, **Reviewed**, **Failed**, or **All**, then open a trade row.
+4. Record or correct all 13 three-pillar criteria as **Pass**, **Partial**, or **Fail**, then add reason tags, hard-rule events, a review note, and a corrective action when required.
+5. Use the Dashboard, rolling Framework scorecards, saved period reviews, and Roadmap to spot repeated process failures.
 
 Every imported closed position is visible in the review register. It starts as **Needs review**: MT5 cannot establish Psychology or discretionary setup validity. The register also shows the attached **Risk limit** (the policy maximum) and **Actual risk** amount in the account currency. Actual risk uses the declared review value when present, otherwise a usable automatic Risk source; it is never silently replaced by the policy limit. A saved post-trade review creates the three-pillar score. One review belongs to one MT5 position, so a review cannot be attached to a different account’s trade.
 
-Schema-v3 MT5 exports provide entry SL/TP, calculated initial risk/reward where MT5 can calculate it, final recorded SL, entry magic number, exit reason, and the terminal’s current account-balance snapshot. The app recognises three ordered Risk sources: **Specific preset SL** (MT5-calculated initial risk), **Real-loss SL** (`abs(net P&L)` for a losing trade without calculated initial risk), and **Live-account-balance SL** (latest v3 account balance for a profitable trade with no recorded entry SL). A source becomes **Auto-reviewed** for Risk sizing only after funded capital and a Risk policy are configured: `100%` when within the attached policy-version maximum per-trade limit and `0%` when over it. Until then it remains **Needs review** with automatic evidence visible. The active policy is attached when the position is first imported, preserving historical R and policy context. Auto-reviews never create Psychology, Trading System, or Process scores and never advance the roadmap. A live-account-balance SL is a dynamic conservative assumption, not proof of an MT5-recorded stop; a zero or negative balance is retained but cannot be used as that assumption. Missing or ambiguous evidence otherwise remains unavailable; it is never assigned a neutral or failing score.
+Schema-v4 MT5 exports provide entry SL/TP, calculated initial risk/reward where MT5 can calculate it, final recorded SL, entry magic number, exit reason, the terminal’s current account-balance snapshot, and the server UTC offset used to preserve MT5 timestamps. The app stores each timestamp as UTC plus its exported offset, then groups reports by the journal-wide **UTC**, **Server Timezone**, or **Local Timezone** basis. It recognises three ordered Risk sources: **Specific preset SL** (MT5-calculated initial risk), **Real-loss estimate** (`abs(net P&L)` for a losing trade without calculated initial risk), and **Live-account-balance estimate** (latest v4 account balance for a profitable trade with no recorded entry SL). The app marks the evidence as within policy, over policy, or unavailable, with verified, inferred, or conservative confidence. It is advisory only: automatic MT5 evidence never creates a completed Risk, Psychology, System, Process, readiness, or roadmap score. A live-balance estimate is not proof of a real stop; a zero or negative balance is never used for it. Missing or ambiguous evidence remains unavailable, never neutral or failing.
 
 ## 37.2 What each review records
 
-| Pillar | Post-trade evidence | What the score measures |
+| Pillar | Explicit post-trade criteria | Trade-level weights |
 |---|---|---|
-| Psychology | Impulse entry/management, revenge trade, emotional size increase, lesson, corrective action. | 70% behaviour control and 30% corrective action after a breach. |
-| Risk management | Declared actual risk when known and whether the stop was widened. | 70% actual risk within the attached policy and 30% stop discipline. |
-| Trading system | Selected strategy snapshot, overall setup validity, and optional failed criteria. | 70% valid setup and 30% documented strategy/backtest evidence. |
+| Psychology | Rule adherence, impulse control, emotional control, patience & discipline. | 35 / 25 / 20 / 20 |
+| Risk management | Policy adherence, position-size accuracy, stop discipline, exposure & limit compliance. | 35 / 20 / 25 / 20 |
+| Trading system | Setup validity, context, entry, invalidation, management/exit fidelity. | 30 / 20 / 20 / 15 / 15 |
+
+Every criterion is rated **Pass = 100**, **Partial = 50**, or **Fail = 0**. Failed criteria require at least one reason tag; a Partial, Fail, or hard-rule event requires one corrective action. The raw process average is retained for diagnosis, but a configured hard-rule event sets **Process Quality = FAIL**. Outcomes are separately classified as Good/Bad Win, Loss, or Breakeven.
 
 The review is independent of P&L: a losing rule-following trade may be good process, while a profitable rule-breaking trade is not.
 
@@ -1706,16 +1707,16 @@ Each account has editable **Funded capital** and a versioned risk policy: standa
 Risk monitoring includes **every imported closed position**, not only reviewed positions:
 
 - Balance drawdown and loss streak use all imported net P&L in close-time order. The policy evaluates the largest peak-to-trough drawdown; the current drawdown remains available as context.
-- R uses declared actual risk after a review, then Specific preset SL, Real-loss SL, and Live-account-balance SL in that order. If none exists, a saved review uses its attached standard 1R amount (funded capital × standard-risk %); an unreviewed position uses the current active policy standard 1R. A new v3 balance snapshot dynamically recalculates eligible Live-account-balance SL results.
+- R uses declared actual risk after a review, then Specific preset SL, Real-loss SL, and Live-account-balance SL in that order. If none exists, a saved review uses its attached standard 1R amount (funded capital × standard-risk %); an unreviewed position uses the current active policy standard 1R. A new v4 balance snapshot dynamically recalculates eligible Live-account-balance SL results.
 - At 80% of a configured hard limit, the app shows `CAUTION`; at the limit, it shows `STOP`.
 
 These statuses are retrospective monitoring signals for the next review or session, never live-order controls. The bridge contains completed positions only, so open-position risk and correlation cannot be verified automatically.
 
 ## 37.4 Scores, roadmap, and interpretation
 
-Scores use the latest 20 **reviewed** closed trades. Needs-review imports and Risk-only Auto-reviews are excluded from pillar averages; P&L and other outcome metrics never alter Psychology, Trading System, or Process evidence. Psychology and Trading System scores are trader-wide. Risk score and Risk monitoring are account-specific. A revenge/emotional-size breach, widened stop, or invalid reviewed setup puts that pillar into **Review needed**, regardless of its average score.
+Scores use a selectable rolling sample of 20, 30, or 50 **reviewed** closed trades. Needs-review imports and automatic risk evidence are excluded from pillar averages; P&L and other outcome metrics never alter Psychology, Trading System, or Process evidence. Psychology and Trading System scores are trader-wide. Risk score and Risk monitoring are account-specific. Readiness is the lowest complete pillar, never an average. A configured hard-rule event sets the affected pillar and readiness to **FAIL** for its active rolling sample. Repeated tagged critical breaches cap the affected numeric pillar score at 59 until a later weekly or monthly review records the response.
 
-The three roadmap pillars progress in parallel through Define, Test, Execute, Measure, and Optimise. Level 3 requires 20 post-trade reviews with no critical breach; Level 4 requires 30. Automatic MT5 evidence and unreviewed imports never advance a roadmap gate. Checklist completion needs a written evidence note, while reviewed evidence is required for maturity decisions.
+The three roadmap pillars progress in parallel through Define, Test, Execute, Measure, and Optimise. Level 3 requires 20 post-trade reviews, a score of at least 70, and no active hard failure. Level 4 requires 30 reviews, a score of at least 80, no active hard failure, and a saved period review. Automatic MT5 evidence and unreviewed imports never advance a roadmap gate. Checklist completion needs a written evidence note, while reviewed evidence is required for maturity decisions. Saved weekly/monthly reviews snapshot the period-end scores, alerts, recurring issues, reflection, and one priority action.
 
 Use the combined evidence diagnostically:
 

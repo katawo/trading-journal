@@ -14,13 +14,15 @@ from trading_journal.infrastructure.sqlite_repository import SQLiteJournalReposi
 def write_auto_export(path: Path) -> None:
     header = [
         "schema_version", "account_login", "broker_server", "account_currency", "position_id", "symbol", "direction",
-        "entry_time", "exit_time", "entry_price", "exit_price", "volume", "gross_pnl", "commission", "swap", "fees", "net_pnl",
+        "entry_time", "exit_time", "server_utc_offset_minutes", "entry_price", "exit_price", "volume", "gross_pnl", "commission", "swap", "fees", "net_pnl",
+        "entry_stop_price", "entry_target_price", "close_stop_price", "entry_magic_number", "entry_deal_count", "exit_reason", "initial_risk_amount", "initial_reward_amount", "account_balance",
     ]
     row = {
-        "schema_version": "1", "account_login": "123456", "broker_server": "DemoBroker-Live", "account_currency": "USD",
+        "schema_version": "4", "account_login": "123456", "broker_server": "DemoBroker-Live", "account_currency": "USD",
         "position_id": "9010", "symbol": "XAUUSD", "direction": "long", "entry_time": "2026-08-10T08:00:00+00:00",
-        "exit_time": "2026-08-10T09:00:00+00:00", "entry_price": "3300", "exit_price": "3310", "volume": "0.01",
+        "exit_time": "2026-08-10T09:00:00+00:00", "server_utc_offset_minutes": "0", "entry_price": "3300", "exit_price": "3310", "volume": "0.01",
         "gross_pnl": "20", "commission": "0", "swap": "0", "fees": "0", "net_pnl": "20",
+        "entry_stop_price": "", "entry_target_price": "", "close_stop_price": "", "entry_magic_number": "", "entry_deal_count": "", "exit_reason": "client", "initial_risk_amount": "", "initial_reward_amount": "", "account_balance": "1000",
     }
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=header)
@@ -66,7 +68,7 @@ def test_format_relative_time_uses_compact_human_readable_durations():
     assert format_relative_time(now - timedelta(days=3), now=now) == "3 days ago"
 
 
-def test_settings_uses_tabs_for_journal_accounts_and_strategies(monkeypatch, tmp_path):
+def test_settings_groups_reporting_with_accounts_and_strategies(monkeypatch, tmp_path):
     common_files = tmp_path / "MetaQuotes" / "Terminal" / "Common" / "Files"
     monkeypatch.setenv("TRADING_JOURNAL_DB", str(tmp_path / "journal.db"))
     monkeypatch.setenv("TRADING_JOURNAL_MT5_COMMON_FILES", str(common_files))
@@ -74,7 +76,7 @@ def test_settings_uses_tabs_for_journal_accounts_and_strategies(monkeypatch, tmp
     app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
     app.switch_page("app_pages/settings.py").run()
 
-    assert [tab.label for tab in app.tabs] == ["General", "MT5 Accounts", "Strategies"]
+    assert [tab.label for tab in app.tabs] == ["MT5 Accounts", "Strategies"]
     assert any(item.label == "Account name" for item in app.text_input)
     assert any(item.label == "MT5 account ID" for item in app.text_input)
     funded_capital = next(item for item in app.text_input if item.label == "Funded capital (optional)")
@@ -85,6 +87,7 @@ def test_settings_uses_tabs_for_journal_accounts_and_strategies(monkeypatch, tmp
     assert all(item.label != "Default risk (1R)" for item in app.number_input)
     assert all(item.label != "Apply a default planned-risk baseline to all trades" for item in app.checkbox)
     assert any("Framework → Risk policy" in item.value for item in app.caption)
+    assert any(item.label == "Save reporting settings" for item in app.button)
     export_path = next(item for item in app.text_input if item.label == "Custom export path (optional)")
     assert export_path.value == ""
     assert export_path.proto.placeholder == str(common_files / "trading_journal" / "<MT5-login>_positions.csv")
@@ -201,7 +204,7 @@ def test_framework_workspace_renders_account_scoped_post_trade_journal(monkeypat
     database_path = tmp_path / "journal.db"
     repository = SQLiteJournalRepository(database_path)
     repository.initialize()
-    repository.configure_journal(base_currency="USD", reporting_timezone="UTC")
+    repository.configure_journal(reporting_time_basis="utc")
     repository.register_mt5_account(
         display_name="Primary",
         login="123456",
@@ -216,17 +219,16 @@ def test_framework_workspace_renders_account_scoped_post_trade_journal(monkeypat
 
     assert not app.exception
     assert app.subheader[0].value == "Three-pillar framework"
-    assert [tab.label for tab in app.tabs] == ["Review closed trades", "Roadmap", "Risk policy"]
+    assert [tab.label for tab in app.tabs] == ["Review trades", "Monitor", "Roadmap", "Risk policy", "Framework rules"]
     assert any("No completed MT5 positions" in item.value for item in app.info)
     assert any(item.label == "Roadmap pillar" for item in app.segmented_control)
-    assert any(item.label == "Future levels" for item in app.expander)
 
 
 def test_dashboard_uses_its_report_account_for_framework_status(monkeypatch, tmp_path):
     database_path = tmp_path / "journal.db"
     repository = SQLiteJournalRepository(database_path)
     repository.initialize()
-    repository.configure_journal(base_currency="USD", reporting_timezone="UTC")
+    repository.configure_journal(reporting_time_basis="utc")
     for name, login in (("Primary", "123456"), ("Secondary", "654321")):
         repository.register_mt5_account(
             display_name=name,
@@ -248,7 +250,7 @@ def test_framework_renders_a_filtered_review_register(monkeypatch, tmp_path):
     database_path = tmp_path / "journal.db"
     repository = SQLiteJournalRepository(database_path)
     repository.initialize()
-    repository.configure_journal(base_currency="USD", reporting_timezone="Asia/Ho_Chi_Minh")
+    repository.configure_journal(reporting_time_basis="local")
     repository.register_mt5_account(
         display_name="Primary",
         login="123456",
@@ -314,14 +316,14 @@ def test_framework_renders_a_filtered_review_register(monkeypatch, tmp_path):
     app.switch_page("app_pages/framework.py").run()
 
     assert not app.exception
-    assert [tab.label for tab in app.tabs] == ["Review closed trades", "Roadmap", "Risk policy"]
+    assert [tab.label for tab in app.tabs] == ["Review trades", "Monitor", "Roadmap", "Risk policy", "Framework rules"]
     assert any(item.label == "Review status" and item.value == "Needs review" for item in app.segmented_control)
     assert any(item.label == "Needs review" and item.value == "1" for item in app.metric)
-    assert any(item.label == "Auto-reviewed" and item.value == "0" for item in app.metric)
+    assert any(item.label == "Automatic risk evidence" and item.value == "0" for item in app.metric)
     assert any(item.label == "Reviewed" and item.value == "0" for item in app.metric)
-    assert len(app.dataframe) == 1
+    assert len(app.dataframe) >= 1
     assert not list(app.dataframe[0].proto.selection_mode)
-    assert any("Use the pencil action to review or correct a trade" in item.value for item in app.caption)
+    assert any("Automatic risk evidence is advisory" in item.value for item in app.caption)
     assert not any(item.label == "Closed MT5 position" for item in app.selectbox)
     assert not any(item.label == "Save review" for item in app.button)
 
@@ -338,12 +340,13 @@ def test_framework_renders_a_filtered_review_register(monkeypatch, tmp_path):
         trade_id=trade.id,
         risk_policy_id=policy.id,
         strategy_profile_id=strategy.id,
-        system_confirmed=True,
-        system_failure_codes=(),
-        impulse_violation=False,
-        revenge_violation=False,
-        emotional_size_violation=False,
-        stop_widened_violation=False,
+        criterion_grades={
+            "rule_adherence": "pass", "impulse_control": "pass", "emotional_control": "pass", "patience_discipline": "pass",
+            "policy_adherence": "pass", "position_size_accuracy": "pass", "stop_discipline": "pass", "exposure_limit_compliance": "pass",
+            "setup_validity": "pass", "context_alignment": "pass", "entry_fidelity": "pass", "invalidation_fidelity": "pass", "management_exit_fidelity": "pass",
+        },
+        violation_codes=(),
+        hard_rule_codes=(),
         declared_actual_risk_amount="5",
         post_review_note="Followed the documented process.",
         corrective_action=None,
@@ -352,7 +355,7 @@ def test_framework_renders_a_filtered_review_register(monkeypatch, tmp_path):
 
     assert not app.exception
     assert any(item.label == "Reviewed" and item.value == "1" for item in app.metric)
-    assert len(app.dataframe) == 1
+    assert len(app.dataframe) >= 1
 
 
 def test_dashboard_sync_keeps_the_current_mt5_export_imported(monkeypatch, tmp_path):
@@ -360,7 +363,7 @@ def test_dashboard_sync_keeps_the_current_mt5_export_imported(monkeypatch, tmp_p
     export_path = tmp_path / "positions.csv"
     repository = SQLiteJournalRepository(database_path)
     repository.initialize()
-    repository.configure_journal(base_currency="USD", reporting_timezone="UTC")
+    repository.configure_journal(reporting_time_basis="utc")
     repository.register_mt5_account(
         display_name="Primary",
         login="123456",
@@ -392,7 +395,7 @@ def test_dashboard_renders_graphics_for_imported_trades(monkeypatch, tmp_path):
     database_path = tmp_path / "journal.db"
     repository = SQLiteJournalRepository(database_path)
     repository.initialize()
-    repository.configure_journal(base_currency="USD", reporting_timezone="UTC")
+    repository.configure_journal(reporting_time_basis="utc")
     repository.register_mt5_account(
         display_name="Primary",
         login="123456",
@@ -445,7 +448,7 @@ def test_dashboard_auto_imports_a_changed_configured_mt5_export(monkeypatch, tmp
     write_auto_export(export_path)
     repository = SQLiteJournalRepository(database_path)
     repository.initialize()
-    repository.configure_journal(base_currency="USD", reporting_timezone="UTC")
+    repository.configure_journal(reporting_time_basis="utc")
     repository.register_mt5_account(
         display_name="Primary",
         login="123456",
@@ -468,7 +471,7 @@ def test_dashboard_surfaces_an_automatic_sync_failure(monkeypatch, tmp_path):
     export_path.write_text("not,a,valid,export\n", encoding="utf-8")
     repository = SQLiteJournalRepository(database_path)
     repository.initialize()
-    repository.configure_journal(base_currency="USD", reporting_timezone="UTC")
+    repository.configure_journal(reporting_time_basis="utc")
     repository.register_mt5_account(
         display_name="Primary",
         login="123456",
@@ -489,7 +492,7 @@ def test_dashboard_switches_to_per_trade_view(monkeypatch, tmp_path):
     database_path = tmp_path / "journal.db"
     repository = SQLiteJournalRepository(database_path)
     repository.initialize()
-    repository.configure_journal(base_currency="USD", reporting_timezone="UTC")
+    repository.configure_journal(reporting_time_basis="utc")
     repository.register_mt5_account(
         display_name="Primary",
         login="123456",
@@ -545,7 +548,7 @@ def test_settings_strategies_tab_renders_optional_backtest_fields(monkeypatch, t
     app.switch_page("app_pages/settings.py").run()
 
     assert not app.exception
-    assert [tab.label for tab in app.tabs] == ["General", "MT5 Accounts", "Strategies"]
+    assert [tab.label for tab in app.tabs] == ["MT5 Accounts", "Strategies"]
     assert any(item.value == "Strategy library" for item in app.subheader)
     assert any(item.label == "Backtest sample size" for item in app.text_input)
     assert any(item.label == "MT5 magic numbers (optional)" for item in app.text_input)

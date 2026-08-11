@@ -4,7 +4,7 @@ Feature: Import completed MT5 positions locally
   So that realised P&L is available without exposing broker credentials or trading controls.
 
   Scenario: Import a completed position from a whitelisted account
-    Given a USD journal with a registered MT5 account
+    Given a registered USD MT5 account
     And a valid local MT5 position export for that account
     When I import the export
     Then one imported trade is created with its realised net P&L
@@ -18,7 +18,7 @@ Feature: Import completed MT5 positions locally
     And journal-wide defaults continue to determine strategy and R
 
   Scenario: Import automatic MT5 risk evidence without inventing a process score
-    Given a schema-v2 MT5 export with an initial stop and calculated initial risk
+    Given a schema-v4 MT5 export with an initial stop and calculated initial risk
     And the account has funded capital and a saved Risk policy
     When I import the export
     Then the journal shows whether the initial risk was within that policy
@@ -33,7 +33,7 @@ Feature: Import completed MT5 positions locally
     And the journal shows that automatic Risk evidence is unavailable to score
 
   Scenario: Auto-review a profitable trade without a recorded stop
-    Given a schema-v3 MT5 export with a current account-balance snapshot
+    Given a schema-v4 MT5 export with a current account-balance snapshot
     And a profitable completed position has no recorded entry stop
     And the account has funded capital and a saved Risk policy
     When I import the export
@@ -41,23 +41,29 @@ Feature: Import completed MT5 positions locally
     And the trade is Auto-reviewed for Risk only
 
   Scenario: Import a depleted-account balance without blocking trade history
-    Given a schema-v3 MT5 export with a zero or negative current account-balance snapshot
+    Given a schema-v4 MT5 export with a zero or negative current account-balance snapshot
     When I import the export
     Then the completed positions are imported
     And Live-account-balance SL remains unavailable for that snapshot
 
   Scenario: Map an EA trade to a strategy
     Given a strategy profile has an MT5 magic number
-    And a schema-v2 MT5 export contains that entry magic number
+    And a schema-v4 MT5 export contains that entry magic number
     When I import the export
     Then the journal maps the trade to the strategy for review
     And it does not infer that the discretionary setup was valid
 
   Scenario: Reject a mismatched account currency
-    Given a USD journal with a registered USD MT5 account
+    Given a registered USD MT5 account
     And an export that declares EUR as its account currency
     When I import the export
     Then the import fails without creating a trade
+
+  Scenario: Group a server-clock export by the selected reporting basis
+    Given a schema-v4 MT5 export with a server UTC offset
+    And its MT5 account is registered
+    When I choose UTC, Server Timezone, or Local Timezone reporting
+    Then the dashboard groups the same UTC-normalized trade by the selected calendar
 
   Scenario: Compare the default strategy with optional backtest context
     Given a strategy profile with optional backtest statistics

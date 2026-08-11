@@ -19,6 +19,7 @@ class MT5PositionExport(BaseModel):
     direction: str = Field(pattern="^(long|short)$")
     entry_time: str = Field(min_length=1)
     exit_time: str = Field(min_length=1)
+    server_utc_offset_minutes: int = Field(default=0, ge=-840, le=840)
     entry_price: Decimal
     exit_price: Decimal
     volume: Decimal = Field(gt=0)
@@ -27,7 +28,7 @@ class MT5PositionExport(BaseModel):
     swap: Decimal
     fees: Decimal
     net_pnl: Decimal
-    # Schema v2+ evidence. Empty values mean MT5 could not establish that fact;
+    # Schema v4 evidence. Empty values mean MT5 could not establish that fact;
     # they are deliberately not inferred from the trade outcome.
     entry_stop_price: Decimal | None = None
     entry_target_price: Decimal | None = None
@@ -37,7 +38,7 @@ class MT5PositionExport(BaseModel):
     exit_reason: str | None = None
     initial_risk_amount: Decimal | None = Field(default=None, gt=0)
     initial_reward_amount: Decimal | None = None
-    # Schema v3 snapshot. This is the terminal's current account balance when
+    # Schema v4 snapshot. This is the terminal's current account balance when
     # it exported the CSV, not a historical balance at each trade's close.
     # A depleted account can legitimately report zero or a negative balance.
     # Preserve the snapshot so imports continue; Risk scoring treats non-positive

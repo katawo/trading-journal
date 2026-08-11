@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
@@ -188,29 +187,27 @@ def render_manual_sync_button(repo: SQLiteJournalRepository, *, key: str) -> Non
     render_sync_failures(results, prefix="MT5 sync needs attention")
 
 
-def render_journal_settings(repo: SQLiteJournalRepository) -> None:
-    try:
+def render_journal_reporting_settings(repo: SQLiteJournalRepository) -> None:
+    st.markdown("#### Journal reporting")
+    with st.form("journal-reporting-settings", border=True):
+        st.markdown("**Reporting calendar**")
         current = repo.get_journal_settings()
-    except RuntimeError:
-        current = None
-
-    st.markdown("#### Journal defaults")
-    with st.container(border=True):
-        st.markdown("**Reporting**")
-        currency, timezone = st.columns([1, 2])
-        base_currency = currency.text_input("Base currency", value=current.base_currency if current else "USD", max_chars=3).upper()
-        reporting_timezone = timezone.text_input("Reporting timezone", value=current.reporting_timezone if current else "UTC")
+        labels = {"server": "Server Timezone", "utc": "UTC", "local": "Local Timezone"}
+        selected = st.segmented_control(
+            "Group trades and reports by",
+            list(labels.values()),
+            default=labels[current.reporting_time_basis],
+            required=True,
+            width="content",
+        )
+        st.caption("Server Timezone reproduces the MT5 broker clock saved with each export. Local Timezone uses the computer running this journal. Currency is taken from the selected account; accounts are never converted or aggregated.")
         st.caption("Configure standard risk (1R) and risk limits per account in Framework → Risk policy.")
         if current and current.default_strategy_name:
             st.caption(f"Default strategy: {current.default_strategy_name}. Manage it in Settings → Strategies.")
-        submitted = st.button("Save journal settings", type="primary", icon=":material/save:")
+        submitted = st.form_submit_button("Save reporting settings", type="primary", icon=":material/save:")
     if submitted:
         try:
-            repo.configure_journal(
-                base_currency=base_currency,
-                reporting_timezone=reporting_timezone,
-                starting_balance=None,
-            )
+            repo.configure_journal(reporting_time_basis=next(key for key, label in labels.items() if label == selected))
         except ValueError as error:
             st.error(str(error))
         else:
@@ -219,7 +216,7 @@ def render_journal_settings(repo: SQLiteJournalRepository) -> None:
 
 def render_mt5_account_settings(repo: SQLiteJournalRepository) -> None:
     st.markdown("#### Approved MT5 accounts")
-    st.caption("Each account is identified by its MT5 account ID and broker server. Funded capital can be updated later; it recalculates historical growth, drawdown, and Risk limits without changing MT5 trades.")
+    st.caption("Each account has a unique MT5 account ID. Its broker server confirms the export source. Funded capital can be updated later; it recalculates historical growth, drawdown, and Risk limits without changing MT5 trades.")
     common_files_location = find_mt5_common_files()
     accounts = repo.list_mt5_accounts()
     accounts_by_id = {str(account.id): account for account in accounts}
@@ -312,8 +309,8 @@ def render_mt5_account_settings(repo: SQLiteJournalRepository) -> None:
         if not display_name or not login.isdecimal() or not broker_server:
             st.session_state["mt5-account-save-error"] = "A numeric MT5 login and broker server are required."
             return
-        if selected is None and any(account.login == login and account.broker_server == broker_server for account in accounts):
-            st.session_state["mt5-account-save-error"] = "This MT5 account is already registered. Select it from the accounts list to update its settings."
+        if selected is None and any(account.login == login for account in accounts):
+            st.session_state["mt5-account-save-error"] = "This MT5 account ID is already registered. Select it from the accounts list to update its settings."
             return
 
         resolved_export_path = export_file_path.strip() or default_mt5_export_path(login)
@@ -395,7 +392,7 @@ def render_mt5_account_settings(repo: SQLiteJournalRepository) -> None:
         if selected is not None:
             with st.expander("Account maintenance"):
                 if has_imported_trades:
-                    st.caption("This account has imported trades or reviews. Deactivate it to remove it from imports and reports while retaining its local history. Adding the same ID and server later reactivates it.")
+                    st.caption("This account has imported trades or reviews. Deactivate it to remove it from imports and reports while retaining its local history. Adding the same MT5 account ID later reactivates it.")
 
                     def deactivate_account() -> None:
                         repo.deactivate_mt5_account(selected.id)
@@ -433,24 +430,13 @@ def render_mt5_account_settings(repo: SQLiteJournalRepository) -> None:
         if notice:
             st.success(notice)
 
-    accounts_by_login: dict[str, list[AccountListItem]] = {}
-    for account in accounts:
-        accounts_by_login.setdefault(account.login, []).append(account)
-    for login, items in accounts_by_login.items():
-        if len(items) > 1:
-            st.warning(
-                f"MT5 account ID {login} is registered with multiple broker servers ({', '.join(item.broker_server for item in items)}). "
-                "Only an export with the exact server text will import into each account. Deactivate an obsolete entry to avoid selecting the wrong account in reports."
-            )
-
-
 def render_settings(repo: SQLiteJournalRepository) -> None:
     st.subheader("Settings")
-    st.caption("Configure journal defaults, approved MT5 accounts, and reusable strategies.")
-    general_tab, accounts_tab, strategies_tab = st.tabs(["General", "MT5 Accounts", "Strategies"])
-    with general_tab:
-        render_journal_settings(repo)
+    st.caption("Configure reporting, approved MT5 accounts, and reusable strategies.")
+    accounts_tab, strategies_tab = st.tabs(["MT5 Accounts", "Strategies"])
     with accounts_tab:
+        render_journal_reporting_settings(repo)
+        st.divider()
         render_mt5_account_settings(repo)
     with strategies_tab:
         render_strategy_settings(repo)
@@ -637,8 +623,8 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
             format_func=lambda item: f"{item.display_name} · {item.login} · {item.broker_server}",
             key="dashboard-report-account",
         )
-        today = date.today()
         dashboard_service = DashboardService(repo)
+        today = dashboard_service.current_report_date(account.id)
         period = st.segmented_control(
             "Report period",
             ["This month", "All time", "Custom"],
@@ -659,7 +645,8 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
                 st.error("Start date must be on or before end date.")
                 return account
     currency = account.account_currency
-    st.caption(f"All monetary figures below are for this {currency} account only. No currency conversion is applied.")
+    time_label = {"server": "MT5 server time", "utc": "UTC", "local": "local computer time"}[settings.reporting_time_basis]
+    st.caption(f"All monetary figures below are for this {currency} account only. No currency conversion is applied. Report dates use {time_label}.")
 
     report = dashboard_service.build_report(account_id=account.id, start_date=start_date.isoformat(), end_date=end_date.isoformat())
     if report.trade_count == 0:

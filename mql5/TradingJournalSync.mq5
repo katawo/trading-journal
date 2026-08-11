@@ -17,6 +17,15 @@ string ServerTime(datetime value)
    return formatted;
   }
 
+int ServerUtcOffsetMinutes()
+  {
+   datetime server_time=TimeTradeServer();
+   datetime utc_time=TimeGMT();
+   if(server_time==0 || utc_time==0)
+      return 0;
+   return (int)MathRound((double)(server_time-utc_time)/60.0);
+  }
+
 string DealReasonText(const long reason)
   {
    if(reason==DEAL_REASON_SL) return "stop_loss";
@@ -48,7 +57,7 @@ bool ContainsPosition(const ulong &positions[],const ulong position_id)
    return false;
   }
 
-bool ExportPosition(const ulong position_id,const int handle,const double account_balance)
+bool ExportPosition(const ulong position_id,const int handle,const double account_balance,const int server_utc_offset_minutes)
   {
    if(!HistorySelectByPosition(position_id))
       return false;
@@ -140,7 +149,7 @@ bool ExportPosition(const ulong position_id,const int handle,const double accoun
          initial_reward=MathAbs(calculated);
      }
    FileWrite(handle,
-             3,
+             4,
              (string)AccountInfoInteger(ACCOUNT_LOGIN),
              AccountInfoString(ACCOUNT_SERVER),
              AccountInfoString(ACCOUNT_CURRENCY),
@@ -149,6 +158,7 @@ bool ExportPosition(const ulong position_id,const int handle,const double accoun
              direction,
              ServerTime(entry_time),
              ServerTime(exit_time),
+             server_utc_offset_minutes,
              DoubleToString(entry_price,symbol_digits),
              DoubleToString(exit_notional/exit_volume,symbol_digits),
              DoubleToString(entry_volume,2),
@@ -203,11 +213,12 @@ bool ExportCompletedPositions()
       return false;
      }
    double account_balance=AccountInfoDouble(ACCOUNT_BALANCE);
-   FileWrite(handle,"schema_version","account_login","broker_server","account_currency","position_id","symbol","direction","entry_time","exit_time","entry_price","exit_price","volume","gross_pnl","commission","swap","fees","net_pnl","entry_stop_price","entry_target_price","close_stop_price","entry_magic_number","entry_deal_count","exit_reason","initial_risk_amount","initial_reward_amount","account_balance");
+   int server_utc_offset_minutes=ServerUtcOffsetMinutes();
+   FileWrite(handle,"schema_version","account_login","broker_server","account_currency","position_id","symbol","direction","entry_time","exit_time","server_utc_offset_minutes","entry_price","exit_price","volume","gross_pnl","commission","swap","fees","net_pnl","entry_stop_price","entry_target_price","close_stop_price","entry_magic_number","entry_deal_count","exit_reason","initial_risk_amount","initial_reward_amount","account_balance");
 
    int exported=0;
    for(int index=0;index<ArraySize(position_ids);index++)
-      if(ExportPosition(position_ids[index],handle,account_balance))
+      if(ExportPosition(position_ids[index],handle,account_balance,server_utc_offset_minutes))
          exported++;
    FileClose(handle);
 
