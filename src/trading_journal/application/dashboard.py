@@ -5,7 +5,12 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from trading_journal.application.reporting_time import reporting_date, reporting_datetime
-from trading_journal.infrastructure.sqlite_repository import SQLiteJournalRepository, TradePerformanceItem, normalize_strategy_name
+from trading_journal.infrastructure.sqlite_repository import (
+    AccountBalanceMovement,
+    SQLiteJournalRepository,
+    TradePerformanceItem,
+    normalize_strategy_name,
+)
 
 
 def _decimal_string(value: Decimal) -> str:
@@ -28,6 +33,10 @@ class CumulativePoint:
 @dataclass(frozen=True)
 class TradePerformancePoint:
     sequence: int
+    logical_trade_id: int
+    display_label: str
+    position_ids: tuple[str, ...]
+    position_count: int
     exit_time: str
     position_id: str | None
     symbol: str
@@ -61,6 +70,7 @@ class StrategyPerformance:
 @dataclass(frozen=True)
 class DashboardReport:
     trade_count: int
+    raw_position_count: int
     net_pnl: str
     total_r: str | None
     r_trade_count: int
@@ -94,9 +104,17 @@ class DashboardService:
         start = date.fromisoformat(start_date)
         end = date.fromisoformat(end_date)
         dated_trades = [(trade, self._trade_date(trade, time_basis)) for trade in self._repository.list_trade_performance(account_id)]
+        dated_movements = [
+            (movement, self._movement_date(movement, time_basis))
+            for movement in self._repository.list_account_balance_movements(account_id)
+        ]
         trades = [trade for trade, trade_date in dated_trades if start <= trade_date <= end]
+        movements = [movement for movement, movement_date in dated_movements if start <= movement_date <= end]
 
-        pnl_total = sum((Decimal(trade.net_pnl) for trade in trades), Decimal("0"))
+        # Monetary account facts always follow immutable MT5 positions. The
+        # logical-trade list remains the analysis sequence for review quality,
+        # strategy, and per-trade comparisons.
+        pnl_total = sum((Decimal(movement.net_pnl) for movement in movements), Decimal("0"))
         r_values = [Decimal(trade.result_r) for trade in trades if trade.result_r is not None]
         r_total = sum(r_values, Decimal("0")) if r_values else None
         wins = sum(Decimal(trade.net_pnl) > 0 for trade in trades)
@@ -113,13 +131,15 @@ class DashboardService:
         daily_r: dict[str, Decimal] = {}
         strategies: dict[str, tuple[Decimal, Decimal | None]] = {}
         profiles_by_name = {normalize_strategy_name(profile.name): profile for profile in self._repository.list_strategy_profiles()}
-        for trade in trades:
-            trade_date = self._trade_date(trade, time_basis).isoformat()
-            pnl = Decimal(trade.net_pnl)
-            daily[trade_date] = daily.get(trade_date, Decimal("0")) + pnl
-            if trade.result_r is not None:
-                daily_r[trade_date] = daily_r.get(trade_date, Decimal("0")) + Decimal(trade.result_r)
+        for movement in movements:
+            movement_date = self._movement_date(movement, time_basis).isoformat()
+            pnl = Decimal(movement.net_pnl)
+            daily[movement_date] = daily.get(movement_date, Decimal("0")) + pnl
+            if movement.result_r is not None:
+                daily_r[movement_date] = daily_r.get(movement_date, Decimal("0")) + Decimal(movement.result_r)
 
+        for trade in trades:
+            pnl = Decimal(trade.net_pnl)
             strategy = trade.strategy or "Untagged"
             strategy_pnl, strategy_r = strategies.get(strategy, (Decimal("0"), None))
             next_r = strategy_r
@@ -133,26 +153,47 @@ class DashboardService:
         has_r = False
         account_baseline = self._repository.get_account_opening_balance(account_id)
         configured_starting_balance = None if account_baseline is None else Decimal(account_baseline)
-        prior_pnl = sum((Decimal(trade.net_pnl) for trade, trade_date in dated_trades if trade_date < start), Decimal("0"))
+        prior_pnl = sum((Decimal(movement.net_pnl) for movement, movement_date in dated_movements if movement_date < start), Decimal("0"))
         starting_balance = None if configured_starting_balance is None else configured_starting_balance + prior_pnl
+
+        # Account drawdown is assessed at every immutable position close. The
+        # daily series below remains a compact end-of-day visualisation, but it
+        # must not hide an intra-day raw-position drawdown in the headline.
+        raw_cumulative_pnl = Decimal("0")
+        raw_peak_pnl = Decimal("0")
+        account_balance = starting_balance
+        account_peak_balance = starting_balance
+        account_max_drawdown = Decimal("0")
+        account_max_drawdown_percent: Decimal | None = None
+        account_current_drawdown = Decimal("0")
+        account_current_drawdown_percent: Decimal | None = None
+        for movement in movements:
+            raw_cumulative_pnl += Decimal(movement.net_pnl)
+            raw_peak_pnl = max(raw_peak_pnl, raw_cumulative_pnl)
+            account_current_drawdown = raw_peak_pnl - raw_cumulative_pnl
+            account_max_drawdown = max(account_max_drawdown, account_current_drawdown)
+            if account_balance is not None and account_peak_balance is not None:
+                account_balance += Decimal(movement.net_pnl)
+                account_peak_balance = max(account_peak_balance, account_balance)
+                account_current_drawdown_percent = account_current_drawdown * Decimal("100") / account_peak_balance
+                if account_max_drawdown == account_current_drawdown:
+                    account_max_drawdown_percent = account_current_drawdown_percent
 
         per_trade: list[TradePerformancePoint] = []
         trade_cumulative_pnl = Decimal("0")
         trade_peak_pnl = Decimal("0")
-        trade_peak_balance = starting_balance
         for sequence, trade in enumerate(trades, start=1):
             trade_pnl = Decimal(trade.net_pnl)
             trade_cumulative_pnl += trade_pnl
             trade_peak_pnl = max(trade_peak_pnl, trade_cumulative_pnl)
             trade_drawdown = trade_peak_pnl - trade_cumulative_pnl
-            trade_balance = None if starting_balance is None else starting_balance + trade_cumulative_pnl
-            trade_drawdown_percent = None
-            if trade_balance is not None and trade_peak_balance is not None:
-                trade_peak_balance = max(trade_peak_balance, trade_balance)
-                trade_drawdown_percent = trade_drawdown * Decimal("100") / trade_peak_balance
             per_trade.append(
                 TradePerformancePoint(
                     sequence=sequence,
+                    logical_trade_id=trade.logical_trade_id,
+                    display_label=trade.display_label,
+                    position_ids=trade.position_ids,
+                    position_count=trade.position_count,
                     exit_time=reporting_datetime(trade.exit_time, trade.server_utc_offset_minutes, time_basis).isoformat(),
                     position_id=trade.position_id,
                     symbol=trade.symbol,
@@ -160,40 +201,35 @@ class DashboardService:
                     result_r=trade.result_r,
                     strategy=trade.strategy,
                     cumulative_pnl=_decimal_string(trade_cumulative_pnl),
-                    balance=None if trade_balance is None else _decimal_string(trade_balance),
+                    balance=None,
                     drawdown=_decimal_string(trade_drawdown),
-                    drawdown_percent=None if trade_drawdown_percent is None else _decimal_string(trade_drawdown_percent),
+                    drawdown_percent=None,
                 )
             )
 
         peak_pnl = Decimal("0")
         peak_balance = starting_balance
-        max_drawdown = Decimal("0")
-        max_drawdown_percent: Decimal | None = None
-        current_drawdown = Decimal("0")
-        current_drawdown_percent: Decimal | None = None
+        daily_current_drawdown = Decimal("0")
+        daily_current_drawdown_percent: Decimal | None = None
         for trade_date, pnl in sorted(daily.items()):
             cumulative_pnl += pnl
             if trade_date in daily_r:
                 cumulative_r += daily_r[trade_date]
                 has_r = True
             peak_pnl = max(peak_pnl, cumulative_pnl)
-            current_drawdown = peak_pnl - cumulative_pnl
-            max_drawdown = max(max_drawdown, current_drawdown)
+            daily_current_drawdown = peak_pnl - cumulative_pnl
             balance = None if starting_balance is None else starting_balance + cumulative_pnl
             if balance is not None and peak_balance is not None:
                 peak_balance = max(peak_balance, balance)
-                current_drawdown_percent = current_drawdown * Decimal("100") / peak_balance
-                if max_drawdown == current_drawdown:
-                    max_drawdown_percent = current_drawdown_percent
+                daily_current_drawdown_percent = daily_current_drawdown * Decimal("100") / peak_balance
             cumulative.append(
                 CumulativePoint(
                     trade_date,
                     _decimal_string(cumulative_pnl),
                     _decimal_string(cumulative_r) if has_r else None,
                     None if balance is None else _decimal_string(balance),
-                    _decimal_string(current_drawdown),
-                    None if current_drawdown_percent is None else _decimal_string(current_drawdown_percent),
+                    _decimal_string(daily_current_drawdown),
+                    None if daily_current_drawdown_percent is None else _decimal_string(daily_current_drawdown_percent),
                 )
             )
 
@@ -203,6 +239,7 @@ class DashboardService:
 
         return DashboardReport(
             trade_count=len(trades),
+            raw_position_count=len(movements),
             net_pnl=_decimal_string(pnl_total),
             total_r=None if r_total is None else _decimal_string(r_total),
             r_trade_count=len(r_values),
@@ -210,10 +247,10 @@ class DashboardService:
             starting_balance=None if starting_balance is None else _decimal_string(starting_balance),
             ending_balance=None if ending_balance is None else _decimal_string(ending_balance),
             balance_growth_percent=None if balance_growth_percent is None else _decimal_string(balance_growth_percent),
-            max_drawdown=_decimal_string(max_drawdown),
-            max_drawdown_percent=None if max_drawdown_percent is None else _decimal_string(max_drawdown_percent),
-            current_drawdown=_decimal_string(current_drawdown),
-            current_drawdown_percent=None if current_drawdown_percent is None else _decimal_string(current_drawdown_percent),
+            max_drawdown=_decimal_string(account_max_drawdown),
+            max_drawdown_percent=None if account_max_drawdown_percent is None else _decimal_string(account_max_drawdown_percent),
+            current_drawdown=_decimal_string(account_current_drawdown),
+            current_drawdown_percent=None if account_current_drawdown_percent is None else _decimal_string(account_current_drawdown_percent),
             worst_day=None if worst_day is None else _decimal_string(worst_day),
             profit_factor=None if profit_factor is None else _decimal_string(profit_factor),
             expectancy=None if expectancy is None else _decimal_string(expectancy),
@@ -239,7 +276,10 @@ class DashboardService:
     def earliest_trade_date(self, account_id: int | None = None) -> date | None:
         account_id = self._single_account_id(account_id)
         settings = self._repository.get_journal_settings()
-        dates = [self._trade_date(trade, settings.reporting_time_basis) for trade in self._repository.list_trade_performance(account_id)]
+        dates = [
+            self._movement_date(movement, settings.reporting_time_basis)
+            for movement in self._repository.list_account_balance_movements(account_id)
+        ]
         return min(dates) if dates else None
 
     def current_report_date(self, account_id: int) -> date:
@@ -252,6 +292,10 @@ class DashboardService:
     @staticmethod
     def _trade_date(trade: TradePerformanceItem, reporting_time_basis: str) -> date:
         return reporting_date(trade.exit_time, trade.server_utc_offset_minutes, reporting_time_basis)
+
+    @staticmethod
+    def _movement_date(movement: AccountBalanceMovement, reporting_time_basis: str) -> date:
+        return reporting_date(movement.exit_time, movement.server_utc_offset_minutes, reporting_time_basis)
 
     def _single_account_id(self, account_id: int | None) -> int:
         if account_id is not None:

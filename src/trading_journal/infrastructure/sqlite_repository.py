@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from typing import Mapping
 
-from sqlalchemy import Boolean, ForeignKey, Integer, String, Text, UniqueConstraint, create_engine, delete, event, select
+from sqlalchemy import Boolean, ForeignKey, Index, Integer, String, Text, UniqueConstraint, create_engine, delete, event, select, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 from trading_journal.application.reporting_time import REPORTING_TIME_BASES, normalize_server_timestamp
@@ -128,6 +128,17 @@ class StrategyMagicNumber(Base):
     magic_number: Mapped[str] = mapped_column(String(32), nullable=False)
 
 
+class LogicalTrade(Base):
+    """A journal trade: one imported position or a user-defined group of positions."""
+
+    __tablename__ = "logical_trades"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    mt5_account_id: Mapped[int] = mapped_column(ForeignKey("mt5_accounts.id"), nullable=False)
+    display_label: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    created_at: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
 class Trade(Base):
     __tablename__ = "trades"
     __table_args__ = (UniqueConstraint("mt5_account_id", "mt5_position_id", name="uq_mt5_position"),)
@@ -135,6 +146,7 @@ class Trade(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     source: Mapped[str] = mapped_column(String(10), nullable=False)
     mt5_account_id: Mapped[int | None] = mapped_column(ForeignKey("mt5_accounts.id"), nullable=True)
+    logical_trade_id: Mapped[int] = mapped_column(ForeignKey("logical_trades.id"), nullable=False)
     mt5_position_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     source_updated_at: Mapped[str] = mapped_column(String(64), nullable=False)
     symbol: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -197,14 +209,21 @@ class AccountRiskPolicy(Base):
 
 
 class PostTradeAssessment(Base):
-    """One complete, post-trade assessment of an imported closed position."""
+    """One complete, post-trade assessment of a logical trade."""
 
     __tablename__ = "post_trade_assessments"
-    __table_args__ = (UniqueConstraint("trade_id", name="uq_post_trade_assessment_trade"),)
+    __table_args__ = (
+        Index(
+            "uq_active_post_trade_assessment_logical_trade",
+            "logical_trade_id",
+            unique=True,
+            sqlite_where=text("superseded_at IS NULL"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     mt5_account_id: Mapped[int] = mapped_column(ForeignKey("mt5_accounts.id"), nullable=False)
-    trade_id: Mapped[int] = mapped_column(ForeignKey("trades.id"), nullable=False)
+    logical_trade_id: Mapped[int] = mapped_column(ForeignKey("logical_trades.id"), nullable=False)
     risk_policy_id: Mapped[int | None] = mapped_column(ForeignKey("account_risk_policies.id"), nullable=True)
     strategy_profile_id: Mapped[int] = mapped_column(ForeignKey("strategy_profiles.id"), nullable=False)
     strategy_snapshot: Mapped[str] = mapped_column(Text, nullable=False)
@@ -214,6 +233,10 @@ class PostTradeAssessment(Base):
     declared_actual_risk_amount: Mapped[str | None] = mapped_column(String, nullable=True)
     post_review_note: Mapped[str] = mapped_column(Text, nullable=False)
     corrective_action: Mapped[str | None] = mapped_column(Text, nullable=True)
+    assessed_position_ids: Mapped[str] = mapped_column(Text, nullable=False)
+    assessed_trade_label: Mapped[str] = mapped_column(String(160), nullable=False)
+    superseded_at: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    superseded_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[str] = mapped_column(String(64), nullable=False)
     updated_at: Mapped[str] = mapped_column(String(64), nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
@@ -358,6 +381,10 @@ class StrategyProfileView:
 
 @dataclass(frozen=True)
 class TradePerformanceItem:
+    logical_trade_id: int
+    display_label: str
+    position_ids: tuple[str, ...]
+    position_count: int
     exit_time: str
     server_utc_offset_minutes: int
     position_id: str | None
@@ -365,6 +392,17 @@ class TradePerformanceItem:
     net_pnl: str
     result_r: str | None
     strategy: str | None
+
+
+@dataclass(frozen=True)
+class AccountBalanceMovement:
+    """One immutable realized MT5 cash movement for balance reporting."""
+
+    position_id: str | None
+    exit_time: str
+    server_utc_offset_minutes: int
+    net_pnl: str
+    result_r: str | None
 
 
 @dataclass(frozen=True)
@@ -399,8 +437,10 @@ class StrategyEvidenceSnapshot:
 
 
 @dataclass(frozen=True)
-class ClosedTradeReviewItem:
+class ImportedPositionReviewItem:
     id: int
+    account_id: int
+    logical_trade_id: int
     position_id: str | None
     symbol: str
     direction: str
@@ -423,6 +463,44 @@ class ClosedTradeReviewItem:
 
 
 @dataclass(frozen=True)
+class ClosedTradeReviewItem:
+    """Aggregate execution facts for one reviewable logical trade."""
+
+    id: int
+    position_id: str | None
+    position_ids: tuple[str, ...]
+    custom_label: str | None
+    display_label: str
+    members: tuple[ImportedPositionReviewItem, ...]
+    symbol: str
+    direction: str
+    entry_time: str
+    exit_time: str
+    server_utc_offset_minutes: int
+    entry_price: str
+    exit_price: str
+    volume: str
+    net_pnl: str
+    entry_stop_price: str | None
+    entry_target_price: str | None
+    close_stop_price: str | None
+    entry_magic_number: str | None
+    entry_deal_count: int | None
+    exit_reason: str | None
+    initial_risk_amount: str | None
+    initial_reward_amount: str | None
+    auto_risk_policy_id: int | None
+
+    @property
+    def position_count(self) -> int:
+        return len(self.members)
+
+    @property
+    def is_group(self) -> bool:
+        return self.position_count > 1
+
+
+@dataclass(frozen=True)
 class PostTradeAssessmentView:
     id: int
     account_id: int
@@ -436,6 +514,10 @@ class PostTradeAssessmentView:
     declared_actual_risk_amount: str | None
     post_review_note: str
     corrective_action: str | None
+    assessed_position_ids: tuple[str, ...]
+    assessed_trade_label: str
+    superseded_at: str | None
+    superseded_reason: str | None
     created_at: str
     updated_at: str
     version: int
@@ -460,6 +542,18 @@ class PostTradeAssessmentRevisionView:
 class PostTradeAssessmentOutcome:
     assessment: PostTradeAssessmentView
     trade: ClosedTradeReviewItem
+
+
+@dataclass(frozen=True)
+class LogicalTradeRegroupPreview:
+    affected_assessment_count: int
+    affected_assessment_labels: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class LogicalTradeRegroupResult:
+    logical_trade_id: int | None
+    superseded_assessment_count: int
 
 
 @dataclass(frozen=True)
@@ -526,8 +620,18 @@ class SQLiteJournalRepository:
         expected_columns = {
             "journal_settings": {"reporting_time_basis"},
             "mt5_accounts": {"latest_server_utc_offset_minutes"},
-            "trades": {"server_utc_offset_minutes"},
-            "post_trade_assessments": {"criterion_grades", "violation_codes", "hard_rule_codes"},
+            "trades": {"server_utc_offset_minutes", "logical_trade_id"},
+            "logical_trades": {"mt5_account_id", "created_at"},
+            "post_trade_assessments": {
+                "logical_trade_id",
+                "criterion_grades",
+                "violation_codes",
+                "hard_rule_codes",
+                "assessed_position_ids",
+                "assessed_trade_label",
+                "superseded_at",
+                "superseded_reason",
+            },
             "post_trade_assessment_revisions": {"criterion_grades", "violation_codes", "hard_rule_codes"},
         }
         with self._engine.connect() as connection:
@@ -829,16 +933,315 @@ class SQLiteJournalRepository:
             return self._to_risk_policy_view(policy)
 
     def list_closed_trades_for_review(self, account_id: int) -> list[ClosedTradeReviewItem]:
-        """Return immutable MT5 positions that can be assessed after they close."""
+        """Return logical trades assembled from immutable imported MT5 positions."""
+        with self._sessions() as session:
+            return self._logical_trade_review_items(session, account_id)
+
+    def list_imported_positions_for_risk(self, account_id: int) -> list[ImportedPositionReviewItem]:
+        """Raw chronology for account-level Risk limits; grouping never changes it."""
         with self._sessions() as session:
             rows = session.scalars(
-                select(Trade).where(Trade.mt5_account_id == account_id).order_by(Trade.exit_time.desc(), Trade.id.desc())
+                select(Trade).where(Trade.mt5_account_id == account_id).order_by(Trade.exit_time, Trade.id)
             ).all()
-            return [self._to_closed_trade_review_item(row) for row in rows]
+            return [self._to_imported_position_review_item(row) for row in rows]
+
+    def list_groupable_logical_trades(self, account_id: int) -> list[ClosedTradeReviewItem]:
+        """Backward-compatible list of singleton logical trades.
+
+        The regrouping UI works from raw positions and may now regroup reviewed
+        trades.  This remains useful to callers that only need the default
+        one-position units.
+        """
+        with self._sessions() as session:
+            return [
+                item
+                for item in self._logical_trade_review_items(session, account_id)
+                if not item.is_group
+            ]
+
+    def list_imported_positions_for_grouping(self, account_id: int) -> list[ImportedPositionReviewItem]:
+        """Return every raw MT5 position that may be moved between logical trades."""
+        return self.list_imported_positions_for_risk(account_id)
+
+    def preview_logical_trade_regroup(
+        self,
+        *,
+        account_id: int,
+        position_trade_ids: tuple[int, ...],
+        logical_trade_id: int | None,
+    ) -> LogicalTradeRegroupPreview:
+        """Describe active assessments that a membership change will supersede."""
+        selected = tuple(sorted(set(position_trade_ids)))
+        with self._sessions() as session:
+            selected_rows, destination, destination_rows = self._regroup_context(
+                session,
+                account_id=account_id,
+                position_trade_ids=selected,
+                logical_trade_id=logical_trade_id,
+            )
+            if len(selected_rows) > 1:
+                self._validate_group_members(selected_rows, account_id)
+            affected_ids = self._regroup_affected_logical_trade_ids(
+                selected_rows,
+                destination,
+                destination_rows,
+            )
+            assessments = self._active_assessments_for_logical_trades(session, affected_ids)
+            return LogicalTradeRegroupPreview(
+                affected_assessment_count=len(assessments),
+                affected_assessment_labels=tuple(item.assessed_trade_label for item in assessments),
+            )
+
+    def regroup_logical_trade(
+        self,
+        *,
+        account_id: int,
+        position_trade_ids: tuple[int, ...],
+        display_label: str | None,
+        logical_trade_id: int | None = None,
+    ) -> LogicalTradeRegroupResult:
+        """Create or change a logical trade without changing immutable MT5 facts.
+
+        Membership is mutable.  Any active assessment attached to a logical
+        trade whose member set changes is retained for audit, marked
+        superseded, and excluded from active framework evidence.
+        """
+        selected = tuple(sorted(set(position_trade_ids)))
+        if logical_trade_id is None and len(selected) < 2:
+            raise ValueError("Select at least two positions to create one logical trade")
+        if not selected:
+            raise ValueError("Select at least one position")
+        now = datetime.now(timezone.utc).isoformat()
+        with self._sessions.begin() as session:
+            selected_rows, destination, destination_rows = self._regroup_context(
+                session,
+                account_id=account_id,
+                position_trade_ids=selected,
+                logical_trade_id=logical_trade_id,
+            )
+            if len(selected_rows) > 1:
+                self._validate_group_members(selected_rows, account_id)
+            if destination is None:
+                destination = LogicalTrade(
+                    mt5_account_id=account_id,
+                    display_label=self._optional_text(display_label),
+                    created_at=now,
+                )
+                session.add(destination)
+                session.flush()
+                destination_rows = []
+            affected_ids = self._regroup_affected_logical_trade_ids(
+                selected_rows,
+                destination,
+                destination_rows,
+            )
+            superseded = self._supersede_active_assessments(
+                session,
+                affected_ids,
+                superseded_at=now,
+                reason="Logical-trade membership changed",
+            )
+            selected_ids = {row.id for row in selected_rows}
+            remainder_rows = [row for row in destination_rows if row.id not in selected_ids]
+            if remainder_rows:
+                remainder = LogicalTrade(
+                    mt5_account_id=account_id,
+                    display_label=None,
+                    created_at=now,
+                )
+                session.add(remainder)
+                session.flush()
+                for row in remainder_rows:
+                    row.logical_trade_id = remainder.id
+            for row in selected_rows:
+                row.logical_trade_id = destination.id
+            destination.display_label = self._optional_text(display_label)
+            self._retire_empty_logical_trades(session, affected_ids - {destination.id})
+            return LogicalTradeRegroupResult(destination.id, superseded)
+
+    def preview_logical_trade_disband(
+        self,
+        *,
+        account_id: int,
+        logical_trade_id: int,
+    ) -> LogicalTradeRegroupPreview:
+        with self._sessions() as session:
+            group = session.get(LogicalTrade, logical_trade_id)
+            if group is None or group.mt5_account_id != account_id:
+                raise ValueError("Logical trade was not found for this MT5 account")
+            rows = session.scalars(select(Trade).where(Trade.logical_trade_id == logical_trade_id)).all()
+            if len(rows) < 2:
+                raise ValueError("Only grouped logical trades can be disbanded")
+            assessments = self._active_assessments_for_logical_trades(session, {logical_trade_id})
+            return LogicalTradeRegroupPreview(
+                affected_assessment_count=len(assessments),
+                affected_assessment_labels=tuple(item.assessed_trade_label for item in assessments),
+            )
+
+    def create_logical_trade_group(
+        self,
+        *,
+        account_id: int,
+        logical_trade_ids: tuple[int, ...],
+        display_label: str | None,
+    ) -> int:
+        """Backward-compatible wrapper for grouping complete logical units."""
+        selected = tuple(sorted(set(logical_trade_ids)))
+        if len(selected) < 2:
+            raise ValueError("Select at least two positions to create one logical trade")
+        with self._sessions() as session:
+            units = [session.get(LogicalTrade, item_id) for item_id in selected]
+            if any(item is None or item.mt5_account_id != account_id for item in units):
+                raise ValueError("Selected positions do not belong to this MT5 account")
+            position_ids = tuple(
+                row.id
+                for row in session.scalars(
+                    select(Trade).where(Trade.logical_trade_id.in_(selected)).order_by(Trade.entry_time, Trade.id)
+                ).all()
+            )
+        result = self.regroup_logical_trade(
+            account_id=account_id,
+            position_trade_ids=position_ids,
+            display_label=display_label,
+        )
+        assert result.logical_trade_id is not None
+        return result.logical_trade_id
+
+    def update_logical_trade_group(
+        self,
+        *,
+        account_id: int,
+        logical_trade_id: int,
+        position_trade_ids: tuple[int, ...],
+        display_label: str | None,
+    ) -> None:
+        """Backward-compatible wrapper for editing a mutable logical trade."""
+        self.regroup_logical_trade(
+            account_id=account_id,
+            logical_trade_id=logical_trade_id,
+            position_trade_ids=position_trade_ids,
+            display_label=display_label,
+        )
+
+    def disband_logical_trade_group(self, *, account_id: int, logical_trade_id: int) -> LogicalTradeRegroupResult:
+        """Return every group member to a singleton, superseding any active review."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._sessions.begin() as session:
+            group = session.get(LogicalTrade, logical_trade_id)
+            if group is None or group.mt5_account_id != account_id:
+                raise ValueError("Logical trade was not found for this MT5 account")
+            rows = session.scalars(select(Trade).where(Trade.logical_trade_id == logical_trade_id)).all()
+            if len(rows) < 2:
+                raise ValueError("Only grouped logical trades can be disbanded")
+            superseded = self._supersede_active_assessments(
+                session,
+                {logical_trade_id},
+                superseded_at=now,
+                reason="Logical trade disbanded into individual positions",
+            )
+            for row in rows:
+                singleton = LogicalTrade(mt5_account_id=account_id, display_label=None, created_at=now)
+                session.add(singleton)
+                session.flush()
+                row.logical_trade_id = singleton.id
+            self._retire_empty_logical_trades(session, {logical_trade_id})
+            return LogicalTradeRegroupResult(None, superseded)
+
+    def _regroup_context(
+        self,
+        session,  # type: ignore[no-untyped-def]
+        *,
+        account_id: int,
+        position_trade_ids: tuple[int, ...],
+        logical_trade_id: int | None,
+    ) -> tuple[list[Trade], LogicalTrade | None, list[Trade]]:
+        if not position_trade_ids:
+            raise ValueError("Select at least one position")
+        if logical_trade_id is None and len(position_trade_ids) < 2:
+            raise ValueError("Select at least two positions to create one logical trade")
+        rows = session.scalars(
+            select(Trade).where(Trade.id.in_(position_trade_ids)).order_by(Trade.entry_time, Trade.id)
+        ).all()
+        if len(rows) != len(position_trade_ids) or any(row.mt5_account_id != account_id for row in rows):
+            raise ValueError("Selected positions do not belong to this MT5 account")
+        destination = None if logical_trade_id is None else session.get(LogicalTrade, logical_trade_id)
+        if destination is not None and destination.mt5_account_id != account_id:
+            raise ValueError("Logical trade was not found for this MT5 account")
+        if logical_trade_id is not None and destination is None:
+            raise ValueError("Logical trade was not found for this MT5 account")
+        destination_rows = [] if destination is None else session.scalars(
+            select(Trade).where(Trade.logical_trade_id == destination.id).order_by(Trade.entry_time, Trade.id)
+        ).all()
+        return rows, destination, destination_rows
+
+    @staticmethod
+    def _regroup_affected_logical_trade_ids(
+        selected_rows: list[Trade],
+        destination: LogicalTrade | None,
+        destination_rows: list[Trade],
+    ) -> set[int]:
+        destination_id = None if destination is None else destination.id
+        affected = {
+            row.logical_trade_id
+            for row in selected_rows
+            if row.logical_trade_id != destination_id
+        }
+        if destination_id is not None:
+            selected_ids = {row.id for row in selected_rows}
+            current_ids = {row.id for row in destination_rows}
+            if current_ids != selected_ids:
+                affected.add(destination_id)
+        return affected
+
+    @staticmethod
+    def _active_assessments_for_logical_trades(session, logical_trade_ids: set[int]) -> list[PostTradeAssessment]:  # type: ignore[no-untyped-def]
+        if not logical_trade_ids:
+            return []
+        return session.scalars(
+            select(PostTradeAssessment)
+            .where(
+                PostTradeAssessment.logical_trade_id.in_(logical_trade_ids),
+                PostTradeAssessment.superseded_at.is_(None),
+            )
+            .order_by(PostTradeAssessment.updated_at)
+        ).all()
+
+    def _supersede_active_assessments(
+        self,
+        session,  # type: ignore[no-untyped-def]
+        logical_trade_ids: set[int],
+        *,
+        superseded_at: str,
+        reason: str,
+    ) -> int:
+        assessments = self._active_assessments_for_logical_trades(session, logical_trade_ids)
+        for assessment in assessments:
+            assessment.superseded_at = superseded_at
+            assessment.superseded_reason = reason
+        return len(assessments)
+
+    @staticmethod
+    def _retire_empty_logical_trades(session, logical_trade_ids: set[int]) -> None:  # type: ignore[no-untyped-def]
+        """Delete empty containers unless an assessment needs them as audit evidence."""
+        for logical_trade_id in logical_trade_ids:
+            if session.scalar(select(Trade.id).where(Trade.logical_trade_id == logical_trade_id).limit(1)) is not None:
+                continue
+            if session.scalar(
+                select(PostTradeAssessment.id).where(PostTradeAssessment.logical_trade_id == logical_trade_id).limit(1)
+            ) is not None:
+                continue
+            logical_trade = session.get(LogicalTrade, logical_trade_id)
+            if logical_trade is not None:
+                session.delete(logical_trade)
 
     def get_post_trade_assessment_for_trade(self, trade_id: int) -> PostTradeAssessmentView | None:
         with self._sessions() as session:
-            row = session.scalar(select(PostTradeAssessment).where(PostTradeAssessment.trade_id == trade_id))
+            row = session.scalar(
+                select(PostTradeAssessment).where(
+                    PostTradeAssessment.logical_trade_id == trade_id,
+                    PostTradeAssessment.superseded_at.is_(None),
+                )
+            )
             return None if row is None else self._to_post_trade_assessment_view(row)
 
     def list_post_trade_assessment_revisions(self, trade_id: int) -> list[PostTradeAssessmentRevisionView]:
@@ -847,20 +1250,53 @@ class SQLiteJournalRepository:
             rows = session.scalars(
                 select(PostTradeAssessmentRevision)
                 .join(PostTradeAssessment)
-                .where(PostTradeAssessment.trade_id == trade_id)
+                .where(
+                    PostTradeAssessment.logical_trade_id == trade_id,
+                    PostTradeAssessment.superseded_at.is_(None),
+                )
                 .order_by(PostTradeAssessmentRevision.version.desc())
             ).all()
             return [self._to_post_trade_assessment_revision_view(row) for row in rows]
 
+    def list_superseded_post_trade_assessments_for_trade(
+        self,
+        *,
+        account_id: int,
+        logical_trade_id: int,
+    ) -> list[PostTradeAssessmentView]:
+        """Archived assessments that covered one or more current member positions."""
+        with self._sessions() as session:
+            current_rows = session.scalars(
+                select(Trade).where(Trade.logical_trade_id == logical_trade_id)
+            ).all()
+            position_ids = {row.mt5_position_id or "—" for row in current_rows}
+            if not position_ids:
+                return []
+            rows = session.scalars(
+                select(PostTradeAssessment)
+                .where(
+                    PostTradeAssessment.mt5_account_id == account_id,
+                    PostTradeAssessment.superseded_at.is_not(None),
+                )
+                .order_by(PostTradeAssessment.superseded_at.desc())
+            ).all()
+            return [
+                self._to_post_trade_assessment_view(row)
+                for row in rows
+                if position_ids.intersection(json.loads(row.assessed_position_ids))
+            ]
+
     def list_post_trade_assessment_outcomes(self, account_id: int | None = None) -> list[PostTradeAssessmentOutcome]:
         with self._sessions() as session:
-            statement = select(PostTradeAssessment, Trade).join(Trade, PostTradeAssessment.trade_id == Trade.id).order_by(Trade.exit_time)
+            statement = select(PostTradeAssessment).where(PostTradeAssessment.superseded_at.is_(None)).order_by(PostTradeAssessment.updated_at)
             if account_id is not None:
                 statement = statement.where(PostTradeAssessment.mt5_account_id == account_id)
-            rows = session.execute(statement).all()
+            rows = session.scalars(statement).all()
+            logical_trades = {item.id: item for item in self._logical_trade_review_items(session, account_id)}
             return [
-                PostTradeAssessmentOutcome(self._to_post_trade_assessment_view(assessment), self._to_closed_trade_review_item(trade))
-                for assessment, trade in rows
+                PostTradeAssessmentOutcome(self._to_post_trade_assessment_view(assessment), logical_trades[assessment.logical_trade_id])
+                for assessment in rows
+                if assessment.logical_trade_id in logical_trades
             ]
 
     def save_post_trade_assessment(
@@ -877,7 +1313,7 @@ class SQLiteJournalRepository:
         post_review_note: str,
         corrective_action: str | None,
     ) -> PostTradeAssessmentView:
-        """Create or correct the review for one already-imported closed position."""
+        """Create or correct the review for one already-imported logical trade."""
         normalized_grades = self._normalize_criterion_grades(criterion_grades)
         normalized_violations = self._normalize_codes(violation_codes, VIOLATION_CODES, "violation")
         normalized_hard_rules = self._normalize_codes(hard_rule_codes, HARD_RULE_CODES, "hard-rule")
@@ -895,20 +1331,39 @@ class SQLiteJournalRepository:
         review_note = self._required_text(post_review_note, "Post-trade review")
         now = datetime.now(timezone.utc).isoformat()
         with self._sessions.begin() as session:
-            trade = session.get(Trade, trade_id)
+            trade = session.get(LogicalTrade, trade_id)
             strategy = session.get(StrategyProfile, strategy_profile_id)
             policy = None if risk_policy_id is None else session.get(AccountRiskPolicy, risk_policy_id)
             if trade is None or trade.mt5_account_id != account_id:
-                raise ValueError("Imported closed trade was not found for this account")
+                raise ValueError("Logical trade was not found for this account")
             if strategy is None:
                 raise ValueError("Strategy profile was not found")
             if policy is not None and policy.mt5_account_id != account_id:
                 raise ValueError("Risk policy does not belong to this account")
-            row = session.scalar(select(PostTradeAssessment).where(PostTradeAssessment.trade_id == trade_id))
+            row = session.scalar(
+                select(PostTradeAssessment).where(
+                    PostTradeAssessment.logical_trade_id == trade_id,
+                    PostTradeAssessment.superseded_at.is_(None),
+                )
+            )
+            settings = session.get(FrameworkRuleSettings, 1)
+            if settings is None:
+                settings = FrameworkRuleSettings(id=1)
+                session.add(settings)
+                session.flush()
+            enabled_hard_rules = self._enabled_hard_rule_codes(settings)
+            # Existing effective events remain part of a correction even if
+            # the live setting is later disabled. A newly selected event must
+            # be enabled now, so the stored code is the auditable snapshot.
+            existing_hard_rules = set() if row is None else set(json.loads(row.hard_rule_codes))
+            disabled_hard_rules = set(normalized_hard_rules) - enabled_hard_rules - existing_hard_rules
+            if disabled_hard_rules:
+                raise ValueError("Enable a hard-rule event in Framework rules before recording it on a new assessment")
             if row is None:
+                assessed_position_ids, assessed_trade_label = self._assessment_trade_snapshot(session, trade)
                 row = PostTradeAssessment(
                     mt5_account_id=account_id,
-                    trade_id=trade_id,
+                    logical_trade_id=trade_id,
                     risk_policy_id=risk_policy_id,
                     strategy_profile_id=strategy_profile_id,
                     strategy_snapshot=self._strategy_snapshot_json(strategy),
@@ -918,6 +1373,10 @@ class SQLiteJournalRepository:
                     declared_actual_risk_amount=actual_risk,
                     post_review_note=review_note,
                     corrective_action=self._optional_text(corrective_action),
+                    assessed_position_ids=assessed_position_ids,
+                    assessed_trade_label=assessed_trade_label,
+                    superseded_at=None,
+                    superseded_reason=None,
                     created_at=now,
                     updated_at=now,
                     version=1,
@@ -969,6 +1428,16 @@ class SQLiteJournalRepository:
         if unknown:
             raise ValueError(f"Unknown {label} code")
         return tuple(sorted(set(values)))
+
+    @staticmethod
+    def _enabled_hard_rule_codes(settings: FrameworkRuleSettings) -> set[str]:
+        enabled = {
+            "oversized_revenge": settings.oversized_revenge_hard,
+            "mandatory_setup_absent": settings.mandatory_setup_hard,
+            "stop_widened": settings.stop_widened_hard,
+            "shutdown_breach": settings.shutdown_breach_hard,
+        }
+        return {code for code, active in enabled.items() if active}
 
     def get_framework_rule_settings(self) -> FrameworkRuleSettingsView:
         with self._sessions.begin() as session:
@@ -1362,10 +1831,45 @@ class SQLiteJournalRepository:
             policy.created_at,
         )
 
+    def _logical_trade_review_items(self, session, account_id: int | None = None) -> list[ClosedTradeReviewItem]:  # type: ignore[no-untyped-def]
+        statement = select(LogicalTrade)
+        if account_id is not None:
+            statement = statement.where(LogicalTrade.mt5_account_id == account_id)
+        logical_rows = session.scalars(statement.order_by(LogicalTrade.id)).all()
+        logical_ids = [row.id for row in logical_rows]
+        if not logical_ids:
+            return []
+        raw_rows = session.scalars(
+            select(Trade).where(Trade.logical_trade_id.in_(logical_ids)).order_by(Trade.entry_time, Trade.exit_time, Trade.id)
+        ).all()
+        members_by_logical: dict[int, list[ImportedPositionReviewItem]] = {item_id: [] for item_id in logical_ids}
+        for row in raw_rows:
+            members_by_logical[row.logical_trade_id].append(self._to_imported_position_review_item(row))
+        return [
+            self._to_closed_trade_review_item(row, tuple(members_by_logical[row.id]))
+            for row in logical_rows
+            if members_by_logical[row.id]
+        ]
+
+    def _assessment_trade_snapshot(self, session, logical_trade: LogicalTrade) -> tuple[str, str]:  # type: ignore[no-untyped-def]
+        """Freeze the member IDs and label that a completed review assessed."""
+        rows = session.scalars(
+            select(Trade).where(Trade.logical_trade_id == logical_trade.id).order_by(Trade.entry_time, Trade.exit_time, Trade.id)
+        ).all()
+        if not rows:
+            raise ValueError("Logical trade has no imported positions to assess")
+        item = self._to_closed_trade_review_item(
+            logical_trade,
+            tuple(self._to_imported_position_review_item(row) for row in rows),
+        )
+        return json.dumps(item.position_ids), item.display_label
+
     @staticmethod
-    def _to_closed_trade_review_item(row: Trade) -> ClosedTradeReviewItem:
-        return ClosedTradeReviewItem(
+    def _to_imported_position_review_item(row: Trade) -> ImportedPositionReviewItem:
+        return ImportedPositionReviewItem(
             id=row.id,
+            account_id=row.mt5_account_id or 0,
+            logical_trade_id=row.logical_trade_id,
             position_id=row.mt5_position_id,
             symbol=row.symbol,
             direction=row.direction,
@@ -1388,11 +1892,71 @@ class SQLiteJournalRepository:
         )
 
     @staticmethod
+    def _to_closed_trade_review_item(row: LogicalTrade, members: tuple[ImportedPositionReviewItem, ...]) -> ClosedTradeReviewItem:
+        ordered = tuple(sorted(members, key=lambda item: (item.entry_time, item.id)))
+        latest = max(ordered, key=lambda item: (item.exit_time, item.id))
+        total_volume = sum((Decimal(item.volume) for item in ordered), Decimal("0"))
+        entry_notional = sum((Decimal(item.entry_price) * Decimal(item.volume) for item in ordered), Decimal("0"))
+        exit_notional = sum((Decimal(item.exit_price) * Decimal(item.volume) for item in ordered), Decimal("0"))
+
+        def common(field: str) -> str | None:
+            values = {getattr(item, field) for item in ordered}
+            return values.pop() if len(values) == 1 else None
+
+        def all_sum(field: str) -> str | None:
+            values = [getattr(item, field) for item in ordered]
+            if any(value is None for value in values):
+                return None
+            return _decimal_string(sum((Decimal(value) for value in values if value is not None), Decimal("0")))
+
+        entry_time = ordered[0].entry_time
+        generated = f"{ordered[0].symbol} {ordered[0].direction} · {entry_time[:16].replace('T', ' ')}"
+        display_label = row.display_label or (f"#{ordered[0].position_id or '—'}" if len(ordered) == 1 else generated)
+        return ClosedTradeReviewItem(
+            id=row.id,
+            position_id=ordered[0].position_id if len(ordered) == 1 else None,
+            position_ids=tuple(item.position_id or "—" for item in ordered),
+            custom_label=row.display_label,
+            display_label=display_label,
+            members=ordered,
+            symbol=ordered[0].symbol,
+            direction=ordered[0].direction,
+            entry_time=entry_time,
+            exit_time=latest.exit_time,
+            server_utc_offset_minutes=latest.server_utc_offset_minutes,
+            entry_price=_decimal_string(entry_notional / total_volume),
+            exit_price=_decimal_string(exit_notional / total_volume),
+            volume=_decimal_string(total_volume),
+            net_pnl=_decimal_string(sum((Decimal(item.net_pnl) for item in ordered), Decimal("0"))),
+            entry_stop_price=common("entry_stop_price"),
+            entry_target_price=common("entry_target_price"),
+            close_stop_price=common("close_stop_price"),
+            entry_magic_number=common("entry_magic_number"),
+            entry_deal_count=sum((item.entry_deal_count or 0 for item in ordered), 0) or None,
+            exit_reason=common("exit_reason"),
+            initial_risk_amount=all_sum("initial_risk_amount"),
+            initial_reward_amount=all_sum("initial_reward_amount"),
+            auto_risk_policy_id=common("auto_risk_policy_id"),
+        )
+
+    @staticmethod
+    def _validate_group_members(rows: list[Trade], account_id: int) -> None:
+        if len(rows) < 2 or any(row.mt5_account_id != account_id for row in rows):
+            raise ValueError("Select at least two positions from this MT5 account")
+        symbols = {row.symbol for row in rows}
+        directions = {row.direction for row in rows}
+        policies = {row.auto_risk_policy_id for row in rows}
+        if len(symbols) != 1 or len(directions) != 1:
+            raise ValueError("Grouped positions must use the same symbol and direction")
+        if len(policies) != 1:
+            raise ValueError("Grouped positions must use the same imported Risk-policy version")
+
+    @staticmethod
     def _to_post_trade_assessment_view(row: PostTradeAssessment) -> PostTradeAssessmentView:
         return PostTradeAssessmentView(
             id=row.id,
             account_id=row.mt5_account_id,
-            trade_id=row.trade_id,
+            trade_id=row.logical_trade_id,
             risk_policy_id=row.risk_policy_id,
             strategy_profile_id=row.strategy_profile_id,
             strategy_snapshot=SQLiteJournalRepository._strategy_snapshot_from_json(row.strategy_snapshot),
@@ -1402,6 +1966,10 @@ class SQLiteJournalRepository:
             declared_actual_risk_amount=row.declared_actual_risk_amount,
             post_review_note=row.post_review_note,
             corrective_action=row.corrective_action,
+            assessed_position_ids=tuple(json.loads(row.assessed_position_ids)),
+            assessed_trade_label=row.assessed_trade_label,
+            superseded_at=row.superseded_at,
+            superseded_reason=row.superseded_reason,
             created_at=row.created_at,
             updated_at=row.updated_at,
             version=row.version,
@@ -1573,33 +2141,79 @@ class SQLiteJournalRepository:
             default_strategy_name = None if settings is None else settings.default_strategy_name
             profiles_by_id = {profile.id: profile for profile in session.scalars(select(StrategyProfile)).all()}
             policies_by_id, active_policies_by_account, funded_capital_by_account = self._risk_reporting_context(session)
-            statement = select(Trade).order_by(Trade.exit_time)
-            if account_id is not None:
-                statement = statement.where(Trade.mt5_account_id == account_id)
-            trades = session.scalars(statement).all()
+            assessments = {
+                row.logical_trade_id: row
+                for row in session.scalars(
+                    select(PostTradeAssessment).where(PostTradeAssessment.superseded_at.is_(None))
+                ).all()
+                if account_id is None or row.mt5_account_id == account_id
+            }
+            trades = self._logical_trade_review_items(session, account_id)
             performance: list[TradePerformanceItem] = []
             for trade in trades:
-                item = self._to_trade_list_item(
-                    trade,
-                    profiles_by_id,
-                    default_strategy_id,
-                    default_strategy_name,
+                trade_account_id = trade.members[0].account_id
+                policy = policies_by_id.get(trade.auto_risk_policy_id) or active_policies_by_account.get(trade_account_id)
+                funded = funded_capital_by_account.get(trade_account_id)
+                effective_risk = None
+                if policy is not None and funded is not None:
+                    standard_risk = Decimal(funded) * Decimal(policy.standard_risk_per_trade_percent) / Decimal("100")
+                    effective_risk = _decimal_string(standard_risk) if standard_risk > 0 else None
+                assessment = assessments.get(trade.id)
+                if assessment is not None:
+                    strategy = self._strategy_snapshot_from_json(assessment.strategy_snapshot).name
+                elif default_strategy_id is not None and default_strategy_id in profiles_by_id:
+                    strategy = profiles_by_id[default_strategy_id].name
+                else:
+                    strategy = default_strategy_name
+                performance.append(
+                    TradePerformanceItem(
+                        logical_trade_id=trade.id,
+                        display_label=trade.display_label,
+                        position_ids=trade.position_ids,
+                        position_count=trade.position_count,
+                        exit_time=trade.exit_time,
+                        server_utc_offset_minutes=trade.server_utc_offset_minutes,
+                        position_id=trade.position_id,
+                        symbol=trade.symbol,
+                        net_pnl=trade.net_pnl,
+                        result_r=None if effective_risk is None else _decimal_string(Decimal(trade.net_pnl) / Decimal(effective_risk)),
+                        strategy=strategy,
+                    )
+                )
+            return sorted(performance, key=lambda item: (item.exit_time, item.logical_trade_id))
+
+    def list_account_balance_movements(self, account_id: int) -> list[AccountBalanceMovement]:
+        """Return raw, immutable position closes for account balance history.
+
+        Logical trades are intentionally mutable review units. They must not
+        rewrite the cash-flow chronology used for account balance, daily P&L,
+        or drawdown reporting.
+        """
+        with self._sessions() as session:
+            policies_by_id, active_policies_by_account, funded_capital_by_account = self._risk_reporting_context(session)
+            rows = session.scalars(
+                select(Trade)
+                .where(Trade.mt5_account_id == account_id)
+                .order_by(Trade.exit_time, Trade.id)
+            ).all()
+            movements: list[AccountBalanceMovement] = []
+            for row in rows:
+                effective_risk, _ = self._standard_risk_for_trade(
+                    row,
                     policies_by_id,
                     active_policies_by_account,
                     funded_capital_by_account,
                 )
-                performance.append(
-                    TradePerformanceItem(
-                        exit_time=trade.exit_time,
-                        server_utc_offset_minutes=trade.server_utc_offset_minutes,
-                        position_id=trade.mt5_position_id,
-                        symbol=trade.symbol,
-                        net_pnl=trade.net_pnl,
-                        result_r=item.result_r,
-                        strategy=item.strategy,
+                movements.append(
+                    AccountBalanceMovement(
+                        position_id=row.mt5_position_id,
+                        exit_time=row.exit_time,
+                        server_utc_offset_minutes=row.server_utc_offset_minutes,
+                        net_pnl=row.net_pnl,
+                        result_r=None if effective_risk is None else _decimal_string(Decimal(row.net_pnl) / Decimal(effective_risk)),
                     )
                 )
-            return performance
+            return movements
 
     def upsert_mt5_positions(
         self,
@@ -1659,11 +2273,19 @@ class SQLiteJournalRepository:
                         "exit_time": normalize_server_timestamp(position.exit_time, position.server_utc_offset_minutes),
                         "server_utc_offset_minutes": position.server_utc_offset_minutes,
                     }
+                    logical_trade = LogicalTrade(
+                        mt5_account_id=account_id,
+                        display_label=None,
+                        created_at=now,
+                    )
+                    session.add(logical_trade)
+                    session.flush()
                     session.add(
                         Trade(
                             source="mt5",
                             mt5_account_id=account_id,
                             mt5_position_id=position.position_id,
+                            logical_trade_id=logical_trade.id,
                             auto_risk_policy_id=active_policy.id if active_policy else None,
                             **imported_times,
                             **values,

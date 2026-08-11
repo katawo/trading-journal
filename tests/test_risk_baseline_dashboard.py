@@ -278,7 +278,7 @@ def test_dashboard_calculates_balance_growth_drawdown_and_trade_quality(tmp_path
     assert [point.balance for point in report.cumulative] == ["120", "115"]
     assert [point.drawdown for point in report.cumulative] == ["0", "5"]
     assert [(point.position_id, point.net_pnl) for point in report.per_trade] == [("1001", "20"), ("1002", "-5")]
-    assert [point.balance for point in report.per_trade] == ["120", "115"]
+    assert [point.balance for point in report.per_trade] == [None, None]
     assert [point.drawdown for point in report.per_trade] == ["0", "5"]
 
 

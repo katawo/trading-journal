@@ -649,19 +649,21 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
     st.caption(f"All monetary figures below are for this {currency} account only. No currency conversion is applied. Report dates use {time_label}.")
 
     report = dashboard_service.build_report(account_id=account.id, start_date=start_date.isoformat(), end_date=end_date.isoformat())
-    if report.trade_count == 0:
-        st.info("No trades were closed in the selected period.")
+    if report.raw_position_count == 0:
+        st.info("No MT5 positions were closed in the selected period.")
         return account
 
     period_label = f"{start_date.strftime('%d %b')} – {end_date.strftime('%d %b %Y')}"
-    st.markdown(f'<div class="dashboard-period">{period_label} · {report.trade_count} closed trades</div>', unsafe_allow_html=True)
+    logical_label = f"{report.trade_count} closed logical trade{'s' if report.trade_count != 1 else ''}"
+    position_label = f"{report.raw_position_count} MT5 position{'s' if report.raw_position_count != 1 else ''}"
+    st.markdown(f'<div class="dashboard-period">{period_label} · {logical_label} · {position_label}</div>', unsafe_allow_html=True)
     with st.container(horizontal=True, gap="small"):
-        st.metric("Balance", "—" if report.ending_balance is None else format_currency(report.ending_balance, currency), border=True)
-        st.metric("Balance growth", "—" if report.balance_growth_percent is None else f"{format_signed(report.balance_growth_percent, '%', 1)}", border=True)
-        st.metric("Net P&L", format_currency(report.net_pnl, currency), border=True)
-        st.metric("Max drawdown", format_currency(-Decimal(report.max_drawdown), currency), border=True)
+        st.metric("Account balance", "—" if report.ending_balance is None else format_currency(report.ending_balance, currency), border=True)
+        st.metric("Account growth", "—" if report.balance_growth_percent is None else f"{format_signed(report.balance_growth_percent, '%', 1)}", border=True)
+        st.metric("Realized P&L", format_currency(report.net_pnl, currency), border=True)
+        st.metric("Account drawdown", format_currency(-Decimal(report.max_drawdown), currency), border=True)
 
-    st.markdown("#### Trade quality")
+    st.markdown("#### Logical-trade quality")
     with st.container(horizontal=True, gap="small"):
         st.metric("Total R", "Awaiting risk" if report.total_r is None else format_signed(report.total_r, "R"), border=True)
         st.metric("Win rate", f"{format_number(report.win_rate, 1)}%", border=True)
@@ -669,9 +671,9 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
         st.metric("Expectancy", "—" if report.expectancy is None else format_currency(report.expectancy, currency), border=True)
         st.metric("Worst day", "—" if report.worst_day is None else format_currency(report.worst_day, currency), border=True)
     if report.r_trade_count < report.trade_count:
-        st.caption(f"R is based on {report.r_trade_count:,} of {report.trade_count:,} trades with an effective planned risk.")
+        st.caption(f"R is based on {report.r_trade_count:,} of {report.trade_count:,} logical trades with an effective planned risk.")
     else:
-        st.caption(f"All {report.trade_count:,} trades have an effective risk value.")
+        st.caption(f"All {report.trade_count:,} logical trades have an effective risk value.")
     if report.starting_balance is None:
         st.caption("Set funded capital in Settings to enable the balance curve, balance growth, and drawdown percentage.")
     else:
@@ -690,18 +692,26 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
         width="content",
     )
     cumulative = pd.DataFrame([item.__dict__ for item in report.cumulative])
-    per_trade = pd.DataFrame([item.__dict__ for item in report.per_trade])
+    per_trade = pd.DataFrame(
+        [item.__dict__ for item in report.per_trade],
+        columns=[
+            "sequence", "logical_trade_id", "display_label", "position_ids", "position_count", "exit_time", "position_id",
+            "symbol", "net_pnl", "result_r", "strategy", "cumulative_pnl", "balance", "drawdown", "drawdown_percent",
+        ],
+    )
     daily = pd.DataFrame([item.__dict__ for item in report.daily])
-    strategies = pd.DataFrame([item.__dict__ for item in report.by_strategy])
+    strategies = pd.DataFrame(
+        [item.__dict__ for item in report.by_strategy],
+        columns=["strategy", "net_pnl", "total_r", "backtest_trade_count", "backtest_win_rate", "backtest_expectancy_r", "backtest_net_r"],
+    )
     cumulative["cumulative_pnl"] = cumulative["cumulative_pnl"].astype(float)
     cumulative["balance"] = pd.to_numeric(cumulative["balance"], errors="coerce")
     cumulative["drawdown"] = cumulative["drawdown"].astype(float)
     per_trade["cumulative_pnl"] = per_trade["cumulative_pnl"].astype(float)
-    per_trade["balance"] = pd.to_numeric(per_trade["balance"], errors="coerce")
     per_trade["drawdown"] = per_trade["drawdown"].astype(float)
     per_trade["net_pnl"] = per_trade["net_pnl"].astype(float)
     per_trade["trade_label"] = per_trade.apply(
-        lambda item: f"Trade {item.sequence} · {item.symbol} · #{item.position_id or '—'}",
+        lambda item: f"Trade {item.sequence} · {item.display_label}",
         axis=1,
     )
     per_trade["hover_label"] = per_trade.apply(
@@ -711,24 +721,29 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
     daily["net_pnl"] = daily["net_pnl"].astype(float)
     strategies["net_pnl"] = strategies["net_pnl"].astype(float)
 
+    if chart_view == "Per trade" and not report.per_trade:
+        st.info("No complete logical trades closed in this period. Showing the immutable MT5 position history instead.")
+        chart_view = "Daily"
+
     if chart_view == "Daily":
         timeline = cumulative.assign(hover_label=cumulative["date"])
         timeline_x = timeline["date"]
         curve_column = "balance" if report.ending_balance is not None else "cumulative_pnl"
-        curve_title = "Balance curve" if report.ending_balance is not None else "Equity curve · P&L"
-        drawdown_title = "Daily drawdown from peak"
+        curve_title = "Account balance curve" if report.ending_balance is not None else "Account equity curve · P&L"
+        drawdown_title = "Account drawdown from daily peak"
         pnl_data = daily.assign(hover_label=daily["date"])
         pnl_x = pnl_data["date"]
-        pnl_title = "Daily P&L"
+        pnl_title = "Daily realized P&L"
     else:
         timeline = per_trade
         timeline_x = timeline["exit_time"]
-        curve_column = "balance" if report.ending_balance is not None else "cumulative_pnl"
-        curve_title = "Balance after each closed trade" if report.ending_balance is not None else "Equity after each closed trade"
-        drawdown_title = "Post-close drawdown by trade"
+        curve_column = "cumulative_pnl"
+        curve_title = "Cumulative logical-trade P&L"
+        drawdown_title = "Logical-trade drawdown"
         pnl_data = per_trade
         pnl_x = pnl_data["exit_time"]
-        pnl_title = "Per-trade P&L"
+        pnl_title = "Logical-trade P&L"
+    curve_is_balance = chart_view == "Daily" and report.ending_balance is not None
 
     left, right = st.columns(2)
     with left:
@@ -741,8 +756,8 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
                     mode="lines+markers",
                     line=dict(color="#0d6b54", width=3),
                     marker=dict(color="#0d6b54", size=7, line=dict(color="#fffdf8", width=1.5)),
-                    fill=None if report.ending_balance is not None else "tozeroy",
-                    fillcolor="rgba(13, 107, 84, 0.10)" if report.ending_balance is None else None,
+                    fill=None if curve_is_balance else "tozeroy",
+                    fillcolor="rgba(13, 107, 84, 0.10)" if not curve_is_balance else None,
                     hovertemplate=f"%{{customdata}}<br><b>{currency} %{{y:,.2f}}</b><extra></extra>",
                 )
             )
@@ -803,17 +818,17 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
             trade_table = pd.DataFrame(
                 {
                     "Closed": per_trade["exit_time"],
-                    "Position": [f"#{position_id}" if position_id else "—" for position_id in per_trade["position_id"]],
+                    "Logical trade": [f"LT-{trade_id}" for trade_id in per_trade["logical_trade_id"]],
+                    "Trade": per_trade["display_label"],
+                    "Positions": [", ".join(f"#{position_id}" for position_id in position_ids) for position_ids in per_trade["position_ids"]],
                     "Symbol": per_trade["symbol"],
                     f"P&L ({currency})": [format_currency(value, currency) for value in per_trade["net_pnl"]],
                     "Result R": ["—" if value is None else format_signed(value, "R") for value in per_trade["result_r"]],
                     "Post-close drawdown": [format_currency(-Decimal(value), currency) for value in per_trade["drawdown"]],
                 }
             )
-            if report.ending_balance is not None:
-                trade_table["Balance"] = [format_currency(value, currency) for value in per_trade["balance"]]
             st.dataframe(trade_table, hide_index=True, width="stretch")
-            st.caption("Drawdown is measured after each trade closes. It does not represent MT5 floating or intra-trade drawdown.")
+            st.caption("This view follows the current logical-trade grouping for review analysis. Account balance and account drawdown remain based on immutable MT5 positions in Daily view.")
 
     with st.container(border=True):
         st.subheader("Strategy results and backtest context")

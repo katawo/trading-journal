@@ -238,7 +238,7 @@ def test_framework_workspace_renders_account_scoped_post_trade_journal(monkeypat
     assert app.subheader[0].value == "Three-pillar framework"
     assert [tab.label for tab in app.tabs] == ["Review trades", "Monitor", "Roadmap", "Risk policy", "Framework rules"]
     assert any("No completed MT5 positions" in item.value for item in app.info)
-    assert any(item.label == "Roadmap pillar" for item in app.segmented_control)
+    assert not any(item.label == "Roadmap pillar" for item in app.segmented_control)
 
 
 def test_dashboard_uses_its_report_account_for_framework_status(monkeypatch, tmp_path):
@@ -338,8 +338,9 @@ def test_framework_renders_a_filtered_review_register(monkeypatch, tmp_path):
     assert any(item.label == "Needs review" and item.value == "1" for item in app.metric)
     assert any(item.label == "Automatic risk evidence" and item.value == "0" for item in app.metric)
     assert any(item.label == "Reviewed" and item.value == "0" for item in app.metric)
-    assert len(app.dataframe) >= 1
-    assert not list(app.dataframe[0].proto.selection_mode)
+    assert any(item.label.startswith("Select LT-") for item in app.checkbox)
+    assert any(item.label == "Review" for item in app.button)
+    assert not any(item.label == "Ungroup" for item in app.button)
     assert any("Automatic risk evidence is advisory" in item.value for item in app.caption)
     assert not any(item.label == "Closed MT5 position" for item in app.selectbox)
     assert not any(item.label == "Save review" for item in app.button)
@@ -372,7 +373,79 @@ def test_framework_renders_a_filtered_review_register(monkeypatch, tmp_path):
 
     assert not app.exception
     assert any(item.label == "Reviewed" and item.value == "1" for item in app.metric)
-    assert len(app.dataframe) >= 1
+    assert any(item.label == "Review" for item in app.button)
+
+
+def test_framework_groups_positions_through_a_confirmation_step(monkeypatch, tmp_path):
+    database_path = tmp_path / "journal.db"
+    repository = SQLiteJournalRepository(database_path)
+    repository.initialize()
+    repository.configure_journal(reporting_time_basis="utc")
+    repository.register_mt5_account(
+        display_name="Primary",
+        login="123456",
+        broker_server="DemoBroker-Live",
+        account_currency="USD",
+        export_file_path="",
+    )
+    account = repository.find_active_mt5_account("123456", "DemoBroker-Live")
+    assert account is not None
+    positions = [
+        MT5PositionExport(
+            schema_version=1,
+            account_login="123456",
+            broker_server="DemoBroker-Live",
+            account_currency="USD",
+            position_id=f"group-{index}",
+            symbol="XAUUSD",
+            direction="long",
+            entry_time="2026-08-10T08:00:00+00:00",
+            exit_time=f"2026-08-10T09:{index:02d}:00+00:00",
+            entry_price="3300",
+            exit_price="3310",
+            volume="0.01",
+            gross_pnl="20",
+            commission="0",
+            swap="0",
+            fees="0",
+            net_pnl="20",
+        )
+        for index in range(26)
+    ]
+    repository.upsert_mt5_positions(account.id, positions, "positions.csv", "group-dialog")
+    monkeypatch.setenv("TRADING_JOURNAL_DB", str(database_path))
+
+    app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
+    app.switch_page("app_pages/framework.py").run()
+    assert len([item for item in app.checkbox if item.label.startswith("Select LT-")]) == 25
+    next(item for item in app.checkbox if item.label.startswith("Select LT-")).set_value(True).run()
+    next(item for item in app.button if item.label == "Next").click().run()
+
+    assert any("Page 2 of 2" in item.value for item in app.caption)
+    assert len([item for item in app.checkbox if item.label.startswith("Select LT-")]) == 1
+    next(item for item in app.checkbox if item.label.startswith("Select LT-")).set_value(True).run()
+    next(item for item in app.button if item.label == "Create logical trade (2)").click().run()
+
+    assert not app.exception
+    assert any("selected single-position logical trades" in item.value for item in app.caption)
+    next(item for item in app.button if item.label == "Create logical trade").click().run()
+
+    assert not app.exception
+    assert any(item.label == "Confirm regroup" for item in app.button)
+    next(item for item in app.button if item.label == "Confirm regroup").click().run()
+
+    assert not app.exception
+    grouped = repository.list_closed_trades_for_review(account.id)
+    assert len(grouped) == 25
+    assert any(item.position_count == 2 for item in grouped)
+    next(item for item in app.button if item.label == "Ungroup").click().run()
+
+    assert not app.exception
+    assert any(item.label == "Confirm disband" for item in app.button)
+    next(item for item in app.button if item.label == "Confirm disband").click().run()
+
+    assert not app.exception
+    assert len(repository.list_closed_trades_for_review(account.id)) == 26
 
 
 def test_dashboard_sync_keeps_the_current_mt5_export_imported(monkeypatch, tmp_path):
@@ -456,7 +529,7 @@ def test_dashboard_renders_graphics_for_imported_trades(monkeypatch, tmp_path):
     assert app.subheader[0].value == "Performance dashboard"
     assert len(app.metric) >= 10
     assert any(item.label == "Sync MT5 now" for item in app.button)
-    assert {item.label for item in app.metric} >= {"Balance", "Max drawdown", "Profit factor", "Worst day"}
+    assert {item.label for item in app.metric} >= {"Account balance", "Account drawdown", "Profit factor", "Worst day"}
 
 
 def test_dashboard_auto_imports_a_changed_configured_mt5_export(monkeypatch, tmp_path):
@@ -555,7 +628,7 @@ def test_dashboard_switches_to_per_trade_view(monkeypatch, tmp_path):
 
     assert not app.exception
     assert len(app.dataframe) == 2
-    assert any("Drawdown is measured after each trade closes" in item.value for item in app.caption)
+    assert any("current logical-trade grouping" in item.value for item in app.caption)
 
 
 def test_settings_strategies_tab_renders_optional_backtest_fields(monkeypatch, tmp_path):

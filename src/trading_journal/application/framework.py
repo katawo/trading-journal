@@ -15,7 +15,6 @@ from trading_journal.infrastructure.sqlite_repository import (
     SYSTEM_CRITERIA,
     AccountRiskPolicyView,
     ClosedTradeReviewItem,
-    FrameworkRuleSettingsView,
     PostTradeAssessmentView,
     SQLiteJournalRepository,
     StrategyEvidenceSnapshot,
@@ -25,6 +24,7 @@ from trading_journal.infrastructure.sqlite_repository import (
 
 PILLAR_NAMES = {"psychology": "Psychology", "risk": "Risk management", "system": "Trading system"}
 GRADE_VALUES = {"pass": Decimal("100"), "partial": Decimal("50"), "fail": Decimal("0")}
+GOOD_PROCESS_SCORE = Decimal("70")
 TRADE_WEIGHTS = {
     "psychology": (("rule_adherence", Decimal("0.35")), ("impulse_control", Decimal("0.25")), ("emotional_control", Decimal("0.20")), ("patience_discipline", Decimal("0.20"))),
     "risk": (("policy_adherence", Decimal("0.35")), ("position_size_accuracy", Decimal("0.20")), ("stop_discipline", Decimal("0.25")), ("exposure_limit_compliance", Decimal("0.20"))),
@@ -99,7 +99,22 @@ class AutoRiskEvidence:
 
     @property
     def source_amount(self) -> str | None:
-        return self.specific_preset_sl_amount or self.real_loss_sl_amount or self.live_account_balance_sl_amount
+        # Live balance is one account-level fallback for a logical trade. It
+        # is never added again for each position in a scaled trade.
+        if self.live_account_balance_sl_amount is not None:
+            return self.live_account_balance_sl_amount
+        total = sum(
+            (
+                Decimal(value)
+                for value in (
+                    self.specific_preset_sl_amount,
+                    self.real_loss_sl_amount,
+                )
+                if value is not None
+            ),
+            Decimal("0"),
+        )
+        return None if total <= 0 else _decimal_text(total)
 
 
 @dataclass(frozen=True)
@@ -114,15 +129,20 @@ class TradeProcessScore:
     system_score: str | None
     overall_score: str | None
     process_status: str | None
+    quality_status: str | None
     classification: str | None
     psychology_hard_block: bool
     risk_hard_block: bool
     system_hard_block: bool
     hard_rule_codes: tuple[str, ...]
     violation_codes: tuple[str, ...]
+    automatic_risk_event_codes: tuple[str, ...]
+    shutdown_candidate_codes: tuple[str, ...]
     auto_risk: AutoRiskEvidence
     policy_risk_amount: str | None
     actual_risk_amount: str | None
+    risk_policy_state: str
+    risk_evidence_source: str
     mapped_strategy: StrategyProfileView | None
 
 
@@ -182,20 +202,31 @@ class FrameworkService:
 
     def __init__(self, repository: SQLiteJournalRepository) -> None:
         self._repository = repository
+        # The service is short-lived: one Streamlit render. Cache its read
+        # model only for that render so live imports and saved reviews are
+        # never served stale on a later rerun.
+        self._account_score_cache: dict[int, tuple[tuple[TradeProcessScore, ...], dict[int, dict[str, object]]]] = {}
+        self._raw_risk_event_cache: dict[int, dict[int, dict[str, object]]] = {}
+        self._pillar_score_cache: dict[tuple[int, int, date | None], tuple[PillarScore, ...]] = {}
 
     def trade_process_scores(self, account_id: int) -> tuple[TradeProcessScore, ...]:
         account_scores, _ = self._account_trade_scores(account_id)
         return account_scores
 
     def pillar_scores(self, account_id: int, *, window: int = 20, as_of: date | None = None) -> tuple[PillarScore, ...]:
+        cache_key = (account_id, window, as_of)
+        if cache_key in self._pillar_score_cache:
+            return self._pillar_score_cache[cache_key]
         trader_scores = self._scores_through(self._trader_trade_process_scores(), as_of)
         all_account_scores, historical_events = self._account_trade_scores(account_id)
         account_scores = self._scores_through(all_account_scores, as_of)
-        return (
+        scores = (
             self._period_pillar_score("psychology", trader_scores, window, "Trader-wide"),
             self._period_pillar_score("risk", account_scores, window, "Selected account", historical_events),
             self._period_pillar_score("system", trader_scores, window, "Trader-wide"),
         )
+        self._pillar_score_cache[cache_key] = scores
+        return scores
 
     def readiness(self, account_id: int, *, window: int = 20, as_of: date | None = None) -> ReadinessAssessment:
         scores = self.pillar_scores(account_id, window=window, as_of=as_of)
@@ -309,28 +340,39 @@ class FrameworkService:
             points.append((closed, *values))
         return tuple(points)
 
-    def roadmap_status(self, account_id: int) -> tuple[PillarRoadmapStatus, ...]:
+    def roadmap_status(self, account_id: int, *, now: datetime | None = None) -> tuple[PillarRoadmapStatus, ...]:
         evidence = {(item.pillar, item.level, item.item_key): item for item in self._repository.list_pillar_roadmap_evidence(account_id)}
-        scores = {item.pillar: item for item in self.pillar_scores(account_id)}
-        period_reviews = self._repository.list_framework_period_reviews(account_id)
+        current_period_review = self._has_current_period_review(account_id, now=now)
         statuses: list[PillarRoadmapStatus] = []
         for pillar, levels in ROADMAP_ITEMS.items():
             total = sum(len(items) for items in levels.values())
             completed = sum(1 for level, items in levels.items() for key, _ in items if (item := evidence.get((pillar, level, key))) and item.completed)
             current_level = next((level for level, items in levels.items() if not all((item := evidence.get((pillar, level, key))) and item.completed for key, _ in items)), 5)
-            score = scores[pillar]
             if completed == total:
                 allowed, gate = False, "All framework evidence is complete; continue monitoring the current sample."
             elif current_level == 3:
+                score = {item.pillar: item for item in self.pillar_scores(account_id, window=20)}[pillar]
                 allowed = score.reviewed_total >= 20 and score.score is not None and Decimal(score.score) >= 70 and not score.hard_block
                 gate = "Needs 20 full reviews, a score of at least 70, and no active hard failure."
             elif current_level == 4:
-                allowed = score.reviewed_total >= 30 and score.score is not None and Decimal(score.score) >= 80 and not score.hard_block and bool(period_reviews)
-                gate = "Needs 30 full reviews, a score of at least 80, a saved period review, and no active hard failure."
+                score = {item.pillar: item for item in self.pillar_scores(account_id, window=30)}[pillar]
+                allowed = score.reviewed_total >= 30 and score.score is not None and Decimal(score.score) >= 80 and not score.hard_block and current_period_review
+                gate = "Needs 30 full reviews, a 30-review score of at least 80, a saved weekly or monthly review for the latest completed period, and no active hard failure."
             else:
                 allowed, gate = True, "Complete the current evidence item with a note."
             statuses.append(PillarRoadmapStatus(pillar, completed, total, current_level, allowed, gate))
         return tuple(statuses)
+
+    def _has_current_period_review(self, account_id: int, *, now: datetime | None = None) -> bool:
+        """Require reflection on the latest completed eligible week or month."""
+        for cadence in ("weekly", "monthly"):
+            status = self.period_review_status(account_id, cadence, now=now)
+            if any(
+                review.period_start == status.period_start and review.period_end == status.period_end
+                for review in self._repository.list_framework_period_reviews(account_id, cadence)
+            ):
+                return True
+        return False
 
     def risk_snapshot(self, account_id: int, *, now: datetime | None = None) -> RiskSnapshot:
         policy = self._repository.get_active_risk_policy(account_id)
@@ -371,7 +413,7 @@ class FrameworkService:
             "A completed-trade Risk limit needs review."
         )
         if pending:
-            message += f" {pending} closed position(s) still need a full review."
+            message += f" {pending} logical trade(s) still need a full review."
         return RiskSnapshot(
             True,
             state,
@@ -393,20 +435,39 @@ class FrameworkService:
         return tuple(score for score in scores if self._trade_date(score.exit_time, score.server_utc_offset_minutes) <= as_of)
 
     def _account_trade_scores(self, account_id: int) -> tuple[tuple[TradeProcessScore, ...], dict[int, dict[str, object]]]:
+        if account_id in self._account_score_cache:
+            return self._account_score_cache[account_id]
         trades = sorted(self._repository.list_closed_trades_for_review(account_id), key=lambda item: (item.exit_time, item.id))
         assessments = {item.assessment.trade_id: item.assessment for item in self._repository.list_post_trade_assessment_outcomes(account_id)}
-        policies = self._policies_for(trades, assessments, account_id)
+        raw_positions = self._repository.list_imported_positions_for_risk(account_id)
+        policies = self._policies_for(raw_positions, assessments, account_id)
         active_policy = self._repository.get_active_risk_policy(account_id)
         funded = self._repository.get_account_funded_capital(account_id)
         live_balance = self._repository.get_latest_mt5_balance(account_id)
-        settings = self._repository.get_framework_rule_settings()
         strategies = {magic: profile for profile in self._repository.list_strategy_profiles() for magic in profile.magic_numbers}
-        events = self._historical_risk_events_from_context(trades, assessments, policies, active_policy, funded, live_balance)
+        raw_events = self._historical_risk_events(account_id)
+        events = {
+            trade.id: self._combine_member_risk_events(trade, raw_events)
+            for trade in trades
+        }
         scores = tuple(
-            self._trade_process_score(account_id, trade, assessments.get(trade.id), policies, strategies, funded, active_policy, live_balance, settings, tuple(events[trade.id]["events"]))
+            self._trade_process_score(
+                account_id,
+                trade,
+                assessments.get(trade.id),
+                policies,
+                strategies,
+                funded,
+                active_policy,
+                live_balance,
+                tuple(events[trade.id]["events"]),
+                tuple(events[trade.id]["shutdown_candidates"]),
+            )
             for trade in trades
         )
-        return scores, events
+        result = (scores, events)
+        self._account_score_cache[account_id] = result
+        return result
 
     def _period_pillar_score(
         self,
@@ -480,7 +541,7 @@ class FrameworkService:
         values = []
         ordered = sorted(sample, key=lambda item: (item.exit_time, item.trade_id))
         for previous, current in zip(ordered, ordered[1:], strict=False):
-            if previous.account_id != current.account_id or pnl_by_trade.get(previous.trade_id, Decimal("0")) >= 0:
+            if pnl_by_trade.get(previous.trade_id, Decimal("0")) >= 0:
                 continue
             grade = assessments[current.trade_id].criterion_grades["impulse_control"]
             values.append(Decimal("0") if "post_loss_reset" in assessments[current.trade_id].violation_codes else GRADE_VALUES[grade])
@@ -532,30 +593,76 @@ class FrameworkService:
         funded: str | None,
         active_policy: AccountRiskPolicyView | None,
         live_balance: str | None,
-        settings: FrameworkRuleSettingsView,
-        automatic_hard_events: tuple[str, ...],
+        automatic_risk_events: tuple[str, ...],
+        shutdown_candidates: tuple[str, ...],
     ) -> TradeProcessScore:
         auto_risk = self._auto_risk_evidence(trade, policies, funded, active_policy, live_balance)
         policy = self._risk_policy_for_trade(assessment, trade, policies, active_policy)
         policy_risk = _decimal_text(self._maximum_risk_amount(funded, policy)) if funded is not None and policy is not None else None
         actual_risk = assessment.declared_actual_risk_amount if assessment and assessment.declared_actual_risk_amount else auto_risk.source_amount
+        risk_evidence_source = "reviewed_actual_risk" if assessment and assessment.declared_actual_risk_amount else auto_risk.risk_basis
+        risk_policy_state = self._risk_policy_state(actual_risk, policy_risk)
         mapped = strategies_by_magic.get(trade.entry_magic_number or "")
         if assessment is None:
             state = "automatic_evidence" if auto_risk.state in {"within_policy", "over_policy"} else "not_scored"
-            return TradeProcessScore(account_id, trade.id, trade.exit_time, trade.server_utc_offset_minutes, state, None, None, None, None, None, None, False, False, False, (), (), auto_risk, policy_risk, actual_risk, mapped)
+            return TradeProcessScore(
+                account_id,
+                trade.id,
+                trade.exit_time,
+                trade.server_utc_offset_minutes,
+                state,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                False,
+                False,
+                False,
+                (),
+                (),
+                automatic_risk_events,
+                shutdown_candidates,
+                auto_risk,
+                policy_risk,
+                actual_risk,
+                risk_policy_state,
+                risk_evidence_source,
+                mapped,
+            )
         psychology = self._trade_pillar_score(assessment, "psychology")
         risk = self._trade_pillar_score(assessment, "risk")
         system = self._trade_pillar_score(assessment, "system")
-        hard_rules = self._effective_hard_rules(assessment.hard_rule_codes, settings) | set(automatic_hard_events)
+        # Closed-position limits are retrospective monitoring evidence. They
+        # show when a limit was reached, but cannot prove that this individual
+        # logical trade was deliberately taken after a shutdown. The repository
+        # persists only enabled hard-rule events at save time, making a saved
+        # review's hard status stable when framework settings later change.
+        hard_rules = set(assessment.hard_rule_codes)
         psychology_hard = "oversized_revenge" in hard_rules
-        risk_hard = bool({"oversized_revenge", "stop_widened", "shutdown_breach", "daily_limit", "weekly_limit", "drawdown_limit", "loss_streak"} & hard_rules)
+        risk_hard = bool({"oversized_revenge", "stop_widened", "shutdown_breach"} & hard_rules)
         system_hard = "mandatory_setup_absent" in hard_rules
         status = "FAIL" if hard_rules else "PASS"
-        classification = self._classification(Decimal(trade.net_pnl), status)
         overall = (psychology + risk + system) / Decimal("3")
+        quality_status = self._quality_status(overall, status)
+        classification = self._classification(Decimal(trade.net_pnl), quality_status)
         return TradeProcessScore(
-            account_id, trade.id, trade.exit_time, trade.server_utc_offset_minutes, "reviewed", _decimal_text(psychology), _decimal_text(risk), _decimal_text(system), _decimal_text(overall), status, classification,
-            psychology_hard, risk_hard, system_hard, tuple(sorted(hard_rules)), assessment.violation_codes, auto_risk, policy_risk, actual_risk, mapped,
+            account_id, trade.id, trade.exit_time, trade.server_utc_offset_minutes, "reviewed", _decimal_text(psychology), _decimal_text(risk), _decimal_text(system), _decimal_text(overall), status, quality_status, classification,
+            psychology_hard,
+            risk_hard,
+            system_hard,
+            tuple(sorted(hard_rules)),
+            assessment.violation_codes,
+            automatic_risk_events,
+            shutdown_candidates,
+            auto_risk,
+            policy_risk,
+            actual_risk,
+            risk_policy_state,
+            risk_evidence_source,
+            mapped,
         )
 
     @staticmethod
@@ -563,42 +670,84 @@ class FrameworkService:
         return sum((GRADE_VALUES[assessment.criterion_grades[key]] * weight for key, weight in TRADE_WEIGHTS[pillar]), Decimal("0"))
 
     @staticmethod
-    def _effective_hard_rules(codes: tuple[str, ...], settings: FrameworkRuleSettingsView) -> set[str]:
-        enabled = {
-            "oversized_revenge": settings.oversized_revenge_hard,
-            "mandatory_setup_absent": settings.mandatory_setup_hard,
-            "stop_widened": settings.stop_widened_hard,
-            "shutdown_breach": settings.shutdown_breach_hard,
-        }
-        return {code for code in codes if enabled.get(code, False)}
+    def _quality_status(overall: Decimal, hard_rule_status: str) -> str:
+        if hard_rule_status == "FAIL":
+            return "bad"
+        return "good" if overall >= GOOD_PROCESS_SCORE else "needs_improvement"
 
     @staticmethod
-    def _classification(net_pnl: Decimal, status: str) -> str:
-        quality = "Good" if status == "PASS" else "Bad"
+    def _classification(net_pnl: Decimal, quality_status: str) -> str:
+        quality = {
+            "good": "Good",
+            "needs_improvement": "Needs improvement",
+            "bad": "Bad",
+        }[quality_status]
         outcome = "Win" if net_pnl > 0 else "Loss" if net_pnl < 0 else "Breakeven"
         return f"{quality} {outcome}"
 
+    @staticmethod
+    def _risk_policy_state(amount: str | None, policy_limit: str | None) -> str:
+        if amount is None or policy_limit is None:
+            return "unavailable"
+        return "within_policy" if Decimal(amount) <= Decimal(policy_limit) else "over_policy"
+
     def _historical_risk_events(self, account_id: int) -> dict[int, dict[str, object]]:
-        _, events = self._account_trade_scores_without_events(account_id)
+        if account_id in self._raw_risk_event_cache:
+            return self._raw_risk_event_cache[account_id]
+        trades = tuple(self._repository.list_imported_positions_for_risk(account_id))
+        policies = self._policies_for(trades, {}, account_id)
+        events = self._historical_risk_events_from_context(
+            trades,
+            {},
+            policies,
+            self._repository.get_active_risk_policy(account_id),
+            self._repository.get_account_funded_capital(account_id),
+            self._repository.get_latest_mt5_balance(account_id),
+        )
+        self._raw_risk_event_cache[account_id] = events
         return events
 
-    def _account_trade_scores_without_events(self, account_id: int) -> tuple[tuple[ClosedTradeReviewItem, ...], dict[int, dict[str, object]]]:
-        trades = tuple(sorted(self._repository.list_closed_trades_for_review(account_id), key=lambda item: (item.exit_time, item.id)))
-        assessments = {item.assessment.trade_id: item.assessment for item in self._repository.list_post_trade_assessment_outcomes(account_id)}
-        policies = self._policies_for(trades, assessments, account_id)
-        return trades, self._historical_risk_events_from_context(trades, assessments, policies, self._repository.get_active_risk_policy(account_id), self._repository.get_account_funded_capital(account_id), self._repository.get_latest_mt5_balance(account_id))
+    @staticmethod
+    def _combine_member_risk_events(trade: ClosedTradeReviewItem, raw_events: dict[int, dict[str, object]]) -> dict[str, object]:
+        members = [raw_events[member.id] for member in trade.members]
+        latest = max(members, key=lambda item: item["date"])
+        return {
+            "date": latest["date"],
+            "result_r": sum((Decimal(item["result_r"]) for item in members), Decimal("0")),
+            "drawdown": latest["drawdown"],
+            "streak": latest["streak"],
+            "events": tuple(sorted({event for item in members for event in item["events"]})),
+            "shutdown_candidates": tuple(
+                sorted({event for item in members for event in item["shutdown_candidates"]})
+            ),
+        }
 
     def _historical_risk_events_from_context(self, trades, assessments, policies, active_policy, funded, live_balance):  # type: ignore[no-untyped-def]
         events: dict[int, dict[str, object]] = {}
         if funded is None:
-            return {trade.id: {"date": self._trade_date(trade.exit_time, trade.server_utc_offset_minutes), "result_r": Decimal("0"), "drawdown": Decimal("0"), "streak": 0, "events": ()} for trade in trades}
+            return {
+                trade.id: {
+                    "date": self._trade_date(trade.exit_time, trade.server_utc_offset_minutes),
+                    "result_r": Decimal("0"),
+                    "drawdown": Decimal("0"),
+                    "streak": 0,
+                    "events": (),
+                    "shutdown_candidates": (),
+                }
+                for trade in trades
+            }
         capital = Decimal(funded)
         balance = capital
         peak = capital
         daily: dict[date, Decimal] = {}
         weekly: dict[date, Decimal] = {}
         streak = 0
+        daily_limit_reached_at: dict[date, datetime] = {}
+        weekly_limit_reached_at: dict[date, datetime] = {}
+        drawdown_limit_reached_at: datetime | None = None
+        loss_streak_limit_reached_at: datetime | None = None
         for trade in trades:
+            entry_at = self._as_utc_datetime(trade.entry_time)
             assessed = assessments.get(trade.id)
             policy = self._risk_policy_for_trade(assessed, trade, policies, active_policy)
             fallback = self._standard_risk_amount(funded, policy)
@@ -606,6 +755,17 @@ class FrameworkService:
             result_r = Decimal(trade.net_pnl) / risk_amount if risk_amount > 0 else Decimal("0")
             trade_day = self._trade_date(trade.exit_time, trade.server_utc_offset_minutes)
             week_start = trade_day - timedelta(days=trade_day.weekday())
+            entry_day = self._trade_date(trade.entry_time, trade.server_utc_offset_minutes)
+            entry_week_start = entry_day - timedelta(days=entry_day.weekday())
+            shutdown_candidates: set[str] = set()
+            if (reached_at := daily_limit_reached_at.get(entry_day)) is not None and entry_at > reached_at:
+                shutdown_candidates.add("daily_limit")
+            if (reached_at := weekly_limit_reached_at.get(entry_week_start)) is not None and entry_at > reached_at:
+                shutdown_candidates.add("weekly_limit")
+            if drawdown_limit_reached_at is not None and entry_at > drawdown_limit_reached_at:
+                shutdown_candidates.add("drawdown_limit")
+            if loss_streak_limit_reached_at is not None and entry_at > loss_streak_limit_reached_at:
+                shutdown_candidates.add("loss_streak")
             daily[trade_day] = daily.get(trade_day, Decimal("0")) + result_r
             weekly[week_start] = weekly.get(week_start, Decimal("0")) + result_r
             balance += Decimal(trade.net_pnl)
@@ -613,13 +773,43 @@ class FrameworkService:
             drawdown = (peak - balance) / peak * Decimal("100") if peak > 0 else Decimal("0")
             streak = streak + 1 if Decimal(trade.net_pnl) < 0 else 0
             breach: set[str] = set()
+            exited_at = self._as_utc_datetime(trade.exit_time)
             if policy is not None:
-                if daily[trade_day] <= -Decimal(policy.daily_loss_limit_r): breach.add("daily_limit")
-                if weekly[week_start] <= -Decimal(policy.weekly_loss_limit_r): breach.add("weekly_limit")
-                if drawdown >= Decimal(policy.max_drawdown_percent): breach.add("drawdown_limit")
-                if streak >= policy.max_consecutive_losses: breach.add("loss_streak")
-            events[trade.id] = {"date": trade_day, "result_r": result_r, "drawdown": drawdown, "streak": streak, "events": tuple(sorted(breach))}
+                if daily[trade_day] <= -Decimal(policy.daily_loss_limit_r) and trade_day not in daily_limit_reached_at:
+                    breach.add("daily_limit")
+                    daily_limit_reached_at[trade_day] = exited_at
+                if weekly[week_start] <= -Decimal(policy.weekly_loss_limit_r) and week_start not in weekly_limit_reached_at:
+                    breach.add("weekly_limit")
+                    weekly_limit_reached_at[week_start] = exited_at
+                if drawdown >= Decimal(policy.max_drawdown_percent):
+                    if drawdown_limit_reached_at is None:
+                        breach.add("drawdown_limit")
+                        drawdown_limit_reached_at = exited_at
+                else:
+                    # A recovered balance ends the advisory drawdown shutdown.
+                    # Historical breach evidence remains attached to the
+                    # threshold trade, but later entries are no longer
+                    # candidates until a new drawdown reaches the limit.
+                    drawdown_limit_reached_at = None
+                if streak >= policy.max_consecutive_losses and loss_streak_limit_reached_at is None:
+                    breach.add("loss_streak")
+                    loss_streak_limit_reached_at = exited_at
+            if Decimal(trade.net_pnl) >= 0:
+                loss_streak_limit_reached_at = None
+            events[trade.id] = {
+                "date": trade_day,
+                "result_r": result_r,
+                "drawdown": drawdown,
+                "streak": streak,
+                "events": tuple(sorted(breach)),
+                "shutdown_candidates": tuple(sorted(shutdown_candidates)),
+            }
         return events
+
+    @staticmethod
+    def _as_utc_datetime(value: str) -> datetime:
+        parsed = datetime.fromisoformat(value)
+        return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
 
     def _policies_for(self, trades, assessments, account_id: int):  # type: ignore[no-untyped-def]
         ids = {item.auto_risk_policy_id for item in trades if item.auto_risk_policy_id is not None}
@@ -655,7 +845,7 @@ class FrameworkService:
         return fallback
 
     @staticmethod
-    def _specific_preset_sl_amount(trade: ClosedTradeReviewItem) -> str | None:
+    def _specific_preset_sl_amount(trade) -> str | None:  # type: ignore[no-untyped-def]
         try:
             amount = Decimal(trade.initial_risk_amount) if trade.initial_risk_amount is not None else Decimal("0")
         except ArithmeticError:
@@ -663,39 +853,107 @@ class FrameworkService:
         return _decimal_text(amount) if amount.is_finite() and amount > 0 else None
 
     @staticmethod
-    def _real_loss_sl_amount(trade: ClosedTradeReviewItem) -> str | None:
+    def _real_loss_sl_amount(trade) -> str | None:  # type: ignore[no-untyped-def]
         if FrameworkService._specific_preset_sl_amount(trade) is not None:
             return None
         return _decimal_text(-Decimal(trade.net_pnl)) if Decimal(trade.net_pnl) < 0 else None
 
     @staticmethod
-    def _live_account_balance_sl_amount(trade: ClosedTradeReviewItem, live_balance: str | None) -> str | None:
+    def _live_account_balance_sl_amount(trade, live_balance: str | None) -> str | None:  # type: ignore[no-untyped-def]
         if FrameworkService._specific_preset_sl_amount(trade) is not None or trade.entry_stop_price is not None or Decimal(trade.net_pnl) <= 0 or live_balance is None:
             return None
         amount = Decimal(live_balance)
         return _decimal_text(amount) if amount > 0 else None
 
     def _auto_risk_evidence(self, trade, policies, funded, active_policy, live_balance):  # type: ignore[no-untyped-def]
-        specific = self._specific_preset_sl_amount(trade)
-        real_loss = self._real_loss_sl_amount(trade)
-        live = self._live_account_balance_sl_amount(trade, live_balance)
-        amount = specific or real_loss or live
-        basis = "specific_preset_sl" if specific else "real_loss_sl" if real_loss else "live_account_balance_sl" if live else "unavailable"
-        confidence = "verified" if basis == "specific_preset_sl" else "inferred" if basis == "real_loss_sl" else "conservative" if basis == "live_account_balance_sl" else "unavailable"
-        observed_stop = self._observed_stop_widened(trade)
-        initial_rr = _decimal_text(Decimal(trade.initial_reward_amount) / Decimal(specific)) if specific and trade.initial_reward_amount and Decimal(trade.initial_reward_amount) > 0 else None
+        members = trade.members
+        member_sources: list[tuple[str, Decimal]] = []
+        unavailable = 0
+        specific_total = Decimal("0")
+        real_loss_total = Decimal("0")
+        live_balance_amount: Decimal | None = None
+        reward_total = Decimal("0")
+        all_specific = True
+        all_rewards = True
+        observed_stops: list[bool | None] = []
+        for member in members:
+            specific = self._specific_preset_sl_amount(member)
+            real_loss = self._real_loss_sl_amount(member)
+            live = self._live_account_balance_sl_amount(member, live_balance)
+            observed_stops.append(self._observed_stop_widened(member))
+            if specific is not None:
+                amount = Decimal(specific)
+                specific_total += amount
+                member_sources.append(("specific_preset_sl", amount))
+                if member.initial_reward_amount is not None and Decimal(member.initial_reward_amount) > 0:
+                    reward_total += Decimal(member.initial_reward_amount)
+                else:
+                    all_rewards = False
+            elif real_loss is not None:
+                all_specific = False
+                amount = Decimal(real_loss)
+                real_loss_total += amount
+                member_sources.append(("real_loss_sl", amount))
+                all_rewards = False
+            elif live is not None:
+                all_specific = False
+                amount = Decimal(live)
+                # The current account balance is one account-level loss
+                # bound. It is not a separate stop for every scaled position.
+                live_balance_amount = amount if live_balance_amount is None else max(live_balance_amount, amount)
+                member_sources.append(("live_account_balance_sl", amount))
+                all_rewards = False
+            else:
+                all_specific = False
+                all_rewards = False
+                unavailable += 1
+        specific = _decimal_text(specific_total) if specific_total > 0 else None
+        real_loss = _decimal_text(real_loss_total) if real_loss_total > 0 else None
+        live = None if live_balance_amount is None else _decimal_text(live_balance_amount)
+        amount = live_balance_amount if live_balance_amount is not None else specific_total + real_loss_total
+        bases = {basis for basis, _ in member_sources}
+        basis = next(iter(bases)) if len(bases) == 1 else "mixed_sources" if bases else "unavailable"
+        confidence = "verified" if all_specific and member_sources else "conservative" if live_balance_amount is not None else "inferred" if basis == "real_loss_sl" else "mixed" if bases else "unavailable"
+        observed_stop = True if any(value is True for value in observed_stops) else False if observed_stops and all(value is False for value in observed_stops) else None
+        initial_reward = _decimal_text(reward_total) if all_rewards and reward_total > 0 else None
+        initial_rr = _decimal_text(reward_total / specific_total) if all_specific and all_rewards and specific_total > 0 else None
         policy = policies.get(trade.auto_risk_policy_id) or active_policy
-        if amount is None:
-            return AutoRiskEvidence("unavailable", "No usable automatic risk source is available.", specific, real_loss, live, basis, confidence, trade.initial_reward_amount, initial_rr, observed_stop, None if policy is None else policy.version)
+        if not member_sources:
+            return AutoRiskEvidence("unavailable", "No usable automatic risk source is available.", specific, real_loss, live, basis, confidence, initial_reward, initial_rr, observed_stop, None if policy is None else policy.version)
+        source_description = {
+            "specific_preset_sl": "Specific preset SL",
+            "real_loss_sl": "Real-loss estimate",
+            "live_account_balance_sl": "Live-account-balance estimate",
+            "mixed_sources": "Mixed automatic estimates",
+        }[basis]
+        amount_text = _decimal_text(amount)
+        live_balance_note = (
+            " The live-account-balance fallback is applied once for the logical trade, not once per position."
+            if live_balance_amount is not None and trade.position_count > 1
+            else ""
+        )
+        if unavailable:
+            return AutoRiskEvidence(
+                "unavailable",
+                f"{source_description} totals {amount_text} across {len(member_sources)} of {trade.position_count} position(s); policy compliance is unavailable until every member has risk evidence or you enter Actual risk.{live_balance_note}",
+                specific,
+                real_loss,
+                live,
+                basis,
+                confidence,
+                initial_reward,
+                initial_rr,
+                observed_stop,
+                None if policy is None else policy.version,
+            )
         if policy is None or funded is None:
-            return AutoRiskEvidence("unavailable", "Set funded capital and save a Risk policy to compare this evidence.", specific, real_loss, live, basis, confidence, trade.initial_reward_amount, initial_rr, observed_stop, None if policy is None else policy.version)
+            return AutoRiskEvidence("unavailable", f"{source_description} totals {amount_text}. Set funded capital and save a Risk policy to compare it.{live_balance_note}", specific, real_loss, live, basis, confidence, initial_reward, initial_rr, observed_stop, None if policy is None else policy.version)
         limit = self._maximum_risk_amount(funded, policy)
-        state = "within_policy" if Decimal(amount) <= limit else "over_policy"
-        source = {"specific_preset_sl": "Specific preset SL", "real_loss_sl": "Real-loss estimate", "live_account_balance_sl": "Live-account-balance estimate"}[basis]
-        return AutoRiskEvidence(state, f"{source} {amount} is {'within' if state == 'within_policy' else 'over'} policy v{policy.version} limit {_decimal_text(limit)}.", specific, real_loss, live, basis, confidence, trade.initial_reward_amount, initial_rr, observed_stop, policy.version)
+        state = "within_policy" if amount <= limit else "over_policy"
+        return AutoRiskEvidence(state, f"{source_description} total {amount_text} is {'within' if state == 'within_policy' else 'over'} policy v{policy.version} limit {_decimal_text(limit)} across {trade.position_count} position(s).{live_balance_note}", specific, real_loss, live, basis, confidence, initial_reward, initial_rr, observed_stop, policy.version)
 
     @staticmethod
-    def _observed_stop_widened(trade: ClosedTradeReviewItem) -> bool | None:
+    def _observed_stop_widened(trade) -> bool | None:  # type: ignore[no-untyped-def]
         if trade.entry_stop_price is None or trade.close_stop_price is None:
             return None
         return Decimal(trade.close_stop_price) < Decimal(trade.entry_stop_price) if trade.direction == "long" else Decimal(trade.close_stop_price) > Decimal(trade.entry_stop_price)

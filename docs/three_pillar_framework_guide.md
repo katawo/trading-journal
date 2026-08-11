@@ -23,6 +23,8 @@ MT5 closes a position
         ↓
 Import factual execution
         ↓
+Optionally group scaled positions into one logical trade
+        ↓
 Review the closed trade against all three pillars
         ↓
 Monitor the latest 20, 30, or 50 full reviews
@@ -34,6 +36,34 @@ Choose one corrective action and test it
 
 The journal starts at the completed trade. It does not claim to reconstruct every live decision, open exposure, or emotion from MT5 data.
 
+## Logical trades and scaled positions
+
+MT5 exports one completed **position** per row. The journal automatically maps each imported position to its own **logical trade**. A trading idea may use several scaled entries or exits, so **Framework → Review trades** can later regroup compatible positions into one logical trade.
+
+| Layer | What remains true |
+|---|---|
+| Imported position | Immutable MT5 execution fact: its position ID, timestamps, prices, volume, and P&L are never changed. |
+| Logical trade | One position by default, or a user-created group of two or more positions. It receives one assessment and one process score. |
+| Account Risk monitoring | Continues to use the original chronological positions, so a group cannot hide a daily/weekly loss, drawdown, or loss-streak event. |
+
+### Create and regroup a logical trade
+
+1. In **Framework → Review trades**, select two or more compatible single-position logical trades.
+2. Select **Create logical trade** and optionally add a label, such as `London breakout scale-in`.
+3. Save the group, then open the resulting logical trade and complete its one post-trade assessment.
+
+Positions can be grouped only when they share the same MT5 account, symbol, direction, and imported Risk-policy version. The generated label is based on symbol, direction, and first entry when no custom label is supplied. A group becomes one reviewable logical trade, and appears in the dashboard's **Per trade** analysis, when its **last** member position closes.
+
+Logical-trade membership and labels are mutable. Use **Manage positions** from any review to add, remove, split, merge, or disband positions. A membership change never alters an MT5 row. Instead, it supersedes each affected saved assessment, removes it from active pillar scores and roadmap evidence, and requires a new review. The superseded review keeps its original member-position snapshot and remains available in assessment history. A label-only change does not supersede an assessment.
+
+### Group reporting and automatic risk
+
+A logical trade counts once in dashboard logical-trade count, win rate, expectancy, strategy totals, and the **Per trade** analysis. These review analytics recalculate using the **current** grouping. Its net P&L is the sum of member P&L; the logical-trade date is the final member close. Expand the member-position detail during review to audit the individual MT5 rows.
+
+Account balance, daily realized P&L, and account drawdown always use the immutable chronological MT5 positions. Regrouping therefore cannot rewrite account history or Risk-limit monitoring.
+
+For a group, the automatic Risk amount sums its per-position **specific preset SL** and **real-loss** estimates. A **live-account-balance** fallback is account-level: it applies once to the entire logical trade, never once per member position, and takes precedence over lower per-position amounts. The evidence is `verified` only when every member has a specific preset SL; every live-balance or mixed estimate remains advisory. If any member has no usable source, policy compliance is unavailable until the reviewer supplies a verified **Actual risk amount**.
+
 ## 1. Set up the evidence before reviewing
 
 1. Add each MT5 account in **Settings → MT5 Accounts** and set its funded capital when known.
@@ -42,15 +72,15 @@ The journal starts at the completed trade. It does not claim to reconstruct ever
    - maximum risk per trade for compliance;
    - daily and weekly loss limits, maximum drawdown, maximum loss streak, and minimum R:R.
 3. Create one or more **Strategies** in **Settings → Strategies**. Record the rules and available backtest evidence. A full review needs a selected strategy so the System score has evidence to assess.
-4. In **Framework → Framework rules**, choose which critical events are hard failures. These settings affect journal scores and alerts only; they never control MT5.
+4. In **Framework → Framework rules**, choose which critical events are hard failures for new or corrected assessments. These settings affect journal scores and alerts only; they never control MT5.
 
-Risk policies are versioned. A completed assessment retains the policy and strategy evidence that was attached when it was saved, so later configuration changes do not rewrite an earlier review.
+Risk policies are versioned. A completed assessment retains the policy and strategy evidence that was attached when it was saved. Its effective hard-rule events are also snapshotted, so later configuration changes do not rewrite an earlier review.
 
 ## 2. What is and is not scored automatically
 
 | State shown in Review trades | What it means | Three-pillar score? | What to do |
 |---|---|---:|---|
-| Needs review | The imported position has no usable automatic risk evidence and no saved assessment. | No | Open it and complete a post-trade assessment. |
+| Needs review | The logical trade has no usable automatic risk evidence and no saved assessment. | No | Open it and complete a post-trade assessment. |
 | Automatic evidence | The importer found a usable risk estimate. | No | Use it as evidence, then complete a human assessment if the trade should count. |
 | Reviewed | All 13 criteria, the strategy, notes, and required follow-up were saved. | Yes | It contributes to the rolling scores and roadmap. |
 
@@ -64,11 +94,17 @@ Automatic MT5 evidence is helpful, but it cannot assess Psychology or System exe
 | Real-loss estimate | Inferred | `abs(net P&L)` for a losing trade without a calculated initial risk. |
 | Live-account-balance estimate | Conservative | The latest schema-v4 MT5 balance for a profitable trade without an entry stop. It is a conservative fallback, not proof of the original stop. |
 
-The app compares the available amount with the account's maximum-risk policy and labels it within policy, over policy, or unavailable. Enter a verified **Actual risk amount** during review when the automatic amount is not the best evidence.
+The app compares the available amount with the account's maximum-risk policy and labels it within policy, over policy, or unavailable. Enter a verified **Actual risk amount** during review when the automatic amount is not the best evidence. It replaces the automatic amount for that logical trade's policy comparison, but it does **not** rewrite the immutable MT5-position chronology used for daily/weekly limits, drawdown, or loss-streak monitoring.
+
+### Automatic limit monitoring and shutdown review
+
+Daily loss, weekly loss, drawdown, and losing-streak limits are calculated from completed MT5 positions. When a position first reaches a limit, the app records a **Risk monitor reached** warning. That position is not automatically a failed trade: the journal cannot infer the trader's intention or what was known while an order was open.
+
+For a later position whose entry timestamp is after an earlier completed position reached a limit, the app shows a **Shutdown review** candidate. It is a prompt to inspect the sequence, not a verdict. Select **Trading after hard shutdown** only when your post-trade review confirms that the entry broke your own stop rule and that hard rule is enabled in **Framework rules** when the assessment is saved. Only that confirmed, enabled event changes the Hard-rule status to `FAIL`.
 
 ## 3. Complete one post-trade assessment
 
-Open **Framework → Review trades**, choose a trade from **Needs review**, **Automatic evidence**, or **Reviewed**, and rate all 13 criteria.
+Open **Framework → Review trades**, choose a logical trade from **Needs review**, **Automatic evidence**, or **Reviewed**, and rate all 13 criteria once. A grouped logical trade contributes one review to the rolling sample, not one review per member position.
 
 | Rating | Numeric value | Use it when |
 |---|---:|---|
@@ -117,6 +153,16 @@ Pillar score  = Σ(criterion value × criterion weight)
 Process score = (Psychology + Risk Management + Trading System) / 3
 ```
 
+The journal deliberately shows two separate results:
+
+| Result | Rule |
+|---|---|
+| **Trade quality** | `Good` at 70 or above; `Needs improvement` below 70. |
+| **Hard-rule status** | `Clear` unless the reviewer records an enabled hard-rule event; `Fail` when one applies. The effective event is snapshotted when saved. |
+| **Classification** | A Good/Needs-improvement/Bad Win, Loss, or Breakeven. Any hard-rule failure is `Bad`, regardless of the raw score. |
+
+This prevents a very low raw score from being presented as a Good trade merely because no hard rule was selected.
+
 ### Worked example: a good trade with one behavioural deviation
 
 Assume every criterion is **Pass** except Psychology **Rule adherence**, which is **Partial**.
@@ -133,7 +179,7 @@ Raw Process score = (82.5 + 100 + 100) / 3
                   = 94.17
 ```
 
-This trade is **Process PASS** if no hard-rule event applies. Its P&L then determines whether it is shown as a Good Win, Good Loss, or Good Breakeven. The 94.17 does not mean the Partial rating is ignored: the corrective action and tag remain available for pattern analysis.
+This trade has **Good** quality and a **Clear** hard-rule status if no hard-rule event applies. Its P&L then determines whether it is shown as a Good Win, Good Loss, or Good Breakeven. The 94.17 does not mean the Partial rating is ignored: the corrective action and tag remain available for pattern analysis.
 
 ### Worked example: why a high average cannot hide a severe breach
 
@@ -141,8 +187,9 @@ Assume the same 94.17 raw score, but the trader records an enabled **Deliberatel
 
 ```text
 Raw Process score = 94.17     (retained as evidence)
-Process Quality   = FAIL      (hard rule overrides the classification)
-Risk pillar       = hard-blocked in the rolling sample
+Hard-rule status  = FAIL      (hard rule overrides the classification)
+Classification     = Bad Win / Bad Loss / Bad Breakeven
+Risk pillar        = hard-blocked in the rolling sample
 ```
 
 If the trade made money, it is a **Bad Win**. If it lost money, it is a **Bad Loss**. The raw score remains visible so the review is auditable; it does not cancel the hard failure.
@@ -160,11 +207,11 @@ The following events can be enabled as hard failures in **Framework rules**:
 
 Hard rules do three things:
 
-1. Set the individual trade's **Process Quality** to `FAIL`.
+1. Set the individual trade's **Hard-rule status** to `FAIL` and its classification to `Bad`.
 2. Mark the affected pillar as hard-blocked while that reviewed trade remains in the selected rolling window.
 3. Prevent the readiness assessment from reporting `Ready`, even if its numeric score is high.
 
-Reason tags also make recurring patterns visible. Psychology critical tags include revenge, emotional sizing, and failure to reset after a loss; Risk critical tags include daily/weekly/drawdown/exposure breaches and stop widening; the System critical tag is a mandatory setup absent. A tag is not automatically a hard rule unless its related hard-rule setting is enabled.
+Reason tags also make recurring patterns visible. Psychology critical tags include revenge, emotional sizing, and failure to reset after a loss; Risk critical tags include daily/weekly/drawdown/exposure breaches and stop widening; the System critical tag is a mandatory setup absent. A tag is not automatically a hard rule unless its related hard-rule setting is enabled when the assessment is saved. In particular, automatic MT5 limit warnings and Shutdown review candidates never create a hard failure without a reviewer recording the enabled **Trading after hard shutdown** event. Changing Framework rules later applies to new or corrected assessments; it does not revise historical classifications.
 
 ## 6. How rolling monitoring is calculated
 
@@ -179,7 +226,7 @@ The Monitor computes a second set of period components from the reviewed window.
 | Rule adherence | 35% | Average reviewed Rule adherence grade. |
 | Impulse control | 25% | Average reviewed Impulse control grade. |
 | Emotional control | 20% | Average reviewed Emotional control grade. |
-| Post-loss discipline | 20% | The next reviewed trade after a loss: its Impulse control grade, or 0 when tagged `post_loss_reset`. It is 100 when the sample has no eligible post-loss sequence. |
+| Post-loss discipline | 20% | The next reviewed trade after a loss across all active accounts: its Impulse control grade, or 0 when tagged `post_loss_reset`. It is 100 when the sample has no eligible post-loss sequence. |
 
 ### Risk Management monitoring score
 
@@ -187,7 +234,7 @@ The Monitor computes a second set of period components from the reviewed window.
 |---|---:|---|
 | Policy adherence | 35% | Average reviewed Policy adherence grade. |
 | Stop discipline | 25% | Average reviewed Stop discipline grade. |
-| Limit compliance | 25% | 100 for a reviewed trade with no historical daily/weekly/drawdown/streak event; 0 when an event occurred. |
+| Limit compliance | 25% | 100 for a reviewed trade with no historical daily/weekly/drawdown/streak event; 0 when an event occurred. This affects the Risk monitoring component only; it does not automatically set the trade's Hard-rule status to `FAIL`. |
 | Exposure control | 15% | Average reviewed Exposure-limit compliance grade. |
 
 ### Trading System monitoring score
@@ -237,7 +284,7 @@ The three pillars progress in parallel:
 | Define | Rules and evidence are documented. |
 | Test | Testing or practice evidence is documented. System testing requires 100+ backtest trades with positive expectancy after costs. |
 | Execute | 20 full reviews, score at least 70, and no active hard failure. |
-| Measure | 30 full reviews, current saved period review, score at least 80, and no active hard failure. |
+| Measure | 30 full reviews, a saved weekly or monthly review for the latest completed period, a 30-review score of at least 80, and no active hard failure. |
 | Optimize | A hypothesis, baseline, result, and keep/reject decision are recorded. |
 
 **Psychology** roadmap evidence is behaviour-focused; **Risk** evidence is account-specific policy and sizing evidence; **System** evidence is strategy rules, examples, and backtest evidence. Complete the evidence in **Framework → Roadmap** only when it can be explained and revisited.

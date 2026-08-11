@@ -1664,7 +1664,9 @@ Use pytest for domain, database, and importer tests, plus Streamlit AppTest for 
 
 ---
 
-# 37. Three-Pillar Post-Trade Journal
+# 37. Archived three-pillar implementation note
+
+> **Non-normative historical note.** This section is retained only as release context. The current workflow, logical-trade model, scoring rules, hard-rule semantics, monitoring scope, and roadmap gates are defined exclusively in [the three-pillar operating guide](three_pillar_framework_guide.md). Do not use this section to implement or interpret the framework.
 
 The three pillars remain the permanent framework:
 
