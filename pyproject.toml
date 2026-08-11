@@ -9,6 +9,7 @@ description = "Local-first trading journal with read-only MT5 imports"
 requires-python = ">=3.12"
 dependencies = [
   "alembic>=1.18,<2",
+  "pandas>=2.2,<4",
   "pydantic>=2.13,<3",
   "plotly>=6.0,<7",
   "sqlalchemy>=2.0,<3",
@@ -17,6 +18,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=9,<10"]
+desktop = ["pyinstaller>=6.10,<7"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

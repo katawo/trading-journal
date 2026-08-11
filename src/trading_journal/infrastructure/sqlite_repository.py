@@ -597,7 +597,10 @@ class PillarRoadmapEvidenceView:
 class SQLiteJournalRepository:
     def __init__(self, database_path: str | Path) -> None:
         self._database_path = Path(database_path)
-        self._engine = create_engine(f"sqlite:///{self._database_path}")
+        # The desktop sync worker and the Streamlit UI are separate local
+        # processes. WAL keeps reads responsive; the timeout lets short form
+        # saves wait for an import transaction instead of failing immediately.
+        self._engine = create_engine(f"sqlite:///{self._database_path}", connect_args={"timeout": 10})
 
         @event.listens_for(self._engine, "connect")
         def configure_sqlite(connection, _record) -> None:  # type: ignore[no-untyped-def]

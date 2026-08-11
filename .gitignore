@@ -12,6 +12,9 @@ htmlcov/
 # Local journal state and exports
 data/
 *.sqlite3
+build/
+dist/
+release/
 
 # Local Streamlit secrets and editor/OS files
 .streamlit/secrets.toml

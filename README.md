@@ -1,6 +1,6 @@
 # Trading Journal
 
-Local-first Streamlit trading journal with a read-only MetaTrader 5 import path.
+Local-first desktop journal with a read-only MetaTrader 5 import path. The desktop release runs the existing Streamlit interface only on your computer and never exposes its local server to the network.
 
 ## Run locally
 
@@ -11,7 +11,15 @@ make run
 
 `make run` keeps Streamlit running and automatically reruns the app when source files are saved. Use `make test` for tests and `make check` for tests plus compilation.
 
-Set `TRADING_JOURNAL_DB` to choose a database location; it defaults to `data/trading_journal.db`.
+For the normal local desktop experience, run:
+
+```bash
+make desktop
+```
+
+It starts the loopback-only journal, a background MT5 sync worker, and opens the interface in your default browser. Build a portable bundle for the current operating system with `make bundle`. See [the desktop guide](docs/desktop_app.md) for installation, backups, and release details.
+
+Set `TRADING_JOURNAL_DB` to choose a database location during source development; it defaults to `data/trading_journal.db`. The desktop bundle stores its database in the operating system's user-data directory so application updates cannot overwrite it.
 To intentionally erase all local accounts, imports, settings, strategies, and framework evidence, run `make reset-db CONFIRM_RESET=yes`. Restart the app afterwards to create a clean database. The three-pillar framework is greenfield: databases from an earlier schema must be reset before they can be opened; the app does not migrate or reinterpret old reviews.
 
 ## Import MT5 history
@@ -19,9 +27,11 @@ To intentionally erase all local accounts, imports, settings, strategies, and fr
 1. Copy `mql5/TradingJournalSync.mq5` to the MT5 `Experts` directory and compile it in MetaEditor. The current EA writes schema v4 with entry SL/TP, initial calculated risk, MT5 magic number, close metadata, account-balance snapshot, and the MT5 server UTC offset.
 2. Attach it once to any chart in the terminal you trade from. It writes `trading_journal/<MT5-login>_positions.csv` under MT5 Common Files after trade-deal events, plus a 60-second safety refresh.
 3. In **Settings → MT5 Accounts**, approve each account using its exact login, broker server, and deposit currency. Choose one journal-wide reporting clock: **Server Timezone** (the MT5 clock preserved in every export), **UTC**, or the computer's **Local Timezone**. Monetary reports always use the selected account's currency—accounts are never converted or aggregated. Leave the custom export-path field blank to use the matching account-specific default. The app detects native Windows `%APPDATA%` and Linux Wine locations (including `WINEPREFIX`, `~/.wine`, and `~/.mt5`); its detected source is shown in the advanced export-location panel. If your terminal is elsewhere, start the app with `TRADING_JOURNAL_MT5_COMMON_FILES` set to its `Terminal/Common/Files` directory.
-4. Keep **Dashboard** open. The app checks the configured export every 15 seconds and imports a changed snapshot automatically.
+4. In the desktop application, the background worker checks the configured export every five seconds and imports a changed snapshot automatically, even while Settings or Guide is open. In source development, keep **Dashboard** or **Framework** open for the built-in 15-second auto-sync.
 
 The sync EA and importer accept completed positions only and never send orders. Re-importing refreshes the MT5-owned execution data. The journal never stores an MT5 password. `mql5/TradingJournalExporter.mq5` remains available for one-off manual exports.
+
+The current release is desktop-only: it does not upload CSV files, journal data, reviews, or account credentials to Streamlit Community Cloud. The hosted app cannot read a computer's MT5 folders; remote sharing can be added later as a separately secured sync feature.
 
 ## Risk policy and reports
 

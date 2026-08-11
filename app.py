@@ -12,6 +12,7 @@ from trading_journal.application.auto_sync import MT5AutoSyncResult, MT5AutoSync
 from trading_journal.application.dashboard import DashboardService
 from trading_journal.application.display_time import format_relative_time
 from trading_journal.application.mt5_paths import default_mt5_export_path, find_mt5_common_files
+from trading_journal.desktop import DesktopSyncControl, DesktopSyncStatusStore, desktop_runtime_paths, is_desktop_mode
 from trading_journal.infrastructure.sqlite_repository import AccountListItem, JournalDatabaseResetRequiredError, SQLiteJournalRepository
 from trading_journal.presentation.framework import render_framework_dashboard, render_framework_page
 
@@ -86,18 +87,48 @@ def repository() -> SQLiteJournalRepository:
     return repo
 
 
-@st.fragment(run_every=_AUTO_SYNC_INTERVAL_SECONDS)
-def monitor_mt5_exports(repo: SQLiteJournalRepository) -> None:
-    results = MT5AutoSyncService(repo).sync_configured_exports()
+def _render_sync_results(results: list[MT5AutoSyncResult], *, notice_key: str | None = None) -> None:
     st.session_state["auto_sync_results"] = results
     render_sync_failures(results, prefix="MT5 auto-sync needs attention")
     imported = [item for item in results if item.status == "imported"]
-    if not imported:
+    if not imported or notice_key is None:
         return
+    if st.session_state.get("auto_sync_notice_key") == notice_key:
+        return
+    st.session_state["auto_sync_notice_key"] = notice_key
     created = sum(item.created_count for item in imported)
     updated = sum(item.updated_count for item in imported)
     st.session_state["auto_sync_notice"] = f"Auto-imported {created} created and {updated} updated MT5 position(s)."
-    st.rerun(scope="app")
+
+
+@st.fragment(run_every=_AUTO_SYNC_INTERVAL_SECONDS)
+def _monitor_local_mt5_exports(repo: SQLiteJournalRepository) -> None:
+    results = MT5AutoSyncService(repo).sync_configured_exports()
+    notice_key = ";".join(
+        f"{item.account_login}:{item.broker_server}:{item.export_updated_at.isoformat() if item.export_updated_at else ''}"
+        for item in results
+        if item.status == "imported"
+    )
+    _render_sync_results(results, notice_key=notice_key or None)
+
+
+@st.fragment(run_every=_FRESHNESS_INTERVAL_SECONDS)
+def _monitor_desktop_mt5_exports() -> None:
+    paths = desktop_runtime_paths()
+    status = DesktopSyncStatusStore(paths.sync_status_path)
+    results = status.results()
+    _render_sync_results(results, notice_key=status.last_import_at().isoformat() if status.last_import_at() else None)
+    if error := status.worker_error():
+        st.error(f"MT5 desktop sync needs attention: {error}")
+
+
+def monitor_mt5_exports(repo: SQLiteJournalRepository) -> None:
+    """Render live MT5 state without giving desktop mode a second importer."""
+
+    if is_desktop_mode():
+        _monitor_desktop_mt5_exports()
+    else:
+        _monitor_local_mt5_exports(repo)
 
 
 def render_auto_sync_notice() -> None:
@@ -140,11 +171,16 @@ def render_manual_sync_button(repo: SQLiteJournalRepository, *, key: str) -> Non
     sync_requested = actions.button("Sync MT5 now", key=key, icon=":material/sync:")
     results = st.session_state.get("auto_sync_results", [])
     if sync_requested:
-        results = MT5AutoSyncService(repo).sync_configured_exports()
-        st.session_state["auto_sync_results"] = results
+        if is_desktop_mode():
+            paths = desktop_runtime_paths()
+            DesktopSyncControl(paths.sync_request_path, paths.shutdown_request_path).request_sync()
+            st.info("Desktop sync requested. The local worker will check every configured export within one second.")
+        else:
+            results = MT5AutoSyncService(repo).sync_configured_exports()
+            st.session_state["auto_sync_results"] = results
     with actions:
         render_live_sync_freshness(include_sync_hint=True)
-    if not sync_requested:
+    if not sync_requested or is_desktop_mode():
         return
 
     imported = [item for item in results if item.status == "imported"]
@@ -416,6 +452,15 @@ def render_settings(repo: SQLiteJournalRepository) -> None:
         render_mt5_account_settings(repo)
     with strategies_tab:
         render_strategy_settings(repo)
+    if is_desktop_mode():
+        st.divider()
+        with st.container(border=True):
+            st.markdown("##### Desktop application")
+            st.caption("The journal, MT5 sync worker, and your data are running locally on this computer. Closing this desktop application stops automatic MT5 imports.")
+            if st.button("Quit desktop journal", icon=":material/power_settings_new:", type="primary"):
+                paths = desktop_runtime_paths()
+                DesktopSyncControl(paths.sync_request_path, paths.shutdown_request_path).request_shutdown()
+                st.success("Closing the local Trading Journal…")
 
 
 def render_strategy_settings(repo: SQLiteJournalRepository) -> None:

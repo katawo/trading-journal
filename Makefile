@@ -8,7 +8,7 @@ DB_PATH := $(if $(strip $(DB_PATH)),$(DB_PATH),data/trading_journal.db)
 
 .DEFAULT_GOAL := help
 
-.PHONY: help venv setup run test check reset-db
+.PHONY: help venv setup run desktop bundle test check reset-db
 
 help: ## Show available commands.
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z_-]+:.*##/ {printf "\033[36m%-8s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -21,6 +21,13 @@ setup: venv ## Install the application and development dependencies.
 
 run: venv ## Start Streamlit with automatic reruns when source files are saved.
 	$(STREAMLIT) run $(APP) --server.runOnSave true
+
+desktop: venv ## Start the local desktop launcher, MT5 sync worker, and browser UI.
+	$(VENV_PYTHON) -m trading_journal.desktop
+
+bundle: venv ## Build a portable desktop bundle for the current operating system.
+	$(VENV_PYTHON) -m pip install -e '.[desktop]'
+	$(VENV_PYTHON) scripts/build_desktop.py
 
 test: venv ## Run the automated test suite.
 	$(VENV_PYTHON) -m pytest -q

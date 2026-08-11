@@ -1,0 +1,172 @@
+from __future__ import annotations
+
+import csv
+from pathlib import Path
+
+from streamlit.testing.v1 import AppTest
+
+from trading_journal.application.auto_sync import MT5AutoSyncResult
+from trading_journal.desktop import (
+    DesktopSyncControl,
+    DesktopSyncStatusStore,
+    DesktopSyncWorker,
+    desktop_data_directory,
+    desktop_runtime_paths,
+    self_check,
+)
+from trading_journal.infrastructure.sqlite_repository import SQLiteJournalRepository
+
+
+HEADER = [
+    "schema_version",
+    "account_login",
+    "broker_server",
+    "account_currency",
+    "position_id",
+    "symbol",
+    "direction",
+    "entry_time",
+    "exit_time",
+    "server_utc_offset_minutes",
+    "entry_price",
+    "exit_price",
+    "volume",
+    "gross_pnl",
+    "commission",
+    "swap",
+    "fees",
+    "net_pnl",
+    "entry_stop_price",
+    "entry_target_price",
+    "close_stop_price",
+    "entry_magic_number",
+    "entry_deal_count",
+    "exit_reason",
+    "initial_risk_amount",
+    "initial_reward_amount",
+    "account_balance",
+]
+
+
+def write_export(path: Path) -> None:
+    row = {
+        "schema_version": "4",
+        "account_login": "123456",
+        "broker_server": "DemoBroker-Live",
+        "account_currency": "USD",
+        "position_id": "9001",
+        "symbol": "EURUSD",
+        "direction": "long",
+        "entry_time": "2026-08-10T08:00:00+00:00",
+        "exit_time": "2026-08-10T10:00:00+00:00",
+        "server_utc_offset_minutes": "0",
+        "entry_price": "1.10000",
+        "exit_price": "1.10100",
+        "volume": "1.00",
+        "gross_pnl": "100.00",
+        "commission": "-1.50",
+        "swap": "-0.25",
+        "fees": "-0.25",
+        "net_pnl": "98.00",
+        "entry_stop_price": "",
+        "entry_target_price": "",
+        "close_stop_price": "",
+        "entry_magic_number": "",
+        "entry_deal_count": "",
+        "exit_reason": "client",
+        "initial_risk_amount": "",
+        "initial_reward_amount": "",
+        "account_balance": "1000.00",
+    }
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=HEADER)
+        writer.writeheader()
+        writer.writerow(row)
+
+
+def configured_repository(tmp_path: Path, export_path: Path) -> SQLiteJournalRepository:
+    repository = SQLiteJournalRepository(tmp_path / "journal.db")
+    repository.initialize()
+    repository.configure_journal(reporting_time_basis="utc")
+    repository.register_mt5_account(
+        display_name="Primary",
+        login="123456",
+        broker_server="DemoBroker-Live",
+        account_currency="USD",
+        export_file_path=str(export_path),
+    )
+    return repository
+
+
+def test_desktop_data_directory_uses_platform_conventions_and_override(tmp_path: Path) -> None:
+    assert desktop_data_directory(environment={"LOCALAPPDATA": "C:/Users/trader/AppData/Local"}, home=tmp_path, platform="win32") == Path("C:/Users/trader/AppData/Local") / "TradingJournal"
+    assert desktop_data_directory(environment={"XDG_DATA_HOME": "/var/local-data"}, home=tmp_path, platform="linux") == Path("/var/local-data/trading-journal")
+    assert desktop_data_directory(environment={"TRADING_JOURNAL_DESKTOP_DATA_DIR": str(tmp_path / "journal")}, home=tmp_path, platform="linux") == tmp_path / "journal"
+
+
+def test_desktop_status_preserves_last_import_and_rebuilds_results(tmp_path: Path) -> None:
+    store = DesktopSyncStatusStore(tmp_path / "status.json")
+    imported = MT5AutoSyncResult("Primary", "123456", "DemoBroker-Live", "positions.csv", "imported", created_count=2, updated_count=1)
+    store.write([imported])
+    first_import_at = store.last_import_at()
+
+    store.write([MT5AutoSyncResult("Primary", "123456", "DemoBroker-Live", "positions.csv", "up_to_date")])
+
+    assert first_import_at is not None
+    assert store.last_import_at() == first_import_at
+    assert [(item.account_name, item.status) for item in store.results()] == [("Primary", "up_to_date")]
+
+
+def test_desktop_sync_control_consumes_a_manual_request_and_keeps_shutdown_separate(tmp_path: Path) -> None:
+    control = DesktopSyncControl(tmp_path / "sync.request", tmp_path / "shutdown.request")
+
+    control.request_sync()
+    assert control.consume_sync_request() is True
+    assert control.consume_sync_request() is False
+    assert control.shutdown_requested() is False
+
+    control.request_shutdown()
+    assert control.shutdown_requested() is True
+    control.clear_shutdown_request()
+    assert control.shutdown_requested() is False
+
+
+def test_desktop_worker_uses_the_existing_hash_based_mt5_importer(tmp_path: Path) -> None:
+    export_path = tmp_path / "positions.csv"
+    write_export(export_path)
+    repository = configured_repository(tmp_path, export_path)
+    status = DesktopSyncStatusStore(tmp_path / "status.json")
+    worker = DesktopSyncWorker(tmp_path / "journal.db", status, DesktopSyncControl(tmp_path / "sync.request", tmp_path / "shutdown.request"))
+
+    first = worker.sync_once()
+    second = worker.sync_once()
+
+    assert [(item.status, item.created_count) for item in first] == [("imported", 1)]
+    assert [(item.status, item.created_count) for item in second] == [("up_to_date", 0)]
+    assert repository.count_trades() == 1
+    assert status.last_import_at() is not None
+
+
+def test_desktop_self_check_uses_configured_writable_data_directory(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("TRADING_JOURNAL_DESKTOP_DATA_DIR", str(tmp_path / "desktop-data"))
+
+    assert self_check() == 0
+    assert desktop_runtime_paths().data_directory.is_dir()
+
+
+def test_desktop_dashboard_delegates_manual_sync_to_the_background_worker(monkeypatch, tmp_path: Path) -> None:
+    export_path = tmp_path / "positions.csv"
+    write_export(export_path)
+    repository = configured_repository(tmp_path, export_path)
+    data_directory = tmp_path / "desktop-data"
+    monkeypatch.setenv("TRADING_JOURNAL_DB", str(tmp_path / "journal.db"))
+    monkeypatch.setenv("TRADING_JOURNAL_DESKTOP_MODE", "1")
+    monkeypatch.setenv("TRADING_JOURNAL_DESKTOP_DATA_DIR", str(data_directory))
+
+    app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
+    next(item for item in app.button if item.label == "Sync MT5 now").click().run()
+
+    assert not app.exception
+    assert (data_directory / "mt5-sync.request").is_file()
+    assert repository.count_trades() == 0
+    assert any("Desktop sync requested" in item.value for item in app.info)
