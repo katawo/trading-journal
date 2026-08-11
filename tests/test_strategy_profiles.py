@@ -10,12 +10,7 @@ from trading_journal.infrastructure.sqlite_repository import SQLiteJournalReposi
 def _repository(tmp_path) -> SQLiteJournalRepository:
     repository = SQLiteJournalRepository(tmp_path / "journal.db")
     repository.initialize()
-    repository.configure_journal(
-        base_currency="USD",
-        reporting_timezone="UTC",
-        monthly_target="100",
-        default_planned_risk_amount="10",
-    )
+    repository.configure_journal(base_currency="USD", reporting_timezone="UTC")
     return repository
 
 

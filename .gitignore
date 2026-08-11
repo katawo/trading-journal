@@ -17,5 +17,9 @@ data/
 .streamlit/secrets.toml
 .DS_Store
 
+# Environment-managed local assistant skill links
+.agents/skills/developing-with-streamlit
+.claude/skills/developing-with-streamlit
+
 # MetaEditor compilation artifacts
 *.ex5

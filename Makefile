@@ -3,10 +3,12 @@ PYTHON ?= python3
 APP := app.py
 VENV_PYTHON := $(VENV)/bin/python
 STREAMLIT := $(VENV_PYTHON) -m streamlit
+DB_PATH ?= $(TRADING_JOURNAL_DB)
+DB_PATH := $(if $(strip $(DB_PATH)),$(DB_PATH),data/trading_journal.db)
 
 .DEFAULT_GOAL := help
 
-.PHONY: help venv setup run test check
+.PHONY: help venv setup run test check reset-db
 
 help: ## Show available commands.
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z_-]+:.*##/ {printf "\033[36m%-8s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -25,3 +27,9 @@ test: venv ## Run the automated test suite.
 
 check: test ## Compile the application after the tests pass.
 	$(VENV_PYTHON) -m compileall -q $(APP) src
+
+reset-db: ## Delete all local journal data. Requires CONFIRM_RESET=yes.
+	@test "$(CONFIRM_RESET)" = "yes" || { echo "Refusing to reset. Run: make reset-db CONFIRM_RESET=yes"; exit 2; }
+	@test "$(DB_PATH)" != "/" && test "$(DB_PATH)" != "." && test "$(DB_PATH)" != "" || { echo "Unsafe database path: $(DB_PATH)"; exit 2; }
+	rm -f "$(DB_PATH)" "$(DB_PATH)-wal" "$(DB_PATH)-shm"
+	@echo "Removed journal database: $(DB_PATH)"

@@ -2,29 +2,24 @@
 
 ## 1. Purpose
 
-Build a simple, local-first web application for manual trading journaling, risk management, performance tracking, and monthly goal planning.
+Build a simple, local-first web application for manual trading journaling, risk management, and performance tracking.
 
 The first version will **not integrate with MetaTrader 5** or any broker.
 
 The app should help answer:
 
-> Given my account size, trading system, risk model, historical expectancy, execution quality, and number of valid opportunities, is my monthly target realistic — and am I following the process required to achieve it?
-
-The app must **not encourage overtrading or increasing risk simply because the monthly profit target has not yet been reached**.
+> Given my account size, trading system, risk model, historical expectancy, and execution quality, am I following a repeatable and risk-controlled process?
 
 ---
 
 ## 2. Primary Goal
 
-Example monthly target:
+The user enters account size manually, defines risk per trade, and reviews performance with evidence rather than a profit quota.
 
-- Monthly target: **$1,000**
-- User enters account size manually
-- User defines risk per trade
 - App converts results into **R-multiples**
 - App tracks:
-  - Monthly P&L
-  - Monthly R
+  - Period P&L
+  - Period R
   - Win rate
   - Expectancy
   - Profit factor
@@ -33,8 +28,6 @@ Example monthly target:
   - Strategy/setup performance
   - Daily/weekly/monthly risk status
 
-The monthly target is a **planning objective**, not a trading quota.
-
 ---
 
 ## 3. Core Design Principle
@@ -42,8 +35,6 @@ The monthly target is a **planning objective**, not a trading quota.
 The application should follow this hierarchy:
 
 ```text
-Monthly Goal
-    ↓
 System Expectancy
     ↓
 Trading Strategy
@@ -55,19 +46,7 @@ Risk Management
 Individual Trades
 ```
 
-It must avoid this behavior:
-
-```text
-Behind Monthly Target
-    ↓
-Trade More
-    ↓
-Increase Position Size
-    ↓
-Take Lower-Quality Setups
-    ↓
-Increase Drawdown
-```
+Performance outcomes must never override the Trading System, execution quality, or Risk Management rules.
 
 ---
 
@@ -256,15 +235,13 @@ Settings
 
 The dashboard is the main command center.
 
-## Monthly Summary
+## Period Summary
 
 Display:
 
 ```text
-Monthly Target        $1,000
 Current Net P&L         $620
 Current R              +6.2R
-Target R               +10R
 
 Trades                    17
 Wins                       8
@@ -285,17 +262,9 @@ Rule Adherence             94%
 
 - Starting balance
 - Current balance
-- Monthly starting balance
-- Monthly net P&L
-- Monthly return %
-
-### Goal
-
-- Monthly target $
-- Current result $
-- Target R
-- Current R
-- Progress %
+- Reporting-period starting balance
+- Reporting-period net P&L
+- Reporting-period return %
 
 ### Performance
 
@@ -324,22 +293,6 @@ Rule Adherence             94%
 - B trades
 - C trades
 - Rule violations
-
-## Important UX rule
-
-Do **not** display:
-
-> You need $380 more today.
-
-Instead display:
-
-```text
-Monthly Target Progress: 62%
-
-Current Expectancy: +0.42R/trade
-Average Qualified Trades/Month: 24
-Expected Monthly R: +10.08R
-```
 
 ---
 
@@ -619,39 +572,6 @@ Planned Risk = $100
 Result R = 235 / 100
          = +2.35R
 ```
-
----
-
-# 15. Monthly Goal Engine
-
-The monthly goal is tracked in dollars and R.
-
-Example:
-
-```text
-Monthly Target = $1,000
-1R = $100
-Target R = 10R
-```
-
-Formula:
-
-```text
-Target R = Monthly Target / Base Risk Amount
-```
-
-The app should display:
-
-- Monthly target $
-- Current P&L $
-- Monthly target R
-- Current R
-- Monthly progress %
-- Current expectancy
-- Average monthly trade count
-- Expected monthly R
-
-The app must never recommend increasing risk solely because the monthly target is behind schedule.
 
 ---
 
@@ -998,18 +918,11 @@ Journal prompts:
 
 ---
 
-## Monthly Review
+## Periodic Review
 
 Display:
 
 ```text
-Target
-Actual
-Difference
-
-Target R
-Actual R
-
 Trades
 Win Rate
 Expectancy
@@ -1027,7 +940,7 @@ Rule Adherence
 Review questions:
 
 - Did I follow the system?
-- Was the target statistically realistic?
+- Was performance consistent with the documented system evidence?
 - Which setup generated most of the profit?
 - Which setup created most losses?
 - Which mistakes cost the most R?
@@ -1043,7 +956,7 @@ Review questions:
 
 Settings is the single configuration workspace. It has three tabs:
 
-- **General** — journal currency, reporting timezone, targets, balance tracking, and default risk baseline
+- **General** — journal currency and reporting timezone
 - **MT5 Accounts** — approved accounts and their export file locations
 - **Strategies** — reusable strategy profiles, the one journal-default strategy, and optional backtest evidence
 
@@ -1051,7 +964,6 @@ Settings is the single configuration workspace. It has three tabs:
 
 - Journal base currency
 - Journal reporting timezone
-- Monthly target
 
 ## MT5 Account Settings
 
@@ -1065,11 +977,12 @@ Only accounts explicitly registered here may be imported. An account whose MT5 d
 
 ## Risk Settings
 
-- Default risk %
-- Base 1R value
+Risk is configured per MT5 account in the account's **Risk policy**:
+
+- Standard risk (1R) % for reporting
+- Maximum risk per trade % for compliance
 - Daily loss limit R
 - Weekly loss threshold R
-- Monthly loss threshold R
 - Maximum open risk R
 
 ## Trading Settings
@@ -1101,7 +1014,6 @@ Examples:
 id
 journal_base_currency
 reporting_timezone
-monthly_target
 default_risk_percent
 base_r_value
 daily_loss_limit_r
@@ -1319,14 +1231,12 @@ The app should validate:
 - Setup should belong to the selected strategy
 - Grade must be valid
 - R calculation requires planned risk
-- Monthly target should not affect position sizing
-- Position sizing must use defined risk, not remaining monthly target
 - MT5 import file must use supported schema version `1` and a registered `(login, broker server)` account
 - MT5 import currency must match the journal base currency
 - Imported position records must have a unique `(mt5_account_id, mt5_position_id)` identity
 - Corrupt, incomplete, unknown-account, or currency-mismatched imports must make no database changes
 - Imported execution/P&L fields are read-only; the current app has no individual-trade annotations or overrides
-- Imported trades contribute to dollar P&L immediately, but require a positive journal risk baseline before contributing to R, expectancy, target-R, or process metrics
+- Imported trades contribute to dollar P&L immediately, but require funded capital and an account Risk policy with a positive standard risk (1R) before contributing to R-based metrics
 
 ---
 
@@ -1365,44 +1275,6 @@ This trade does not meet the trading plan.
 V1 should warn only.
 
 It should not block trading activity outside the application.
-
----
-
-# 27. Monthly Target Philosophy
-
-The app should evaluate whether the target is statistically supported.
-
-Example:
-
-```text
-Monthly Target: $1,000
-Base Risk: $100
-Required: +10R
-
-Historical Expectancy:
-+0.40R/trade
-
-Average Qualified Trades:
-25/month
-
-Expected:
-25 × 0.40R = +10R
-```
-
-This means the target is broadly aligned with historical expectancy.
-
-If:
-
-```text
-Expectancy = +0.20R
-Trades/month = 15
-
-Expected Monthly R = +3R
-```
-
-then a +10R target would be statistically aggressive.
-
-The application should communicate that without encouraging increased risk.
 
 ---
 
@@ -1504,7 +1376,6 @@ Success condition:
 
 Build:
 
-- Monthly target
 - Current P&L
 - Current R
 - Trade count
@@ -1614,7 +1485,7 @@ Possible additions:
 
 V1 is complete when the user can:
 
-1. Set journal base currency, reporting timezone, and monthly target.
+1. Set journal base currency and reporting timezone.
 2. Define risk rules.
 3. Define strategies and setups.
 4. Whitelist local MT5 accounts and import their completed positions manually.
@@ -1627,14 +1498,13 @@ V1 is complete when the user can:
 11. Calculate expectancy.
 12. Calculate profit factor.
 13. Track drawdown.
-14. View monthly target progress.
-15. Compare strategies and setups.
-16. Track rule adherence.
-17. Complete daily reviews.
-18. Complete weekly reviews.
-19. Complete monthly reviews.
-20. Receive risk warnings.
-21. Export or back up local journal data.
+14. Compare strategies and setups.
+15. Track rule adherence.
+16. Complete daily reviews.
+17. Complete weekly reviews.
+18. Complete monthly reviews.
+19. Receive risk warnings.
+20. Export or back up local journal data.
 
 ---
 
@@ -1704,7 +1574,7 @@ Risk Engine → Analytics Engine → Dashboard
 
 The exporter identifies its source by MT5 account login and broker server. The importer accepts only registered accounts and fully closed positions, groups related deals by MT5 position ID, and records every import outcome. Manual entry remains available for non-MT5 trades; it must not duplicate an imported position.
 
-MT5 execution values remain read-only after import. Strategy and R values are derived from the journal defaults, and a trade enters R-based metrics only when the journal risk baseline is enabled.
+MT5 execution values remain read-only after import. Strategy is derived from the journal default; R is derived from the importing account's policy version and enters R-based metrics only after funded capital and standard risk (1R) are configured.
 
 The journal and terminal must run on the same machine, or the journal must have local read access to the MT5 Common Files directory.
 
@@ -1732,11 +1602,7 @@ This means the core journal, calculations, review system, and analytics remain i
 
 The tool should reinforce this rule:
 
-> I do not trade to hit my monthly target. I execute my tested edge correctly, control risk, and allow the monthly result to emerge from the process.
-
-The monthly target is useful for planning.
-
-The process determines whether the target is realistically achievable.
+> I execute my tested edge correctly, control risk, and review the results without turning a profit target into a trading instruction.
 
 ---
 
@@ -1751,9 +1617,9 @@ MT5 Account Setup
 +
 Local MT5 Sync
 +
-Journal-wide risk and strategy defaults
+Account Risk policies and journal strategy defaults
 +
-Basic Dashboard (dollar P&L only until the risk baseline is enabled)
+Basic Dashboard (dollar P&L only until account standard risk is configured)
 ```
 
 Once those components are reliable, add:
@@ -1787,7 +1653,7 @@ Use pytest for domain, database, and importer tests, plus Streamlit AppTest for 
 - Reject an unknown account, broker-server mismatch, base-currency mismatch, invalid schema, corrupt CSV, or incomplete temporary export without changing the database.
 - Re-import the same position safely and refresh MT5-owned execution data.
 - Exclude open positions, pending orders, and non-trading balance/credit operations.
-- Verify imported P&L is visible immediately and R/process metrics remain excluded until the journal risk baseline is enabled.
+- Verify imported P&L is visible immediately and R/process metrics remain excluded until funded capital and an account Risk policy are configured.
 - Verify all reporting-period grouping uses the configured journal timezone.
 
 ## Regression Tests
@@ -1796,3 +1662,69 @@ Use pytest for domain, database, and importer tests, plus Streamlit AppTest for 
 - Verify imported execution values cannot be edited through the UI.
 - Verify migration upgrade paths preserve existing journal data and create a recoverable database backup before schema changes.
 - Verify no importer path submits, edits, or blocks an MT5 trade.
+
+---
+
+# 37. Three-Pillar Post-Trade Journal
+
+The three pillars remain the permanent framework:
+
+- **Psychology** — did I execute with discipline?
+- **Risk management** — did I control the loss and exposure?
+- **Trading system** — did the completed trade follow a repeatable setup?
+
+This is a **post-trade journal only**. MT5 is the execution terminal. The app never asks permission before a trade, never blocks an order, and never creates a retrospective “trade approved” record.
+
+## 37.1 Workflow
+
+1. MT5 exports a completed position to the local CSV.
+2. The app imports that immutable position.
+3. Open **Framework → Review closed trades**, filter the register by **Needs review**, **Auto-reviewed**, **Reviewed**, or **All**, then select a trade row.
+4. Record or correct the three-pillar evidence in the post-trade modal: strategy validity, actual risk when known, rule breaches, review note, and corrective action.
+5. Use the Dashboard, Framework scorecards, and Roadmap to spot repeated process failures.
+
+Every imported closed position is visible in the review register. It starts as **Needs review**: MT5 cannot establish Psychology or discretionary setup validity. The register also shows the attached **Risk limit** (the policy maximum) and **Actual risk** amount in the account currency. Actual risk uses the declared review value when present, otherwise a usable automatic Risk source; it is never silently replaced by the policy limit. A saved post-trade review creates the three-pillar score. One review belongs to one MT5 position, so a review cannot be attached to a different account’s trade.
+
+Schema-v3 MT5 exports provide entry SL/TP, calculated initial risk/reward where MT5 can calculate it, final recorded SL, entry magic number, exit reason, and the terminal’s current account-balance snapshot. The app recognises three ordered Risk sources: **Specific preset SL** (MT5-calculated initial risk), **Real-loss SL** (`abs(net P&L)` for a losing trade without calculated initial risk), and **Live-account-balance SL** (latest v3 account balance for a profitable trade with no recorded entry SL). A source becomes **Auto-reviewed** for Risk sizing only after funded capital and a Risk policy are configured: `100%` when within the attached policy-version maximum per-trade limit and `0%` when over it. Until then it remains **Needs review** with automatic evidence visible. The active policy is attached when the position is first imported, preserving historical R and policy context. Auto-reviews never create Psychology, Trading System, or Process scores and never advance the roadmap. A live-account-balance SL is a dynamic conservative assumption, not proof of an MT5-recorded stop; a zero or negative balance is retained but cannot be used as that assumption. Missing or ambiguous evidence otherwise remains unavailable; it is never assigned a neutral or failing score.
+
+## 37.2 What each review records
+
+| Pillar | Post-trade evidence | What the score measures |
+|---|---|---|
+| Psychology | Impulse entry/management, revenge trade, emotional size increase, lesson, corrective action. | 70% behaviour control and 30% corrective action after a breach. |
+| Risk management | Declared actual risk when known and whether the stop was widened. | 70% actual risk within the attached policy and 30% stop discipline. |
+| Trading system | Selected strategy snapshot, overall setup validity, and optional failed criteria. | 70% valid setup and 30% documented strategy/backtest evidence. |
+
+The review is independent of P&L: a losing rule-following trade may be good process, while a profitable rule-breaking trade is not.
+
+The strategy profile is snapshotted with the review, so later strategy edits do not reinterpret historic System evidence. A correction creates a new review version and archives the prior version, including its strategy snapshot and all recorded evidence. The selected account’s active risk-policy version is attached to the review when available.
+
+## 37.3 Post-trade Risk Monitoring
+
+Each account has editable **Funded capital** and a versioned risk policy: standard risk (1R) for reporting, a separate maximum risk per trade for compliance, daily/weekly loss limits in R, drawdown limit, consecutive-loss limit, minimum R:R, and reference controls for open risk/correlation. Funded capital is fixed for policy limits and historical drawdown; it is not the dynamic live MT5 balance.
+
+Risk monitoring includes **every imported closed position**, not only reviewed positions:
+
+- Balance drawdown and loss streak use all imported net P&L in close-time order. The policy evaluates the largest peak-to-trough drawdown; the current drawdown remains available as context.
+- R uses declared actual risk after a review, then Specific preset SL, Real-loss SL, and Live-account-balance SL in that order. If none exists, a saved review uses its attached standard 1R amount (funded capital × standard-risk %); an unreviewed position uses the current active policy standard 1R. A new v3 balance snapshot dynamically recalculates eligible Live-account-balance SL results.
+- At 80% of a configured hard limit, the app shows `CAUTION`; at the limit, it shows `STOP`.
+
+These statuses are retrospective monitoring signals for the next review or session, never live-order controls. The bridge contains completed positions only, so open-position risk and correlation cannot be verified automatically.
+
+## 37.4 Scores, roadmap, and interpretation
+
+Scores use the latest 20 **reviewed** closed trades. Needs-review imports and Risk-only Auto-reviews are excluded from pillar averages; P&L and other outcome metrics never alter Psychology, Trading System, or Process evidence. Psychology and Trading System scores are trader-wide. Risk score and Risk monitoring are account-specific. A revenge/emotional-size breach, widened stop, or invalid reviewed setup puts that pillar into **Review needed**, regardless of its average score.
+
+The three roadmap pillars progress in parallel through Define, Test, Execute, Measure, and Optimise. Level 3 requires 20 post-trade reviews with no critical breach; Level 4 requires 30. Automatic MT5 evidence and unreviewed imports never advance a roadmap gate. Checklist completion needs a written evidence note, while reviewed evidence is required for maturity decisions.
+
+Use the combined evidence diagnostically:
+
+| Observation | Investigate |
+|---|---|
+| System evidence holds, Psychology weak | Execution behaviour or emotional trigger. |
+| Psychology holds, Risk weak | Sizing, stop discipline, or loss controls. |
+| Psychology and Risk hold, System weak | Setup definition, strategy evidence, or market regime. |
+
+## 37.5 Data boundaries
+
+Imported MT5 execution values are read-only. The user owns the post-trade journal evidence, but it never changes the imported position, sends a command to MT5, or claims that a review authorised a past trade.

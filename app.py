@@ -13,7 +13,8 @@ from trading_journal.application.auto_sync import MT5AutoSyncResult, MT5AutoSync
 from trading_journal.application.dashboard import DashboardService
 from trading_journal.application.display_time import format_relative_time
 from trading_journal.application.mt5_paths import default_mt5_export_path, find_mt5_common_files
-from trading_journal.infrastructure.sqlite_repository import SQLiteJournalRepository
+from trading_journal.infrastructure.sqlite_repository import AccountListItem, JournalDatabaseResetRequiredError, SQLiteJournalRepository
+from trading_journal.presentation.framework import render_framework_dashboard, render_framework_page
 
 
 _CURRENCY_SYMBOLS = {"USD": "$", "EUR": "€", "GBP": "£", "JPY": "¥", "AUD": "A$", "CAD": "C$", "CHF": "CHF", "NZD": "NZ$"}
@@ -39,20 +40,24 @@ def format_currency(value: str | Decimal, currency: str) -> str:
     return f"{prefix}{symbol}{amount}" if symbol else f"{prefix}{currency.upper()} {amount}"
 
 
+def format_account_label(account: AccountListItem) -> str:
+    return f"{account.display_name} · {account.login} · {account.broker_server}"
+
+
 def style_chart(figure: go.Figure, *, yaxis_title: str) -> go.Figure:
     figure.update_layout(
         height=330,
-        margin=dict(l=16, r=16, t=48, b=16),
+        margin=dict(l=12, r=12, t=42, b=12),
         paper_bgcolor="#ffffff",
         plot_bgcolor="#ffffff",
-        font=dict(family="Avenir Next, Segoe UI, sans-serif", color="#17211c", size=12),
-        title=dict(font=dict(family="Georgia, Palatino, serif", color="#101713", size=17), x=0.02, y=0.96),
+        font=dict(family="Avenir Next, Noto Sans, Segoe UI, sans-serif", color="#26332c", size=12),
+        title=dict(font=dict(family="Iowan Old Style, Palatino Linotype, Book Antiqua, Georgia, serif", color="#14211b", size=17), x=0.02, y=0.96),
         hovermode="x unified",
-        hoverlabel=dict(bgcolor="#101713", font=dict(color="#ffffff"), bordercolor="#101713"),
+        hoverlabel=dict(bgcolor="#14211b", font=dict(color="#ffffff"), bordercolor="#14211b"),
         showlegend=False,
     )
-    figure.update_xaxes(showgrid=False, zeroline=False, tickfont=dict(color="#3c4942"), linecolor="#aeb8b1")
-    figure.update_yaxes(title=yaxis_title, gridcolor="#dce2dd", zeroline=True, zerolinecolor="#aeb8b1", tickfont=dict(color="#3c4942"))
+    figure.update_xaxes(showgrid=False, zeroline=False, tickfont=dict(color="#536158"), linecolor="#d5dad4")
+    figure.update_yaxes(title=yaxis_title, gridcolor="#e7ebe6", zeroline=True, zerolinecolor="#d5dad4", tickfont=dict(color="#536158"))
     return figure
 
 
@@ -60,26 +65,38 @@ def apply_application_style() -> None:
     st.markdown(
         """
         <style>
-        :root { --ink: #101713; --muted: #46534b; --paper: #ffffff; --canvas: #ffffff; --line: #aeb8b1; --green: #007a58; --amber: #9f5e00; --red: #b42318; }
-        .stApp { background: var(--canvas); color: var(--ink); }
-        [data-testid="stHeader"] { background: #ffffff; border-bottom: 1px solid #d6ddd8; }
-        [data-testid="stSidebar"] { background: #f3f5f2; border-right: 2px solid #17211c; }
-        [data-testid="stSidebar"] * { color: #101713 !important; }
-        [data-testid="stSidebar"] div[data-testid="stRadio"] { background: transparent; border: 0; border-radius: 0; padding: 0; width: 100%; }
-        [data-testid="stSidebar"] div[data-testid="stRadio"] label { padding: 0.32rem 0.42rem; border-radius: 4px; font-weight: 650; }
-        [data-testid="stSidebar"] div[data-testid="stRadio"] label:hover { background: #dfe6e0; }
-        h1, h2, h3 { font-family: Georgia, Palatino, "Times New Roman", serif; color: var(--ink); letter-spacing: -0.025em; }
-        h1 { font-size: 2.55rem !important; margin-bottom: 0.1rem !important; }
+        :root { --ink: #14211b; --muted: #66736b; --paper: #ffffff; --canvas: #fcfcf8; --line: #d5dad4; --evergreen: #0d6b54; --amber: #9a5d0b; --coral: #bd3c36; }
+        .stApp { background: var(--canvas); color: var(--ink); font-family: "Avenir Next", "Noto Sans", "Segoe UI", sans-serif; }
+        [data-testid="stHeader"] { background: rgba(252, 252, 248, 0.92); border-bottom: 1px solid rgba(213, 218, 212, 0.85); }
+        [data-testid="stAppViewContainer"] > .main .block-container { max-width: 1480px; padding-top: 2.6rem; padding-bottom: 4rem; }
+        [data-testid="stSidebar"] { background: #f4f5f0; border-right: 1px solid var(--line); }
+        [data-testid="stSidebar"] [data-testid="stSidebarNav"] { padding-top: 1.75rem; }
+        [data-testid="stSidebar"] [data-testid="stSidebarNav"] a { border-radius: 8px; margin: 0.12rem 0.75rem; padding: 0.48rem 0.65rem; font-weight: 600; color: var(--ink); }
+        [data-testid="stSidebar"] [data-testid="stSidebarNav"] a:hover { background: #e6ebe5; }
+        [data-testid="stSidebar"] [data-testid="stSidebarNav"] a[aria-current="page"] { background: #dcece3; color: #07523f; }
+        h1, h2, h3 { font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif; color: var(--ink); letter-spacing: -0.03em; }
+        h1 { font-size: 2.55rem !important; margin-bottom: 0.15rem !important; }
+        h2 { margin-top: 1.35rem !important; }
         [data-testid="stCaptionContainer"] { color: var(--muted); }
-        [data-testid="stMetric"] { background: #ffffff; border: 2px solid #17211c; border-radius: 6px; padding: 0.9rem 0.95rem; box-shadow: none; }
-        [data-testid="stMetricLabel"] p { color: var(--muted); font-family: "Avenir Next", "Segoe UI", sans-serif; font-size: 0.68rem; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
-        [data-testid="stMetricValue"] { font-family: Georgia, Palatino, serif; color: var(--ink); font-size: 2rem; letter-spacing: -0.035em; }
-        [data-testid="stMetricDelta"] { font-family: "Avenir Next", "Segoe UI", sans-serif; }
-        div[data-testid="stRadio"] { background: #ffffff; border: 1px solid #17211c; border-radius: 4px; padding: 0.2rem 0.7rem; width: fit-content; }
-        div[data-testid="stRadio"] label { padding: 0.12rem 0.2rem; }
-        [data-testid="stDataFrame"] { border: 1px solid #17211c; border-radius: 4px; overflow: hidden; background: var(--paper); }
-        .dashboard-kicker { color: #007a58; font-family: "Avenir Next", "Segoe UI", sans-serif; font-size: 0.7rem; font-weight: 800; letter-spacing: 0.14em; margin-bottom: -0.15rem; }
-        .dashboard-period { color: var(--muted); font-size: 0.9rem; font-weight: 600; margin-top: -0.3rem; margin-bottom: 0.4rem; }
+        [data-testid="stMetric"] { background: var(--paper); border-color: var(--line); border-radius: 10px; padding: 0.9rem 1rem; box-shadow: none; }
+        [data-testid="stMetricLabel"] p { color: var(--muted); font-family: "Avenir Next", "Noto Sans", "Segoe UI", sans-serif; font-size: 0.68rem; font-weight: 750; letter-spacing: 0.075em; text-transform: uppercase; }
+        [data-testid="stMetricValue"] { font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif; color: var(--ink); font-size: 1.85rem; letter-spacing: -0.035em; }
+        [data-testid="stMetricDelta"] { font-family: "Avenir Next", "Noto Sans", "Segoe UI", sans-serif; }
+        [data-testid="stDataFrame"] { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--paper); }
+        [data-testid="stTextInput"] input, [data-testid="stNumberInput"] input, [data-baseweb="select"] > div { background: #ffffff; border-color: var(--line); }
+        .stButton > button { border-radius: 6px; font-weight: 650; }
+        .stButton > button[kind="primary"] { background: var(--evergreen); border-color: var(--evergreen); }
+        .stButton > button[kind="primary"]:hover { background: #07523f; border-color: #07523f; }
+        [class*="st-key-delete-mt5-account-"] button[kind="primary"] { background: var(--coral); border-color: var(--coral); }
+        [class*="st-key-delete-mt5-account-"] button[kind="primary"]:hover { background: #8f241f; border-color: #8f241f; }
+        .dashboard-kicker { color: var(--evergreen); font-family: "Avenir Next", "Noto Sans", "Segoe UI", sans-serif; font-size: 0.7rem; font-weight: 800; letter-spacing: 0.14em; margin-bottom: -0.1rem; }
+        .dashboard-period { color: var(--muted); font-size: 0.88rem; font-weight: 600; margin-top: -0.2rem; margin-bottom: 0.55rem; }
+        .framework-status { display: flex; align-items: baseline; gap: 0.7rem; border: 1px solid var(--line); border-left-width: 4px; border-radius: 8px; padding: 0.72rem 0.9rem; margin: 0.35rem 0 1rem; color: var(--ink); background: #ffffff; }
+        .framework-status strong { font-family: "Avenir Next", "Noto Sans", "Segoe UI", sans-serif; font-size: 0.7rem; letter-spacing: 0.11em; }
+        .framework-status span { color: #526057; font-size: 0.88rem; }
+        .framework-status--clear { border-left-color: var(--evergreen); }
+        .framework-status--caution, .framework-status--unconfigured { border-left-color: var(--amber); background: #fff9ef; }
+        .framework-status--stop { border-left-color: var(--coral); background: #fff6f5; }
         </style>
         """,
         unsafe_allow_html=True,
@@ -144,13 +161,13 @@ def render_live_sync_freshness(account_key: tuple[str, str] | None = None, *, in
 
 
 def render_manual_sync_button(repo: SQLiteJournalRepository, *, key: str) -> None:
-    action, context = st.columns([1, 8], vertical_alignment="center")
-    sync_requested = action.button("Sync MT5 now", key=key)
+    actions = st.container(horizontal=True, vertical_alignment="center", gap="medium")
+    sync_requested = actions.button("Sync MT5 now", key=key, icon=":material/sync:")
     results = st.session_state.get("auto_sync_results", [])
     if sync_requested:
         results = MT5AutoSyncService(repo).sync_configured_exports()
         st.session_state["auto_sync_results"] = results
-    with context:
+    with actions:
         render_live_sync_freshness(include_sync_hint=True)
     if not sync_requested:
         return
@@ -178,49 +195,21 @@ def render_journal_settings(repo: SQLiteJournalRepository) -> None:
         current = None
 
     st.markdown("#### Journal defaults")
-    with st.form("journal-settings"):
+    with st.container(border=True):
         st.markdown("**Reporting**")
-        currency, timezone, target = st.columns([1, 2, 2])
+        currency, timezone = st.columns([1, 2])
         base_currency = currency.text_input("Base currency", value=current.base_currency if current else "USD", max_chars=3).upper()
         reporting_timezone = timezone.text_input("Reporting timezone", value=current.reporting_timezone if current else "UTC")
-        monthly_target = target.number_input("Monthly target", min_value=0.0, value=float(current.monthly_target) if current else 1000.0, step=100.0)
-
-        st.divider()
-        st.markdown("**Balance tracking**")
-        balance_choice, balance_value = st.columns([3, 2], vertical_alignment="bottom")
-        use_starting_balance = balance_choice.checkbox("Track balance growth and percentage drawdown", value=bool(current and current.starting_balance))
-        balance_choice.caption("Enter the balance immediately before your first imported trade.")
-        starting_balance = balance_value.number_input(
-            "Opening balance",
-            min_value=0.01,
-            value=float(current.starting_balance) if current and current.starting_balance else 1000.0,
-            step=100.0,
-            disabled=not use_starting_balance,
-        )
-
-        st.divider()
-        st.markdown("**Risk baseline**")
-        risk_choice, risk_value = st.columns([3, 2], vertical_alignment="bottom")
-        use_baseline = risk_choice.checkbox("Apply a default planned-risk baseline to all trades", value=bool(current and current.default_planned_risk_amount))
-        risk_choice.caption("Changing this value immediately recalculates R for every imported trade.")
-        default_risk = risk_value.number_input(
-            "Default risk (1R)",
-            min_value=0.01,
-            value=float(current.default_planned_risk_amount) if current and current.default_planned_risk_amount else 10.0,
-            step=1.0,
-            disabled=not use_baseline,
-        )
+        st.caption("Configure standard risk (1R) and risk limits per account in Framework → Risk policy.")
         if current and current.default_strategy_name:
             st.caption(f"Default strategy: {current.default_strategy_name}. Manage it in Settings → Strategies.")
-        submitted = st.form_submit_button("Save journal settings")
+        submitted = st.button("Save journal settings", type="primary", icon=":material/save:")
     if submitted:
         try:
             repo.configure_journal(
                 base_currency=base_currency,
                 reporting_timezone=reporting_timezone,
-                monthly_target=str(monthly_target),
-                default_planned_risk_amount=str(default_risk) if use_baseline else None,
-                starting_balance=str(starting_balance) if use_starting_balance else None,
+                starting_balance=None,
             )
         except ValueError as error:
             st.error(str(error))
@@ -230,52 +219,229 @@ def render_journal_settings(repo: SQLiteJournalRepository) -> None:
 
 def render_mt5_account_settings(repo: SQLiteJournalRepository) -> None:
     st.markdown("#### Approved MT5 accounts")
-    st.caption("Add each trading account once. Saving the same account ID and server updates its settings.")
+    st.caption("Each account is identified by its MT5 account ID and broker server. Funded capital can be updated later; it recalculates historical growth, drawdown, and Risk limits without changing MT5 trades.")
     common_files_location = find_mt5_common_files()
-    with st.form("mt5-account"):
-        identity, currency = st.columns([3, 1])
-        display_name = identity.text_input("Account name", value="Primary account")
-        account_currency = currency.text_input("Currency", value="USD", max_chars=3).upper()
-        account_id, broker = st.columns(2)
-        login = account_id.text_input("MT5 account ID")
-        broker_server = broker.text_input("Broker server")
-        with st.expander("Advanced: custom export location"):
-            if common_files_location.path is None:
-                st.caption("MT5 Common Files was not detected. Set a custom path or `TRADING_JOURNAL_MT5_COMMON_FILES`.")
-            else:
-                st.caption(f"Detected Common Files ({common_files_location.source})")
-                st.caption(str(common_files_location.path))
-            generated_path_placeholder = default_mt5_export_path("000000000").replace("000000000", "<MT5-login>")
-            export_file_path = st.text_input(
-                "Custom export path (optional)",
-                placeholder=generated_path_placeholder,
-                help="Leave blank to use the EA default: trading_journal/<MT5-login>_positions.csv.",
-            )
-            st.caption("Default: `trading_journal/<MT5-login>_positions.csv` under MT5 Common Files.")
-        registered = st.form_submit_button("Save account")
-    if registered:
-        if not login.isdecimal() or not broker_server:
-            st.error("A numeric MT5 login and broker server are required.")
-        else:
-            resolved_export_path = export_file_path.strip() or default_mt5_export_path(login)
-            repo.register_mt5_account(display_name=display_name, login=login, broker_server=broker_server, account_currency=account_currency, export_file_path=resolved_export_path)
-            st.success("MT5 account saved.")
-
     accounts = repo.list_mt5_accounts()
-    if accounts:
-        account_table = pd.DataFrame(
-            [
-                {
-                    "Account": account.display_name,
-                    "MT5 ID": account.login,
-                    "Server": account.broker_server,
-                    "Currency": account.account_currency,
-                    "Export file": Path(account.export_file_path).name if account.export_file_path else "—",
-                }
-                for account in accounts
-            ]
-        )
-        st.dataframe(account_table, hide_index=True, width="stretch")
+    accounts_by_id = {str(account.id): account for account in accounts}
+    selected_id = st.session_state.get("mt5-account-selected-id")
+    if selected_id not in accounts_by_id and selected_id != "new":
+        selected_id = str(accounts[0].id) if accounts else "new"
+        st.session_state["mt5-account-selected-id"] = selected_id
+
+    def begin_new_account() -> None:
+        st.session_state["mt5-account-selected-id"] = "new"
+        for name in ("display-name", "currency", "funded-capital", "login", "broker-server", "export-path"):
+            st.session_state.pop(f"mt5-account-new-{name}", None)
+
+    def select_account_from_list() -> None:
+        click = st.session_state.get("mt5-account-list")
+        if click is None or click["row"] >= len(accounts):
+            return
+        st.session_state["mt5-account-selected-id"] = str(accounts[click["row"]].id)
+
+    master, detail = st.columns([1, 2], gap="large")
+    with master:
+        st.markdown("##### Accounts")
+        st.button("New account", icon=":material/add:", width="stretch", key="new-mt5-account", on_click=begin_new_account)
+        if accounts:
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {
+                            "Account": account.display_name,
+                            "Connection": f"{account.login} · {account.broker_server}",
+                            "Editing": "Current" if selected_id == str(account.id) else "",
+                            "Open": ":material/edit:",
+                        }
+                        for account in accounts
+                    ]
+                ),
+                column_config={
+                    "Account": st.column_config.TextColumn("Account", pinned=True),
+                    "Connection": st.column_config.TextColumn("MT5 connection"),
+                    "Editing": st.column_config.TextColumn(""),
+                    "Open": st.column_config.ButtonColumn(
+                        "",
+                        type="tertiary",
+                        help="Open this account",
+                        on_click=select_account_from_list,
+                        key="mt5-account-list",
+                    ),
+                },
+                hide_index=True,
+                width="stretch",
+            )
+        else:
+            st.caption("No accounts yet. Create the first one to start importing MT5 trades.")
+
+    selected = accounts_by_id.get(selected_id)
+    form_scope = "new" if selected is None else str(selected.id)
+
+    def field_key(name: str) -> str:
+        return f"mt5-account-{form_scope}-{name}"
+
+    defaults = {
+        "display-name": selected.display_name if selected else "Primary account",
+        "currency": selected.account_currency if selected else "USD",
+        "funded-capital": (selected.funded_capital or "") if selected else "",
+        "login": selected.login if selected else "",
+        "broker-server": selected.broker_server if selected else "",
+        "export-path": (
+            ""
+            if selected is None or selected.export_file_path == default_mt5_export_path(selected.login)
+            else selected.export_file_path
+        ),
+    }
+    for name, value in defaults.items():
+        st.session_state.setdefault(field_key(name), value)
+
+    has_imported_trades = bool(selected and repo.account_has_imported_trades(selected.id))
+    identity_locked = has_imported_trades
+
+    def clear_account_form() -> None:
+        for name in defaults:
+            st.session_state.pop(field_key(name), None)
+
+    def save_account() -> None:
+        display_name = st.session_state[field_key("display-name")].strip()
+        account_currency = st.session_state[field_key("currency")].upper()
+        funded_capital = st.session_state[field_key("funded-capital")]
+        login = st.session_state[field_key("login")]
+        broker_server = st.session_state[field_key("broker-server")].strip()
+        export_file_path = st.session_state[field_key("export-path")]
+        if not display_name or not login.isdecimal() or not broker_server:
+            st.session_state["mt5-account-save-error"] = "A numeric MT5 login and broker server are required."
+            return
+        if selected is None and any(account.login == login and account.broker_server == broker_server for account in accounts):
+            st.session_state["mt5-account-save-error"] = "This MT5 account is already registered. Select it from the accounts list to update its settings."
+            return
+
+        resolved_export_path = export_file_path.strip() or default_mt5_export_path(login)
+        try:
+            if selected is None:
+                repo.register_mt5_account(
+                    display_name=display_name,
+                    login=login,
+                    broker_server=broker_server,
+                    account_currency=account_currency,
+                    export_file_path=resolved_export_path,
+                    opening_balance=funded_capital or None,
+                )
+                clear_account_form()
+                registered = next(
+                    item for item in repo.list_mt5_accounts() if item.login == login and item.broker_server == broker_server
+                )
+                st.session_state["mt5-account-selected-id"] = str(registered.id)
+                message = "MT5 account added."
+            else:
+                repo.update_mt5_account(
+                    account_id=selected.id,
+                    display_name=display_name,
+                    login=login,
+                    broker_server=broker_server,
+                    account_currency=account_currency,
+                    export_file_path=resolved_export_path,
+                    opening_balance=funded_capital or None,
+                )
+                message = "MT5 account updated."
+        except ValueError as error:
+            st.session_state["mt5-account-save-error"] = str(error)
+        else:
+            st.session_state["mt5-account-notice"] = message
+
+    with detail:
+        account_editor = st.container(border=True)
+        account_editor.markdown(f"##### {'New account' if selected is None else selected.display_name}")
+        if identity_locked:
+            account_editor.caption("MT5 account ID, broker server, and currency are locked because this account already has imported trades. Its name, funded capital, and export location remain editable.")
+        with account_editor.form("mt5-account-editor-form", border=False):
+            identity, currency, baseline = st.columns([3, 1, 2])
+            display_name = identity.text_input("Account name", key=field_key("display-name"))
+            account_currency = currency.text_input("Currency", max_chars=3, key=field_key("currency"), disabled=identity_locked).upper()
+            funded_capital = baseline.text_input(
+                "Funded capital (optional)",
+                placeholder="Set now or later",
+                help="Enter the funded capital before the earliest imported trade. It is the fixed basis for balance growth, drawdown, and Risk limits; it does not replace the latest live MT5 balance.",
+                key=field_key("funded-capital"),
+            )
+            account_id, broker = st.columns(2)
+            login = account_id.text_input("MT5 account ID", key=field_key("login"), disabled=identity_locked)
+            broker_server = broker.text_input("Broker server", key=field_key("broker-server"), disabled=identity_locked)
+            with st.expander("Advanced: custom export location"):
+                if common_files_location.path is None:
+                    st.caption("MT5 Common Files was not detected. Set a custom path or `TRADING_JOURNAL_MT5_COMMON_FILES`.")
+                else:
+                    st.caption(f"Detected Common Files ({common_files_location.source})")
+                    st.caption(str(common_files_location.path))
+                generated_path_placeholder = default_mt5_export_path("000000000").replace("000000000", "<MT5-login>")
+                export_file_path = st.text_input(
+                    "Custom export path (optional)",
+                    placeholder=generated_path_placeholder,
+                    help="Leave blank to use the EA default: trading_journal/<MT5-login>_positions.csv.",
+                    key=field_key("export-path"),
+                )
+                st.caption("Default: `trading_journal/<MT5-login>_positions.csv` under MT5 Common Files.")
+            st.form_submit_button(
+                "Update account" if selected else "Add account",
+                type="primary",
+                icon=":material/save:",
+                on_click=save_account,
+            )
+
+        save_error = st.session_state.pop("mt5-account-save-error", None)
+        if save_error:
+            st.error(save_error)
+
+        if selected is not None:
+            with st.expander("Account maintenance"):
+                if has_imported_trades:
+                    st.caption("This account has imported trades or reviews. Deactivate it to remove it from imports and reports while retaining its local history. Adding the same ID and server later reactivates it.")
+
+                    def deactivate_account() -> None:
+                        repo.deactivate_mt5_account(selected.id)
+                        clear_account_form()
+                        st.session_state["mt5-account-selected-id"] = "new"
+                        st.session_state["mt5-account-notice"] = "MT5 account deactivated."
+
+                    st.button("Deactivate account", key=f"deactivate-mt5-account-{selected.id}", on_click=deactivate_account)
+                else:
+                    st.caption("This account has no imported trades. Deleting it permanently removes its account settings, import log, and risk-policy setup.")
+                    delete_confirmation_key = f"delete-mt5-account-confirm-{selected.id}"
+                    delete_confirmed = st.checkbox(
+                        "I understand this permanently deletes this unused account",
+                        key=delete_confirmation_key,
+                    )
+
+                    def delete_account() -> None:
+                        if not st.session_state.get(delete_confirmation_key, False):
+                            st.session_state["mt5-account-save-error"] = "Confirm deletion before deleting the account."
+                            return
+                        repo.delete_mt5_account(selected.id)
+                        clear_account_form()
+                        st.session_state["mt5-account-selected-id"] = "new"
+                        st.session_state["mt5-account-notice"] = "MT5 account deleted."
+
+                    st.button(
+                        "Delete account",
+                        type="primary",
+                        key=f"delete-mt5-account-{selected.id}",
+                        disabled=not delete_confirmed,
+                        on_click=delete_account,
+                    )
+
+        notice = st.session_state.pop("mt5-account-notice", None)
+        if notice:
+            st.success(notice)
+
+    accounts_by_login: dict[str, list[AccountListItem]] = {}
+    for account in accounts:
+        accounts_by_login.setdefault(account.login, []).append(account)
+    for login, items in accounts_by_login.items():
+        if len(items) > 1:
+            st.warning(
+                f"MT5 account ID {login} is registered with multiple broker servers ({', '.join(item.broker_server for item in items)}). "
+                "Only an export with the exact server text will import into each account. Deactivate an obsolete entry to avoid selecting the wrong account in reports."
+            )
 
 
 def render_settings(repo: SQLiteJournalRepository) -> None:
@@ -294,106 +460,162 @@ def render_strategy_settings(repo: SQLiteJournalRepository) -> None:
     st.subheader("Strategy library")
     st.caption("Save reusable strategy definitions and, when available, their backtest evidence. Backtest fields are optional and do not alter live-trade results.")
     profiles = repo.list_strategy_profiles()
-    names = [profile.name for profile in profiles]
-    selected_name = st.selectbox("Strategy profile", ["Create new strategy", *names])
-    selected = next((profile for profile in profiles if profile.name == selected_name), None)
-    has_backtest = bool(
-        selected
-        and any(
-            [
-                selected.backtest_start_date,
-                selected.backtest_end_date,
-                selected.backtest_trade_count,
-                selected.backtest_win_rate,
-                selected.backtest_expectancy_r,
-                selected.backtest_net_r,
-                selected.backtest_notes,
-            ]
-        )
-    )
     try:
         journal_settings = repo.get_journal_settings()
-        default_strategy = journal_settings.default_strategy_name
         default_strategy_id = journal_settings.default_strategy_profile_id
     except RuntimeError:
-        default_strategy = None
         default_strategy_id = None
 
-    with st.form("strategy-profile"):
-        name = st.text_input("Strategy name", value=selected.name if selected else "")
-        description = st.text_area("Strategy description", value=selected.description or "" if selected else "", placeholder="When and why this setup should be traded.")
-        use_as_default = st.checkbox(
-            "Use as the journal default strategy",
-            value=bool(selected and selected.id == default_strategy_id),
-        )
-        st.caption("Only one default strategy can exist. Every imported trade inherits it dynamically.")
-        with st.expander("Add backtest evidence (optional)", expanded=has_backtest):
-            st.caption("Leave this closed unless you want to record the evidence behind this strategy.")
-            first, second = st.columns(2)
-            backtest_start_date = first.text_input("Backtest start date", value=selected.backtest_start_date or "" if selected else "", placeholder="YYYY-MM-DD")
-            backtest_end_date = second.text_input("Backtest end date", value=selected.backtest_end_date or "" if selected else "", placeholder="YYYY-MM-DD")
-            first, second = st.columns(2)
-            backtest_trade_count = first.text_input("Backtest sample size", value=str(selected.backtest_trade_count) if selected and selected.backtest_trade_count is not None else "", placeholder="e.g. 120")
-            backtest_win_rate = second.text_input("Backtest win rate (%)", value=selected.backtest_win_rate or "" if selected else "", placeholder="e.g. 57.5")
-            first, second = st.columns(2)
-            backtest_expectancy_r = first.text_input("Backtest expectancy (R)", value=selected.backtest_expectancy_r or "" if selected else "", placeholder="e.g. 0.42")
-            backtest_net_r = second.text_input("Backtest net R", value=selected.backtest_net_r or "" if selected else "", placeholder="e.g. 50.4")
-            backtest_notes = st.text_area("Backtest notes", value=selected.backtest_notes or "" if selected else "", placeholder="Market, timeframe, rules, and any material caveats.")
-        submitted = st.form_submit_button("Save strategy")
-    if submitted:
-        try:
-            repository_trade_count = int(backtest_trade_count) if backtest_trade_count.strip() else None
-            profile = repo.save_strategy_profile(
-                name=name,
-                description=description or None,
-                backtest_start_date=backtest_start_date or None,
-                backtest_end_date=backtest_end_date or None,
-                backtest_trade_count=repository_trade_count,
-                backtest_win_rate=backtest_win_rate or None,
-                backtest_expectancy_r=backtest_expectancy_r or None,
-                backtest_net_r=backtest_net_r or None,
-                backtest_notes=backtest_notes or None,
-                strategy_id=selected.id if selected else None,
+    profiles_by_id = {profile.id: profile for profile in profiles}
+    selected_id = st.session_state.get("strategy-selected-id")
+    if selected_id not in profiles_by_id and selected_id != "new":
+        selected_id = profiles[0].id if profiles else "new"
+        st.session_state["strategy-selected-id"] = selected_id
+
+    def begin_new_strategy() -> None:
+        st.session_state["strategy-selected-id"] = "new"
+        for name in (
+            "name",
+            "description",
+            "magic-numbers",
+            "default",
+            "backtest-start",
+            "backtest-end",
+            "backtest-trades",
+            "backtest-win-rate",
+            "backtest-expectancy",
+            "backtest-net-r",
+            "backtest-notes",
+        ):
+            st.session_state.pop(f"strategy-new-{name}", None)
+
+    def select_strategy_from_list() -> None:
+        click = st.session_state.get("strategy-list")
+        if click is None or click["row"] >= len(profiles):
+            return
+        st.session_state["strategy-selected-id"] = profiles[click["row"]].id
+
+    master, detail = st.columns([1, 2], gap="large")
+    with master:
+        st.markdown("##### Strategies")
+        st.button("Add strategy", icon=":material/add:", width="stretch", key="new-strategy", on_click=begin_new_strategy)
+        if profiles:
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {
+                            "Strategy": profile.name,
+                            "Mapping": "Journal default"
+                            if profile.id == default_strategy_id
+                            else "Magic: " + ", ".join(profile.magic_numbers)
+                            if profile.magic_numbers
+                            else "Not mapped",
+                            "Editing": "Current" if selected_id == profile.id else "",
+                            "Open": ":material/edit:",
+                        }
+                        for profile in profiles
+                    ]
+                ),
+                column_config={
+                    "Strategy": st.column_config.TextColumn("Strategy", pinned=True),
+                    "Mapping": st.column_config.TextColumn("MT5 mapping"),
+                    "Editing": st.column_config.TextColumn(""),
+                    "Open": st.column_config.ButtonColumn(
+                        "",
+                        type="tertiary",
+                        help="Open this strategy",
+                        on_click=select_strategy_from_list,
+                        key="strategy-list",
+                    ),
+                },
+                hide_index=True,
+                width="stretch",
             )
-            if use_as_default:
-                repo.set_default_strategy(profile.id)
-            elif selected and selected.id == default_strategy_id:
-                repo.set_default_strategy(None)
-        except ValueError as error:
-            st.error(str(error))
         else:
-            st.success("Strategy profile saved.")
+            st.caption("No strategies yet. Create one before reviewing trade quality.")
 
-    profiles = repo.list_strategy_profiles()
-    try:
-        default_strategy_id = repo.get_journal_settings().default_strategy_profile_id
-    except RuntimeError:
-        default_strategy_id = None
-    if profiles:
-        st.subheader("Saved strategy profiles")
-        st.dataframe(
-            pd.DataFrame(
-                [
-                    {
-                        "strategy": profile.name,
-                        "journal_default": profile.id == default_strategy_id,
-                        "description": profile.description,
-                        "backtest_period": profile.backtest_period,
-                        "backtest_trades": profile.backtest_trade_count,
-                        "backtest_win_rate": profile.backtest_win_rate,
-                        "backtest_expectancy_r": profile.backtest_expectancy_r,
-                        "backtest_net_r": profile.backtest_net_r,
-                        "backtest_notes": profile.backtest_notes,
-                    }
-                    for profile in profiles
-                ]
-            ),
-            hide_index=True,
-            width="stretch",
-        )
+    selected = profiles_by_id.get(selected_id)
+    form_scope = "new" if selected is None else str(selected.id)
+
+    def field_key(name: str) -> str:
+        return f"strategy-{form_scope}-{name}"
+
+    defaults = {
+        "name": selected.name if selected else "",
+        "description": selected.description or "" if selected else "",
+        "magic-numbers": ", ".join(selected.magic_numbers) if selected else "",
+        "default": bool(selected and selected.id == default_strategy_id),
+        "backtest-start": selected.backtest_start_date or "" if selected else "",
+        "backtest-end": selected.backtest_end_date or "" if selected else "",
+        "backtest-trades": str(selected.backtest_trade_count) if selected and selected.backtest_trade_count is not None else "",
+        "backtest-win-rate": selected.backtest_win_rate or "" if selected else "",
+        "backtest-expectancy": selected.backtest_expectancy_r or "" if selected else "",
+        "backtest-net-r": selected.backtest_net_r or "" if selected else "",
+        "backtest-notes": selected.backtest_notes or "" if selected else "",
+    }
+    for name, value in defaults.items():
+        st.session_state.setdefault(field_key(name), value)
+    has_backtest = bool(selected and any(defaults[name] for name in defaults if name.startswith("backtest-")))
+
+    with detail:
+        strategy_editor = st.container(border=True)
+        strategy_editor.markdown(f"##### {'New strategy' if selected is None else selected.name}")
+        with strategy_editor.form("strategy-profile", border=False):
+            name = st.text_input("Strategy name", key=field_key("name"))
+            description = st.text_area(
+                "Strategy description",
+                placeholder="When and why this setup should be traded.",
+                key=field_key("description"),
+            )
+            magic_numbers = st.text_input(
+                "MT5 magic numbers (optional)",
+                placeholder="e.g. 10001, 10002",
+                help="Automatically maps exported MT5 trades to this strategy. Each magic number can belong to only one strategy.",
+                key=field_key("magic-numbers"),
+            )
+            use_as_default = st.checkbox("Use as the journal default strategy", key=field_key("default"))
+            st.caption("Only one default strategy can exist. Every imported trade inherits it dynamically.")
+            with st.expander("Add backtest evidence (optional)", expanded=has_backtest):
+                st.caption("Leave this closed unless you want to record the evidence behind this strategy.")
+                first, second = st.columns(2)
+                backtest_start_date = first.text_input("Backtest start date", placeholder="YYYY-MM-DD", key=field_key("backtest-start"))
+                backtest_end_date = second.text_input("Backtest end date", placeholder="YYYY-MM-DD", key=field_key("backtest-end"))
+                first, second = st.columns(2)
+                backtest_trade_count = first.text_input("Backtest sample size", placeholder="e.g. 120", key=field_key("backtest-trades"))
+                backtest_win_rate = second.text_input("Backtest win rate (%)", placeholder="e.g. 57.5", key=field_key("backtest-win-rate"))
+                first, second = st.columns(2)
+                backtest_expectancy_r = first.text_input("Backtest expectancy (R)", placeholder="e.g. 0.42", key=field_key("backtest-expectancy"))
+                backtest_net_r = second.text_input("Backtest net R", placeholder="e.g. 50.4", key=field_key("backtest-net-r"))
+                backtest_notes = st.text_area("Backtest notes", placeholder="Market, timeframe, rules, and any material caveats.", key=field_key("backtest-notes"))
+            submitted = st.form_submit_button("Save strategy", type="primary", icon=":material/save:")
+        if submitted:
+            try:
+                repository_trade_count = int(backtest_trade_count) if backtest_trade_count.strip() else None
+                profile = repo.save_strategy_profile(
+                    name=name,
+                    description=description or None,
+                    backtest_start_date=backtest_start_date or None,
+                    backtest_end_date=backtest_end_date or None,
+                    backtest_trade_count=repository_trade_count,
+                    backtest_win_rate=backtest_win_rate or None,
+                    backtest_expectancy_r=backtest_expectancy_r or None,
+                    backtest_net_r=backtest_net_r or None,
+                    backtest_notes=backtest_notes or None,
+                    magic_numbers=magic_numbers or None,
+                    strategy_id=selected.id if selected else None,
+                )
+                if use_as_default:
+                    repo.set_default_strategy(profile.id)
+                elif selected and selected.id == default_strategy_id:
+                    repo.set_default_strategy(None)
+            except ValueError as error:
+                st.error(str(error))
+            else:
+                st.session_state["strategy-selected-id"] = profile.id
+                st.success("Strategy profile saved.")
 
 
-def render_dashboard(repo: SQLiteJournalRepository) -> None:
+def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
     st.markdown('<div class="dashboard-kicker">CLOSED-TRADE REVIEW</div>', unsafe_allow_html=True)
     st.subheader("Performance dashboard")
     try:
@@ -402,63 +624,84 @@ def render_dashboard(repo: SQLiteJournalRepository) -> None:
         st.info("Configure journal settings before viewing reports.")
         return
 
+    accounts = repo.list_mt5_accounts()
+    if not accounts:
+        st.info("Add an approved MT5 account in Settings before viewing reports.")
+        return
     render_manual_sync_button(repo, key="dashboard-manual-sync")
+    with st.container(border=True):
+        st.markdown("**Report scope**")
+        account = st.selectbox(
+            "Report account",
+            accounts,
+            format_func=lambda item: f"{item.display_name} · {item.login} · {item.broker_server}",
+            key="dashboard-report-account",
+        )
+        today = date.today()
+        dashboard_service = DashboardService(repo)
+        period = st.segmented_control(
+            "Report period",
+            ["This month", "All time", "Custom"],
+            default="This month",
+            required=True,
+            width="content",
+            key="dashboard-report-period",
+        )
+        if period == "This month":
+            start_date, end_date = today.replace(day=1), today
+        elif period == "All time":
+            start_date, end_date = dashboard_service.earliest_trade_date(account.id) or today, today
+        else:
+            first, second = st.columns(2)
+            start_date = first.date_input("Start date", value=today.replace(day=1))
+            end_date = second.date_input("End date", value=today)
+            if start_date > end_date:
+                st.error("Start date must be on or before end date.")
+                return account
+    currency = account.account_currency
+    st.caption(f"All monetary figures below are for this {currency} account only. No currency conversion is applied.")
 
-    today = date.today()
-    dashboard_service = DashboardService(repo)
-    period = st.radio("Report period", ["This month", "All time", "Custom"], horizontal=True)
-    if period == "This month":
-        start_date, end_date = today.replace(day=1), today
-    elif period == "All time":
-        start_date, end_date = dashboard_service.earliest_trade_date() or today, today
-    else:
-        first, second = st.columns(2)
-        start_date = first.date_input("Start date", value=today.replace(day=1))
-        end_date = second.date_input("End date", value=today)
-        if start_date > end_date:
-            st.error("Start date must be on or before end date.")
-            return
-
-    report = dashboard_service.build_report(start_date=start_date.isoformat(), end_date=end_date.isoformat())
+    report = dashboard_service.build_report(account_id=account.id, start_date=start_date.isoformat(), end_date=end_date.isoformat())
     if report.trade_count == 0:
         st.info("No trades were closed in the selected period.")
-        return
+        return account
 
     period_label = f"{start_date.strftime('%d %b')} – {end_date.strftime('%d %b %Y')}"
     st.markdown(f'<div class="dashboard-period">{period_label} · {report.trade_count} closed trades</div>', unsafe_allow_html=True)
-    metrics = st.columns(5)
-    metrics[0].metric("Balance", "—" if report.ending_balance is None else format_currency(report.ending_balance, settings.base_currency))
-    metrics[1].metric("Balance growth", "—" if report.balance_growth_percent is None else f"{format_signed(report.balance_growth_percent, '%', 1)}")
-    metrics[2].metric("Net P&L", format_currency(report.net_pnl, settings.base_currency))
-    metrics[3].metric("Max drawdown", format_currency(-Decimal(report.max_drawdown), settings.base_currency))
-    target_label = "Monthly target" if report.target_month_count == 1 else "Period target"
-    metrics[4].metric(target_label, "—" if report.target_progress is None else f"{format_number(report.target_progress, 1)}%")
+    with st.container(horizontal=True, gap="small"):
+        st.metric("Balance", "—" if report.ending_balance is None else format_currency(report.ending_balance, currency), border=True)
+        st.metric("Balance growth", "—" if report.balance_growth_percent is None else f"{format_signed(report.balance_growth_percent, '%', 1)}", border=True)
+        st.metric("Net P&L", format_currency(report.net_pnl, currency), border=True)
+        st.metric("Max drawdown", format_currency(-Decimal(report.max_drawdown), currency), border=True)
 
     st.markdown("#### Trade quality")
-    detail_metrics = st.columns(5)
-    detail_metrics[0].metric("Total R", "Awaiting risk" if report.total_r is None else format_signed(report.total_r, "R"))
-    detail_metrics[1].metric("Win rate", f"{format_number(report.win_rate, 1)}%")
-    detail_metrics[2].metric("Profit factor", "No losses" if report.profit_factor is None else format_number(report.profit_factor, 2))
-    detail_metrics[3].metric("Expectancy", "—" if report.expectancy is None else format_currency(report.expectancy, settings.base_currency))
-    detail_metrics[4].metric("Worst day", "—" if report.worst_day is None else format_currency(report.worst_day, settings.base_currency))
+    with st.container(horizontal=True, gap="small"):
+        st.metric("Total R", "Awaiting risk" if report.total_r is None else format_signed(report.total_r, "R"), border=True)
+        st.metric("Win rate", f"{format_number(report.win_rate, 1)}%", border=True)
+        st.metric("Profit factor", "No losses" if report.profit_factor is None else format_number(report.profit_factor, 2), border=True)
+        st.metric("Expectancy", "—" if report.expectancy is None else format_currency(report.expectancy, currency), border=True)
+        st.metric("Worst day", "—" if report.worst_day is None else format_currency(report.worst_day, currency), border=True)
     if report.r_trade_count < report.trade_count:
         st.caption(f"R is based on {report.r_trade_count:,} of {report.trade_count:,} trades with an effective planned risk.")
     else:
-        target_context = "monthly target" if report.target_month_count == 1 else f"{report.target_month_count} calendar-month target"
-        st.caption(
-            f"All {report.trade_count:,} trades have an effective risk value. "
-            f"{target_context.title()}: {format_currency(report.target_amount or '0', settings.base_currency)}."
-        )
+        st.caption(f"All {report.trade_count:,} trades have an effective risk value.")
     if report.starting_balance is None:
-        st.caption("Set an opening account balance in Settings to enable the balance curve, balance growth, and drawdown percentage.")
+        st.caption("Set funded capital in Settings to enable the balance curve, balance growth, and drawdown percentage.")
     else:
         st.caption(
-            f"Current drawdown: {format_currency(-Decimal(report.current_drawdown), settings.base_currency)}"
+            f"Current drawdown: {format_currency(-Decimal(report.current_drawdown), currency)}"
             + (f" ({format_number(report.current_drawdown_percent, 1)}%)" if report.current_drawdown_percent is not None else "")
-            + f" · Balance at period start: {format_currency(report.starting_balance, settings.base_currency)}."
+            + f" · Balance at period start: {format_currency(report.starting_balance, currency)}."
         )
 
-    chart_view = st.radio("Chart view", ["Daily", "Per trade"], horizontal=True, key="dashboard_chart_view")
+    chart_view = st.segmented_control(
+        "Chart view",
+        ["Daily", "Per trade"],
+        default="Daily",
+        required=True,
+        key="dashboard_chart_view",
+        width="content",
+    )
     cumulative = pd.DataFrame([item.__dict__ for item in report.cumulative])
     per_trade = pd.DataFrame([item.__dict__ for item in report.per_trade])
     daily = pd.DataFrame([item.__dict__ for item in report.daily])
@@ -502,97 +745,104 @@ def render_dashboard(repo: SQLiteJournalRepository) -> None:
 
     left, right = st.columns(2)
     with left:
-        pnl_figure = go.Figure(
-            go.Scatter(
-                x=timeline_x,
-                y=timeline[curve_column],
-                customdata=timeline["hover_label"],
-                mode="lines+markers",
-                line=dict(color="#147d64", width=3),
-                marker=dict(color="#147d64", size=7, line=dict(color="#fffdf8", width=1.5)),
-                fill=None if report.ending_balance is not None else "tozeroy",
-                fillcolor="rgba(20, 125, 100, 0.10)" if report.ending_balance is None else None,
-                hovertemplate=f"%{{customdata}}<br><b>{settings.base_currency} %{{y:,.2f}}</b><extra></extra>",
+        with st.container(border=True):
+            pnl_figure = go.Figure(
+                go.Scatter(
+                    x=timeline_x,
+                    y=timeline[curve_column],
+                    customdata=timeline["hover_label"],
+                    mode="lines+markers",
+                    line=dict(color="#0d6b54", width=3),
+                    marker=dict(color="#0d6b54", size=7, line=dict(color="#fffdf8", width=1.5)),
+                    fill=None if report.ending_balance is not None else "tozeroy",
+                    fillcolor="rgba(13, 107, 84, 0.10)" if report.ending_balance is None else None,
+                    hovertemplate=f"%{{customdata}}<br><b>{currency} %{{y:,.2f}}</b><extra></extra>",
+                )
             )
-        )
-        pnl_figure.update_layout(title=curve_title)
-        st.plotly_chart(style_chart(pnl_figure, yaxis_title=settings.base_currency), width="stretch", config={"displayModeBar": False})
+            pnl_figure.update_layout(title=curve_title)
+            st.plotly_chart(style_chart(pnl_figure, yaxis_title=currency), width="stretch", config={"displayModeBar": False})
     with right:
-        drawdown_figure = go.Figure(
-            go.Scatter(
-                x=timeline_x,
-                y=-timeline["drawdown"],
-                customdata=timeline[["hover_label", "drawdown"]],
-                mode="lines+markers",
-                line=dict(color="#b42318", width=3),
-                marker=dict(color="#b42318", size=7, line=dict(color="#ffffff", width=1.5)),
-                fill="tozeroy",
-                fillcolor="rgba(180, 35, 24, 0.12)",
-                hovertemplate=f"%{{customdata[0]}}<br><b>−{settings.base_currency} %{{customdata[1]:,.2f}}</b><extra></extra>",
+        with st.container(border=True):
+            drawdown_figure = go.Figure(
+                go.Scatter(
+                    x=timeline_x,
+                    y=-timeline["drawdown"],
+                    customdata=timeline[["hover_label", "drawdown"]],
+                    mode="lines+markers",
+                    line=dict(color="#bd3c36", width=3),
+                    marker=dict(color="#bd3c36", size=7, line=dict(color="#ffffff", width=1.5)),
+                    fill="tozeroy",
+                    fillcolor="rgba(189, 60, 54, 0.12)",
+                    hovertemplate=f"%{{customdata[0]}}<br><b>−{currency} %{{customdata[1]:,.2f}}</b><extra></extra>",
+                )
             )
-        )
-        drawdown_figure.update_layout(title=drawdown_title)
-        st.plotly_chart(style_chart(drawdown_figure, yaxis_title=f"{settings.base_currency} drawdown"), width="stretch", config={"displayModeBar": False})
+            drawdown_figure.update_layout(title=drawdown_title)
+            st.plotly_chart(style_chart(drawdown_figure, yaxis_title=f"{currency} drawdown"), width="stretch", config={"displayModeBar": False})
 
     left, right = st.columns(2)
     with left:
-        bar_colours = ["#147d64" if value >= 0 else "#b84745" for value in pnl_data["net_pnl"]]
-        daily_figure = go.Figure(
-            go.Bar(
-                x=pnl_x,
-                y=pnl_data["net_pnl"],
-                customdata=pnl_data["hover_label"],
-                marker_color=bar_colours,
-                marker_line_width=0,
-                hovertemplate=f"%{{customdata}}<br><b>{settings.base_currency} %{{y:,.2f}}</b><extra></extra>",
+        with st.container(border=True):
+            bar_colours = ["#0d6b54" if value >= 0 else "#bd3c36" for value in pnl_data["net_pnl"]]
+            daily_figure = go.Figure(
+                go.Bar(
+                    x=pnl_x,
+                    y=pnl_data["net_pnl"],
+                    customdata=pnl_data["hover_label"],
+                    marker_color=bar_colours,
+                    marker_line_width=0,
+                    hovertemplate=f"%{{customdata}}<br><b>{currency} %{{y:,.2f}}</b><extra></extra>",
+                )
             )
-        )
-        daily_figure.update_layout(title=pnl_title)
-        st.plotly_chart(style_chart(daily_figure, yaxis_title=settings.base_currency), width="stretch", config={"displayModeBar": False})
+            daily_figure.update_layout(title=pnl_title)
+            st.plotly_chart(style_chart(daily_figure, yaxis_title=currency), width="stretch", config={"displayModeBar": False})
     with right:
-        strategies = strategies.sort_values("net_pnl", ascending=False)
-        strategy_figure = go.Figure(
-            go.Bar(
-                x=strategies["strategy"],
-                y=strategies["net_pnl"],
-                marker_color=["#147d64" if value >= 0 else "#b84745" for value in strategies["net_pnl"]],
-                marker_line_width=0,
-                hovertemplate=f"%{{x}}<br><b>{settings.base_currency} %{{y:,.2f}}</b><extra></extra>",
+        with st.container(border=True):
+            strategies = strategies.sort_values("net_pnl", ascending=False)
+            strategy_figure = go.Figure(
+                go.Bar(
+                    x=strategies["strategy"],
+                    y=strategies["net_pnl"],
+                    marker_color=["#0d6b54" if value >= 0 else "#bd3c36" for value in strategies["net_pnl"]],
+                    marker_line_width=0,
+                    hovertemplate=f"%{{x}}<br><b>{currency} %{{y:,.2f}}</b><extra></extra>",
+                )
             )
-        )
-        strategy_figure.update_layout(title="Strategy P&L")
-        st.plotly_chart(style_chart(strategy_figure, yaxis_title=settings.base_currency), width="stretch", config={"displayModeBar": False})
+            strategy_figure.update_layout(title="Strategy P&L")
+            st.plotly_chart(style_chart(strategy_figure, yaxis_title=currency), width="stretch", config={"displayModeBar": False})
 
     if chart_view == "Per trade":
-        st.markdown("#### Closed-trade detail")
-        trade_table = pd.DataFrame(
+        with st.container(border=True):
+            st.markdown("#### Closed-trade detail")
+            trade_table = pd.DataFrame(
+                {
+                    "Closed": per_trade["exit_time"],
+                    "Position": [f"#{position_id}" if position_id else "—" for position_id in per_trade["position_id"]],
+                    "Symbol": per_trade["symbol"],
+                    f"P&L ({currency})": [format_currency(value, currency) for value in per_trade["net_pnl"]],
+                    "Result R": ["—" if value is None else format_signed(value, "R") for value in per_trade["result_r"]],
+                    "Post-close drawdown": [format_currency(-Decimal(value), currency) for value in per_trade["drawdown"]],
+                }
+            )
+            if report.ending_balance is not None:
+                trade_table["Balance"] = [format_currency(value, currency) for value in per_trade["balance"]]
+            st.dataframe(trade_table, hide_index=True, width="stretch")
+            st.caption("Drawdown is measured after each trade closes. It does not represent MT5 floating or intra-trade drawdown.")
+
+    with st.container(border=True):
+        st.subheader("Strategy results and backtest context")
+        strategy_table = pd.DataFrame(
             {
-                "Closed": per_trade["exit_time"],
-                "Position": [f"#{position_id}" if position_id else "—" for position_id in per_trade["position_id"]],
-                "Symbol": per_trade["symbol"],
-                f"P&L ({settings.base_currency})": [format_currency(value, settings.base_currency) for value in per_trade["net_pnl"]],
-                "Result R": ["—" if value is None else format_signed(value, "R") for value in per_trade["result_r"]],
-                "Post-close drawdown": [format_currency(-Decimal(value), settings.base_currency) for value in per_trade["drawdown"]],
+                "Strategy": strategies["strategy"],
+                f"Live P&L ({currency})": [format_currency(value, currency) for value in strategies["net_pnl"]],
+                "Live total R": ["—" if value is None else format_signed(value, "R") for value in strategies["total_r"]],
+                "Backtest trades": strategies["backtest_trade_count"].fillna("—"),
+                "Backtest win rate": ["—" if value is None else f"{format_number(value, 1)}%" for value in strategies["backtest_win_rate"]],
+                "Backtest expectancy": ["—" if value is None else format_signed(value, "R") for value in strategies["backtest_expectancy_r"]],
+                "Backtest net R": ["—" if value is None else format_signed(value, "R") for value in strategies["backtest_net_r"]],
             }
         )
-        if report.ending_balance is not None:
-            trade_table["Balance"] = [format_currency(value, settings.base_currency) for value in per_trade["balance"]]
-        st.dataframe(trade_table, hide_index=True, width="stretch")
-        st.caption("Drawdown is measured after each trade closes. It does not represent MT5 floating or intra-trade drawdown.")
-
-    st.subheader("Strategy results and backtest context")
-    strategy_table = pd.DataFrame(
-        {
-            "Strategy": strategies["strategy"],
-            f"Live P&L ({settings.base_currency})": [format_currency(value, settings.base_currency) for value in strategies["net_pnl"]],
-            "Live total R": ["—" if value is None else format_signed(value, "R") for value in strategies["total_r"]],
-            "Backtest trades": strategies["backtest_trade_count"].fillna("—"),
-            "Backtest win rate": ["—" if value is None else f"{format_number(value, 1)}%" for value in strategies["backtest_win_rate"]],
-            "Backtest expectancy": ["—" if value is None else format_signed(value, "R") for value in strategies["backtest_expectancy_r"]],
-            "Backtest net R": ["—" if value is None else format_signed(value, "R") for value in strategies["backtest_net_r"]],
-        }
-    )
-    st.dataframe(strategy_table, hide_index=True, width="stretch")
+        st.dataframe(strategy_table, hide_index=True, width="stretch")
+    return account
 
 
 def main() -> None:
@@ -600,15 +850,23 @@ def main() -> None:
     apply_application_style()
     st.title("Trading Journal")
     st.caption("Local-only journal with read-only MT5 imports.")
-    repo = repository()
-    page = st.sidebar.radio("Workspace", ["Dashboard", "Settings"])
-    if page == "Dashboard":
-        monitor_mt5_exports(repo)
-        render_auto_sync_notice()
-    if page == "Dashboard":
-        render_dashboard(repo)
-    else:
-        render_settings(repo)
+    try:
+        repo = repository()
+    except JournalDatabaseResetRequiredError as error:
+        st.error(str(error))
+        st.code("make reset-db CONFIRM_RESET=yes", language="bash")
+        return
+    page = st.navigation(
+        {
+            "Workspace": [
+                st.Page("app_pages/dashboard.py", title="Dashboard", icon=":material/dashboard:", default=True),
+                st.Page("app_pages/framework.py", title="Framework", icon=":material/fact_check:"),
+                st.Page("app_pages/settings.py", title="Settings", icon=":material/settings:"),
+            ]
+        },
+        position="sidebar",
+    )
+    page.run()
 
 
 if __name__ == "__main__":

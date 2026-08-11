@@ -65,9 +65,6 @@ class DashboardReport:
     total_r: str | None
     r_trade_count: int
     win_rate: str
-    target_progress: str | None
-    target_amount: str | None
-    target_month_count: int
     starting_balance: str | None
     ending_balance: str | None
     balance_growth_percent: str | None
@@ -90,12 +87,13 @@ class DashboardService:
     def __init__(self, repository: SQLiteJournalRepository) -> None:
         self._repository = repository
 
-    def build_report(self, *, start_date: str, end_date: str) -> DashboardReport:
+    def build_report(self, *, start_date: str, end_date: str, account_id: int | None = None) -> DashboardReport:
         settings = self._repository.get_journal_settings()
+        account_id = self._single_account_id(account_id)
         timezone = ZoneInfo(settings.reporting_timezone)
         start = date.fromisoformat(start_date)
         end = date.fromisoformat(end_date)
-        dated_trades = [(trade, self._trade_date(trade, timezone)) for trade in self._repository.list_trade_performance()]
+        dated_trades = [(trade, self._trade_date(trade, timezone)) for trade in self._repository.list_trade_performance(account_id)]
         trades = [trade for trade, trade_date in dated_trades if start <= trade_date <= end]
 
         pnl_total = sum((Decimal(trade.net_pnl) for trade in trades), Decimal("0"))
@@ -111,11 +109,6 @@ class DashboardService:
         expectancy = pnl_total / len(trades) if trades else None
         average_win = gross_profit / len(winning_pnls) if winning_pnls else None
         average_loss = sum(losing_pnls, Decimal("0")) / len(losing_pnls) if losing_pnls else None
-        target = Decimal(settings.monthly_target)
-        target_month_count = self._calendar_month_count(start, end)
-        target_amount = None if target <= 0 else target * target_month_count
-        target_progress = None if target_amount is None else Decimal(pnl_total * 100) / target_amount
-
         daily: dict[str, Decimal] = {}
         daily_r: dict[str, Decimal] = {}
         strategies: dict[str, tuple[Decimal, Decimal | None]] = {}
@@ -138,7 +131,8 @@ class DashboardService:
         cumulative_pnl = Decimal("0")
         cumulative_r = Decimal("0")
         has_r = False
-        configured_starting_balance = None if settings.starting_balance is None else Decimal(settings.starting_balance)
+        account_baseline = self._repository.get_account_opening_balance(account_id)
+        configured_starting_balance = None if account_baseline is None else Decimal(account_baseline)
         prior_pnl = sum((Decimal(trade.net_pnl) for trade, trade_date in dated_trades if trade_date < start), Decimal("0"))
         starting_balance = None if configured_starting_balance is None else configured_starting_balance + prior_pnl
 
@@ -213,9 +207,6 @@ class DashboardService:
             total_r=None if r_total is None else _decimal_string(r_total),
             r_trade_count=len(r_values),
             win_rate=_decimal_string(win_rate),
-            target_progress=None if target_progress is None else _decimal_string(target_progress),
-            target_amount=None if target_amount is None else _decimal_string(target_amount),
-            target_month_count=target_month_count,
             starting_balance=None if starting_balance is None else _decimal_string(starting_balance),
             ending_balance=None if ending_balance is None else _decimal_string(ending_balance),
             balance_growth_percent=None if balance_growth_percent is None else _decimal_string(balance_growth_percent),
@@ -245,15 +236,12 @@ class DashboardService:
             ],
         )
 
-    def earliest_trade_date(self) -> date | None:
+    def earliest_trade_date(self, account_id: int | None = None) -> date | None:
+        account_id = self._single_account_id(account_id)
         settings = self._repository.get_journal_settings()
         timezone = ZoneInfo(settings.reporting_timezone)
-        dates = [self._trade_date(trade, timezone) for trade in self._repository.list_trade_performance()]
+        dates = [self._trade_date(trade, timezone) for trade in self._repository.list_trade_performance(account_id)]
         return min(dates) if dates else None
-
-    @staticmethod
-    def _calendar_month_count(start: date, end: date) -> int:
-        return (end.year - start.year) * 12 + end.month - start.month + 1
 
     @staticmethod
     def _trade_date(trade: TradePerformanceItem, reporting_timezone: ZoneInfo) -> date:
@@ -261,3 +249,11 @@ class DashboardService:
         if timestamp.tzinfo is None:
             return timestamp.replace(tzinfo=reporting_timezone).date()
         return timestamp.astimezone(reporting_timezone).date()
+
+    def _single_account_id(self, account_id: int | None) -> int:
+        if account_id is not None:
+            return account_id
+        accounts = self._repository.list_mt5_accounts()
+        if len(accounts) != 1:
+            raise ValueError("Select one account before building a monetary report")
+        return accounts[0].id

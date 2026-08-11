@@ -58,7 +58,7 @@ def write_export(path: Path, *, net_pnl: str = "98.00") -> None:
 def configured_repository(tmp_path: Path, export_path: Path) -> SQLiteJournalRepository:
     repository = SQLiteJournalRepository(tmp_path / "journal.db")
     repository.initialize()
-    repository.configure_journal(base_currency="USD", reporting_timezone="UTC", monthly_target="1000")
+    repository.configure_journal(base_currency="USD", reporting_timezone="UTC")
     repository.register_mt5_account(
         display_name="Primary",
         login="123456",
@@ -230,5 +230,26 @@ def test_resident_mt5_export_ea_is_event_driven_and_has_no_trading_operations() 
     assert "EventSetTimer" in source
     assert "FILE_COMMON" in source
     assert "FileMove" in source
+    assert "OrderCalcProfit" in source
+    assert "DEAL_SL" in source
+    assert "DEAL_TP" in source
+    assert '"initial_risk_amount"' in source
+    assert '"entry_magic_number"' in source
+    assert '"account_balance"' in source
+    assert "AccountInfoDouble(ACCOUNT_BALANCE)" in source
     for forbidden_operation in ("OrderSend(", "OrderDelete(", "PositionClose(", "PositionModify(", "CTrade"):
         assert forbidden_operation not in source
+
+
+def test_mt5_exporters_format_prices_with_each_exported_symbols_precision() -> None:
+    exporters = ("TradingJournalSync.mq5", "TradingJournalExporter.mq5")
+
+    for exporter in exporters:
+        source = (Path(__file__).parents[1] / "mql5" / exporter).read_text(encoding="utf-8")
+
+        assert "int SymbolDigits(const string symbol)" in source
+        assert "SymbolInfoInteger(symbol,SYMBOL_DIGITS,digits)" in source
+        assert "int symbol_digits=SymbolDigits(symbol);" in source
+        assert "OptionalNumber(entry_stop,symbol_digits)" in source
+        assert "OptionalNumber(entry_target,symbol_digits)" in source
+        assert "OptionalNumber(close_stop,symbol_digits)" in source

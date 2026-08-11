@@ -17,6 +17,42 @@ Feature: Import completed MT5 positions locally
     Then the MT5 financial fields are refreshed
     And journal-wide defaults continue to determine strategy and R
 
+  Scenario: Import automatic MT5 risk evidence without inventing a process score
+    Given a schema-v2 MT5 export with an initial stop and calculated initial risk
+    And the account has funded capital and a saved Risk policy
+    When I import the export
+    Then the journal shows whether the initial risk was within that policy
+    And the trade is Auto-reviewed for Risk only
+    And the trade remains unscored for Psychology and Trading System until reviewed
+
+  Scenario: Keep automatic Risk evidence awaiting configuration in the review queue
+    Given a completed position has a usable automatic Risk source
+    But funded capital or a Risk policy is not configured
+    When I import the export
+    Then the trade remains in Needs review
+    And the journal shows that automatic Risk evidence is unavailable to score
+
+  Scenario: Auto-review a profitable trade without a recorded stop
+    Given a schema-v3 MT5 export with a current account-balance snapshot
+    And a profitable completed position has no recorded entry stop
+    And the account has funded capital and a saved Risk policy
+    When I import the export
+    Then the journal uses Live-account-balance SL for the automatic Risk check
+    And the trade is Auto-reviewed for Risk only
+
+  Scenario: Import a depleted-account balance without blocking trade history
+    Given a schema-v3 MT5 export with a zero or negative current account-balance snapshot
+    When I import the export
+    Then the completed positions are imported
+    And Live-account-balance SL remains unavailable for that snapshot
+
+  Scenario: Map an EA trade to a strategy
+    Given a strategy profile has an MT5 magic number
+    And a schema-v2 MT5 export contains that entry magic number
+    When I import the export
+    Then the journal maps the trade to the strategy for review
+    And it does not infer that the discretionary setup was valid
+
   Scenario: Reject a mismatched account currency
     Given a USD journal with a registered USD MT5 account
     And an export that declares EUR as its account currency
@@ -39,11 +75,6 @@ Feature: Import completed MT5 positions locally
     Given the journal default is linked to a saved strategy profile
     When I rename that strategy profile
     Then imported trades and the journal default use the new strategy name
-
-  Scenario: Compare P&L with the target over more than one month
-    Given a selected report period spans two calendar months
-    When I view the performance dashboard
-    Then the period target equals two monthly targets
 
   Scenario: Analyse balance growth and drawdown
     Given an opening account balance and imported closed trades

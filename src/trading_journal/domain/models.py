@@ -27,11 +27,43 @@ class MT5PositionExport(BaseModel):
     swap: Decimal
     fees: Decimal
     net_pnl: Decimal
+    # Schema v2+ evidence. Empty values mean MT5 could not establish that fact;
+    # they are deliberately not inferred from the trade outcome.
+    entry_stop_price: Decimal | None = None
+    entry_target_price: Decimal | None = None
+    close_stop_price: Decimal | None = None
+    entry_magic_number: str | None = None
+    entry_deal_count: int | None = Field(default=None, ge=1)
+    exit_reason: str | None = None
+    initial_risk_amount: Decimal | None = Field(default=None, gt=0)
+    initial_reward_amount: Decimal | None = None
+    # Schema v3 snapshot. This is the terminal's current account balance when
+    # it exported the CSV, not a historical balance at each trade's close.
+    # A depleted account can legitimately report zero or a negative balance.
+    # Preserve the snapshot so imports continue; Risk scoring treats non-positive
+    # balances as unavailable for the live-account-balance assumption.
+    account_balance: Decimal | None = None
 
     @field_validator("account_currency")
     @classmethod
     def uppercase_currency(cls, value: str) -> str:
         return value.upper()
+
+    @field_validator(
+        "entry_stop_price",
+        "entry_target_price",
+        "close_stop_price",
+        "entry_magic_number",
+        "entry_deal_count",
+        "exit_reason",
+        "initial_risk_amount",
+        "initial_reward_amount",
+        "account_balance",
+        mode="before",
+    )
+    @classmethod
+    def blank_optional_evidence_is_none(cls, value: object) -> object:
+        return None if isinstance(value, str) and not value.strip() else value
 
 
 class ImportedTradeView(BaseModel):

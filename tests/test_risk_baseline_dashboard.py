@@ -3,9 +3,11 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from trading_journal.application.dashboard import DashboardService
 from trading_journal.domain.models import MT5PositionExport
-from trading_journal.infrastructure.sqlite_repository import SQLiteJournalRepository
+from trading_journal.infrastructure.sqlite_repository import JournalDatabaseResetRequiredError, SQLiteJournalRepository
 
 
 def position(position_id: str, *, net_pnl: str, exit_time: str, strategy: str | None = None) -> MT5PositionExport:
@@ -30,19 +32,32 @@ def position(position_id: str, *, net_pnl: str, exit_time: str, strategy: str | 
     )
 
 
-def configured_repository(tmp_path: Path, baseline: str | None = "10") -> SQLiteJournalRepository:
+def configured_repository(tmp_path: Path, standard_risk_percent: str = "10") -> SQLiteJournalRepository:
     repository = SQLiteJournalRepository(tmp_path / "journal.db")
     repository.initialize()
-    repository.configure_journal(base_currency="USD", reporting_timezone="UTC", monthly_target="100", default_planned_risk_amount=baseline)
+    repository.configure_journal(base_currency="USD", reporting_timezone="UTC")
     repository.register_mt5_account(
         display_name="Primary",
         login="123456",
         broker_server="DemoBroker-Live",
         account_currency="USD",
         export_file_path="",
+        opening_balance="100",
     )
     account = repository.find_active_mt5_account("123456", "DemoBroker-Live")
     assert account is not None
+    repository.save_account_risk_policy(
+        account_id=account.id,
+        standard_risk_per_trade_percent=standard_risk_percent,
+        maximum_risk_per_trade_percent=standard_risk_percent,
+        daily_loss_limit_r="2",
+        weekly_loss_limit_r="4",
+        max_drawdown_percent="10",
+        max_open_risk_r="1",
+        max_consecutive_losses=3,
+        minimum_rr="1.5",
+        correlation_policy=None,
+    )
     repository.upsert_mt5_positions(
         account.id,
         [
@@ -55,7 +70,22 @@ def configured_repository(tmp_path: Path, baseline: str | None = "10") -> SQLite
     return repository
 
 
-def test_existing_database_is_migrated_with_a_nullable_risk_baseline(tmp_path: Path) -> None:
+def test_fresh_journal_settings_schema_excludes_monthly_target(tmp_path: Path) -> None:
+    repository = SQLiteJournalRepository(tmp_path / "journal.db")
+    repository.initialize()
+    repository.configure_journal(base_currency="USD", reporting_timezone="UTC")
+
+    connection = sqlite3.connect(tmp_path / "journal.db")
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(journal_settings)")}
+    connection.close()
+
+    assert "monthly_target" not in columns
+    assert not hasattr(repository.get_journal_settings(), "monthly_target")
+    assert "default_planned_risk_amount" not in columns
+    assert not hasattr(repository.get_journal_settings(), "default_planned_risk_amount")
+
+
+def test_legacy_monthly_target_database_requires_reset(tmp_path: Path) -> None:
     database_path = tmp_path / "old-journal.db"
     connection = sqlite3.connect(database_path)
     connection.execute("CREATE TABLE journal_settings (id INTEGER PRIMARY KEY, base_currency VARCHAR(3) NOT NULL, reporting_timezone VARCHAR(64) NOT NULL, monthly_target VARCHAR NOT NULL)")
@@ -64,34 +94,124 @@ def test_existing_database_is_migrated_with_a_nullable_risk_baseline(tmp_path: P
     connection.close()
 
     repository = SQLiteJournalRepository(database_path)
+    with pytest.raises(JournalDatabaseResetRequiredError, match="make reset-db CONFIRM_RESET=yes"):
+        repository.initialize()
+
+    connection = sqlite3.connect(database_path)
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(journal_settings)")}
+    row = connection.execute("SELECT base_currency, reporting_timezone, monthly_target FROM journal_settings").fetchone()
+    connection.close()
+    assert "monthly_target" in columns
+    assert row == ("USD", "UTC", "1000")
+
+
+def test_existing_account_is_migrated_with_a_nullable_balance_baseline(tmp_path: Path) -> None:
+    database_path = tmp_path / "old-account.db"
+    connection = sqlite3.connect(database_path)
+    connection.execute(
+        "CREATE TABLE journal_settings (id INTEGER PRIMARY KEY, base_currency VARCHAR(3) NOT NULL, reporting_timezone VARCHAR(64) NOT NULL, default_planned_risk_amount VARCHAR, starting_balance VARCHAR, default_strategy_name VARCHAR(100), default_strategy_profile_id INTEGER)"
+    )
+    connection.execute("INSERT INTO journal_settings VALUES (1, 'USD', 'UTC', NULL, NULL, NULL, NULL)")
+    connection.execute(
+        "CREATE TABLE mt5_accounts (id INTEGER PRIMARY KEY, display_name VARCHAR(100) NOT NULL, login VARCHAR(64) NOT NULL, broker_server VARCHAR(255) NOT NULL, account_currency VARCHAR(3) NOT NULL, export_file_path VARCHAR(1024) NOT NULL, active BOOLEAN NOT NULL)"
+    )
+    connection.execute("INSERT INTO mt5_accounts VALUES (1, 'Primary', '123456', 'DemoBroker-Live', 'USD', '', 1)")
+    connection.commit()
+    connection.close()
+
+    repository = SQLiteJournalRepository(database_path)
     repository.initialize()
 
-    settings = repository.get_journal_settings()
-    assert settings.default_planned_risk_amount is None
-    assert settings.default_strategy_name is None
-    assert database_path.with_suffix(".db.pre-risk-baseline.bak").exists()
-    assert database_path.with_suffix(".db.pre-strategy-default.bak").exists()
+    accounts = repository.list_mt5_accounts()
+    assert accounts[0].opening_balance is None
+    assert accounts[0].latest_mt5_balance is None
+    assert database_path.with_suffix(".db.pre-account-balance.bak").exists()
+    assert database_path.with_suffix(".db.pre-live-account-balance.bak").exists()
 
 
-def test_dynamic_baseline_recalculates_every_trade(tmp_path: Path) -> None:
-    repository = configured_repository(tmp_path, baseline="10")
+def test_existing_risk_policy_uses_its_prior_standard_as_the_new_maximum(tmp_path: Path) -> None:
+    database_path = tmp_path / "old-risk-policy.db"
+    connection = sqlite3.connect(database_path)
+    connection.execute(
+        """
+        CREATE TABLE account_risk_policies (
+            id INTEGER PRIMARY KEY,
+            mt5_account_id INTEGER NOT NULL,
+            version INTEGER NOT NULL,
+            active BOOLEAN NOT NULL,
+            risk_per_trade_percent VARCHAR NOT NULL,
+            daily_loss_limit_r VARCHAR NOT NULL,
+            weekly_loss_limit_r VARCHAR NOT NULL,
+            max_drawdown_percent VARCHAR NOT NULL,
+            max_open_risk_r VARCHAR NOT NULL,
+            max_consecutive_losses INTEGER NOT NULL,
+            minimum_rr VARCHAR NOT NULL,
+            correlation_policy VARCHAR,
+            created_at VARCHAR NOT NULL,
+            UNIQUE(mt5_account_id, version)
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO account_risk_policies VALUES
+        (1, 1, 1, 1, '0.5', '2', '4', '10', '1', 3, '1.5', NULL, '2026-08-11T00:00:00+00:00')
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    repository = SQLiteJournalRepository(database_path)
+    repository.initialize()
+
+    connection = sqlite3.connect(database_path)
+    value = connection.execute("SELECT maximum_risk_per_trade_percent FROM account_risk_policies WHERE id = 1").fetchone()[0]
+    connection.close()
+    assert value == "0.5"
+    assert database_path.with_suffix(".db.pre-risk-policy-limit.bak").exists()
+
+
+def test_account_policy_supplies_r_and_preserves_imported_policy_context(tmp_path: Path) -> None:
+    repository = configured_repository(tmp_path, standard_risk_percent="10")
 
     before = {trade.position_id: trade for trade in repository.list_trades()}
     assert before["1001"].effective_risk == "10"
-    assert before["1001"].risk_source == "Baseline"
+    assert before["1001"].risk_source == "Risk policy v1 standard risk"
     assert before["1001"].result_r == "2"
     assert before["1002"].effective_risk == "10"
-    assert before["1002"].risk_source == "Baseline"
+    assert before["1002"].risk_source == "Risk policy v1 standard risk"
     assert before["1002"].result_r == "-0.5"
 
-    repository.configure_journal(base_currency="USD", reporting_timezone="UTC", monthly_target="100", default_planned_risk_amount="20")
+    account = repository.find_active_mt5_account("123456", "DemoBroker-Live")
+    assert account is not None
+    repository.save_account_risk_policy(
+        account_id=account.id,
+        standard_risk_per_trade_percent="20",
+        maximum_risk_per_trade_percent="20",
+        daily_loss_limit_r="2",
+        weekly_loss_limit_r="4",
+        max_drawdown_percent="10",
+        max_open_risk_r="1",
+        max_consecutive_losses=3,
+        minimum_rr="1.5",
+        correlation_policy=None,
+    )
+    repository.upsert_mt5_positions(
+        account.id,
+        [position("1003", net_pnl="20", exit_time="2026-08-03T09:00:00+00:00")],
+        "positions.csv",
+        "updated-policy-hash",
+    )
     after = {trade.position_id: trade for trade in repository.list_trades()}
-    assert after["1001"].result_r == "1"
-    assert after["1002"].result_r == "-0.25"
+    assert after["1001"].result_r == "2"
+    assert after["1002"].result_r == "-0.5"
+    assert after["1003"].effective_risk == "20"
+    assert after["1003"].risk_source == "Risk policy v2 standard risk"
+    assert after["1003"].result_r == "1"
 
 
 def test_existing_trade_overrides_are_removed_during_initialization(tmp_path: Path) -> None:
-    repository = configured_repository(tmp_path, baseline="10")
+    repository = configured_repository(tmp_path, standard_risk_percent="10")
     database_path = tmp_path / "journal.db"
     connection = sqlite3.connect(database_path)
     for column_name, column_type in [
@@ -120,7 +240,7 @@ def test_existing_trade_overrides_are_removed_during_initialization(tmp_path: Pa
 
 
 def test_dashboard_builds_kpis_and_time_series_from_effective_risk(tmp_path: Path) -> None:
-    repository = configured_repository(tmp_path, baseline="10")
+    repository = configured_repository(tmp_path, standard_risk_percent="10")
 
     report = DashboardService(repository).build_report(start_date="2026-08-01", end_date="2026-08-31")
 
@@ -128,14 +248,13 @@ def test_dashboard_builds_kpis_and_time_series_from_effective_risk(tmp_path: Pat
     assert report.net_pnl == "15"
     assert report.total_r == "1.5"
     assert report.win_rate == "50"
-    assert report.target_progress == "15"
     assert [point.cumulative_pnl for point in report.cumulative] == ["20", "15"]
     assert [point.cumulative_r for point in report.cumulative] == ["2", "1.5"]
     assert [(item.strategy, item.net_pnl, item.total_r) for item in report.by_strategy] == [("Untagged", "15", "1.5")]
 
 
 def test_dashboard_collapses_equity_curve_to_one_point_per_day(tmp_path: Path) -> None:
-    repository = configured_repository(tmp_path, baseline="10")
+    repository = configured_repository(tmp_path, standard_risk_percent="10")
     account = repository.find_active_mt5_account("123456", "DemoBroker-Live")
     assert account is not None
     repository.upsert_mt5_positions(
@@ -152,35 +271,8 @@ def test_dashboard_collapses_equity_curve_to_one_point_per_day(tmp_path: Path) -
     assert [point.cumulative_r for point in report.cumulative] == ["3", "2.5"]
 
 
-def test_dashboard_scales_the_target_to_each_calendar_month_in_the_period(tmp_path: Path) -> None:
-    repository = configured_repository(tmp_path, baseline="10")
-    account = repository.find_active_mt5_account("123456", "DemoBroker-Live")
-    assert account is not None
-    repository.upsert_mt5_positions(
-        account.id,
-        [position("1003", net_pnl="60", exit_time="2026-09-01T11:00:00+00:00")],
-        "positions.csv",
-        "test-hash",
-    )
-
-    report = DashboardService(repository).build_report(start_date="2026-08-01", end_date="2026-09-30")
-
-    assert report.net_pnl == "75"
-    assert report.target_month_count == 2
-    assert report.target_amount == "200"
-    assert report.target_progress == "37.5"
-
-
 def test_dashboard_calculates_balance_growth_drawdown_and_trade_quality(tmp_path: Path) -> None:
-    repository = configured_repository(tmp_path, baseline="10")
-    repository.configure_journal(
-        base_currency="USD",
-        reporting_timezone="UTC",
-        monthly_target="100",
-        default_planned_risk_amount="10",
-        starting_balance="100",
-    )
-
+    repository = configured_repository(tmp_path, standard_risk_percent="10")
     report = DashboardService(repository).build_report(start_date="2026-08-01", end_date="2026-08-31")
 
     assert report.starting_balance == "100"
@@ -199,3 +291,34 @@ def test_dashboard_calculates_balance_growth_drawdown_and_trade_quality(tmp_path
     assert [(point.position_id, point.net_pnl) for point in report.per_trade] == [("1001", "20"), ("1002", "-5")]
     assert [point.balance for point in report.per_trade] == ["120", "115"]
     assert [point.drawdown for point in report.per_trade] == ["0", "5"]
+
+
+def test_dashboard_reports_only_the_selected_account_currency_and_trades(tmp_path: Path) -> None:
+    repository = configured_repository(tmp_path, standard_risk_percent="10")
+    first_account = repository.find_active_mt5_account("123456", "DemoBroker-Live")
+    assert first_account is not None
+    repository.register_mt5_account(
+        display_name="Secondary",
+        login="654321",
+        broker_server="DemoBroker-Live",
+        account_currency="EUR",
+        export_file_path="",
+        opening_balance="500",
+    )
+    second_account = repository.find_active_mt5_account("654321", "DemoBroker-Live")
+    assert second_account is not None
+    repository.upsert_mt5_positions(
+        second_account.id,
+        [position("2001", net_pnl="999", exit_time="2026-08-03T09:00:00+00:00")],
+        "positions.csv",
+        "second-account-hash",
+    )
+
+    report = DashboardService(repository).build_report(
+        account_id=first_account.id,
+        start_date="2026-08-01",
+        end_date="2026-08-31",
+    )
+
+    assert report.trade_count == 2
+    assert report.net_pnl == "15"

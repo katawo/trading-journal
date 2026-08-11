@@ -12,25 +12,32 @@ make run
 `make run` keeps Streamlit running and automatically reruns the app when source files are saved. Use `make test` for tests and `make check` for tests plus compilation.
 
 Set `TRADING_JOURNAL_DB` to choose a database location; it defaults to `data/trading_journal.db`.
+To intentionally erase all local accounts, imports, settings, strategies, and framework evidence, run `make reset-db CONFIRM_RESET=yes`. Restart the app afterwards to create a clean database. Existing databases from the monthly-target version require this reset before they can be opened.
 
 ## Import MT5 history
 
-1. Copy `mql5/TradingJournalSync.mq5` to the MT5 `Experts` directory and compile it in MetaEditor.
+1. Copy `mql5/TradingJournalSync.mq5` to the MT5 `Experts` directory and compile it in MetaEditor. The current EA writes schema v3 with entry SL/TP, initial calculated risk, MT5 magic number, close metadata, and the current account-balance snapshot.
 2. Attach it once to any chart in the terminal you trade from. It writes `trading_journal/<MT5-login>_positions.csv` under MT5 Common Files after trade-deal events, plus a 60-second safety refresh.
 3. In **Settings → General**, configure the journal's base currency, then approve the account in **Settings → MT5 Accounts** using its exact login and broker server. Leave the custom export-path field blank to use the matching account-specific default. The app detects native Windows `%APPDATA%` and Linux Wine locations (including `WINEPREFIX`, `~/.wine`, and `~/.mt5`); its detected source is shown in the advanced export-location panel. If your terminal is elsewhere, start the app with `TRADING_JOURNAL_MT5_COMMON_FILES` set to its `Terminal/Common/Files` directory.
 4. Keep **Dashboard** open. The app checks the configured export every 15 seconds and imports a changed snapshot automatically.
 
 The sync EA and importer accept completed positions only and never send orders. Re-importing refreshes the MT5-owned execution data. The journal never stores an MT5 password. `mql5/TradingJournalExporter.mq5` remains available for one-off manual exports.
 
-## Risk baseline and reports
+## Risk policy and reports
 
-In **Settings**, you can enable a journal-wide default planned risk (1R). It applies dynamically to every imported trade, and changing it recalculates every R value. The current dashboard does not provide individual-trade editing.
+Each MT5 account has one versioned **Risk policy**. Its **Standard risk (1R)** normalizes dashboard R for that account; its **Maximum risk per trade** is a separate compliance limit used by Risk reviews and alerts. A policy change applies to later imports while already-attached policy versions keep historical R and compliance context auditable. The current dashboard does not provide individual-trade editing.
 
-The **Dashboard** provides period filters, headline performance metrics, and a **Daily** or **Per trade** chart view. The per-trade view is the read-only closed-trade detail, showing each completed position's P&L and post-close drawdown; it is not floating or intra-trade MT5 drawdown. Its target progress is calculated against the monthly target for every calendar month in the selected period. Enable **Track balance growth and percentage drawdown** in Settings and enter the balance immediately before your first imported trade to add balance growth and percentage drawdown. Trades without a journal risk baseline remain visible but are excluded from R metrics.
+The **Dashboard** reports one selected MT5 account at a time, in that account's currency; it does not convert or aggregate balances across accounts. **Funded capital** is optional during account setup and can be adjusted later. It is the fixed basis for the historical balance curve, drawdown, and monetary Risk-policy amounts; it does not replace the latest live MT5 balance. The dashboard provides period filters, headline performance metrics, and a **Daily** or **Per trade** chart view. The per-trade view is read-only closed-trade detail, showing completed-position P&L and post-close drawdown; it is not floating or intra-trade MT5 drawdown. Trades without an account Risk policy or funded capital remain visible but are excluded from R metrics.
 
 ## Strategies and backtests
 
-Use **Settings → Strategies** to maintain each strategy’s description and optional backtest period, sample size, win rate, expectancy, net R, and notes. Select one saved profile as the journal default; every imported trade inherits it dynamically. The default uses a stable ID, so a profile can be renamed without breaking the journal assignment. The dashboard shows the live result beside that strategy’s backtest context; backtest data is informational and never changes live P&L or R.
+Use **Settings → Strategies** to maintain each strategy’s description and optional backtest period, sample size, win rate, expectancy, net R, and notes. Select one saved profile as the journal default; every imported trade inherits it dynamically. Optionally add comma-separated MT5 magic numbers to map EA trades to a strategy automatically. The default uses a stable ID, so a profile can be renamed without breaking the journal assignment. The dashboard shows the live result beside that strategy’s backtest context; backtest data is informational and never changes live P&L or R.
+
+## Trading framework
+
+**Framework** is a post-trade process journal around read-only MT5 history. An imported position has no three-pillar score until it receives a review: the app never invents Psychology or setup-validity evidence. It recognises three SL sources: **Specific preset SL** (MT5-calculated initial risk), **Real-loss SL** (`abs(net P&L)` for a loss without calculable initial risk), and **Live-account-balance SL** (the latest v3 MT5 balance for a profitable trade without a recorded entry SL). A usable source becomes a Risk-only **Auto-review** only after funded capital and a Risk policy are configured (`100%` within the maximum per-trade limit, `0%` over); otherwise it remains **Needs review** with its automatic evidence visible. Auto-reviews never produce Psychology, Trading System, or Process scores and do not advance the roadmap. The policy version is captured when the position is first imported; the live-balance assumption is dynamic and is not proof of a real stop order. A non-positive balance is retained but is unavailable as a Live-account-balance SL. **Funded capital** is fixed for policy limits and drawdown. No pre-trade approval, session, or trade-linking workflow exists. A declared actual-risk entry overrides all automatic sources for a reviewed trade. Corrections create an auditable new review version and retain the prior evidence.
+
+`STOP` and `CAUTION` are retrospective monitoring signals, never MT5 controls. Maximum open risk is reference-only because the bridge exports completed positions. Psychology and Trading System scores are trader-wide; Risk monitoring and its roadmap gate remain account-specific. See the [three-pillar framework guide](docs/three_pillar_framework_guide.md) for setup, scoring, monitoring, and build guidance; the formal product rules remain in [the specification](docs/trading_journal_web_app_spec.md#37-three-pillar-post-trade-journal).
 
 ## Quality approach
 
