@@ -34,6 +34,10 @@ def main() -> int:
         APPLICATION_NAME,
         "--paths",
         str(PROJECT_ROOT / "src"),
+        # app.py is bundled as data and launched later by Streamlit, so its
+        # imports are not visible to PyInstaller's normal static analysis.
+        "--collect-submodules",
+        "trading_journal",
         "--distpath",
         str(DIST_ROOT),
         "--workpath",
