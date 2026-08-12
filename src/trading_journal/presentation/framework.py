@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import MutableMapping, Sequence
 from decimal import Decimal
 
 import pandas as pd
@@ -359,6 +360,27 @@ def _grade_control(label: str, *, existing: str | None, key: str) -> str | None:
     return None if choice is None else choice.casefold()
 
 
+def _set_pillar_grades_to_pass(
+    trade_id: int,
+    criteria: Sequence[str],
+    state: MutableMapping[str, object] | None = None,
+) -> None:
+    """Apply an explicit Pass-all choice to one pillar's stable widget keys."""
+
+    target = st.session_state if state is None else state
+    for criterion in criteria:
+        target[f"assessment-{trade_id}-{criterion}"] = "Pass"
+
+
+def _grade_summary(trade_id: int, criteria: Sequence[str], existing: dict[str, str] | None) -> tuple[int, int]:
+    """Return completed grades and non-pass exceptions for the review header."""
+
+    values = [st.session_state.get(f"assessment-{trade_id}-{criterion}", (existing or {}).get(criterion, "").capitalize()) for criterion in criteria]
+    completed = sum(value in GRADE_OPTIONS for value in values)
+    exceptions = sum(value in {"Partial", "Fail"} for value in values)
+    return completed, exceptions
+
+
 @st.dialog("Post-trade assessment", width="large", on_dismiss=_clear_review_dialog)
 def _render_post_trade_review_dialog(repo: SQLiteJournalRepository, account: AccountListItem, trade, score: TradeProcessScore, profiles) -> None:  # type: ignore[no-untyped-def]
     existing = repo.get_post_trade_assessment_for_trade(trade.id)
@@ -404,19 +426,42 @@ def _render_post_trade_review_dialog(repo: SQLiteJournalRepository, account: Acc
     st.markdown("##### Assessment")
     with st.form(f"post-trade-assessment-{trade.id}"):
         strategy = st.selectbox("Strategy", profiles, index=strategy_index, format_func=lambda item: item.name)
+        pillars = (
+            ("Psychology", PSYCHOLOGY_CRITERIA),
+            ("Risk management", RISK_CRITERIA),
+            ("Trading system", SYSTEM_CRITERIA),
+        )
+        summaries = [_grade_summary(trade.id, criteria, existing.criterion_grades if existing else None) for _, criteria in pillars]
+        completed = sum(item[0] for item in summaries)
+        exceptions = sum(item[1] for item in summaries)
+        st.caption(
+            tr(
+                "{completed} of {total} criteria graded · {exceptions} exception{plural}",
+                completed=completed,
+                total=sum(len(criteria) for _, criteria in pillars),
+                exceptions=exceptions,
+                plural="s" if exceptions != 1 else "",
+            )
+        )
+        st.caption("Mark a pillar as Pass, then change only the Partial or Fail exceptions.")
         grades: dict[str, str | None] = {}
-        for title, criteria in (("Psychology", PSYCHOLOGY_CRITERIA), ("Risk management", RISK_CRITERIA), ("Trading system", SYSTEM_CRITERIA)):
-            with st.container(border=True):
-                st.markdown(f"**{title}**")
-                first, second = st.columns(2)
-                for index, criterion in enumerate(criteria):
-                    target = first if index % 2 == 0 else second
-                    with target:
-                        grades[criterion] = _grade_control(
-                            CRITERION_LABELS[criterion],
-                            existing=existing.criterion_grades.get(criterion) if existing else None,
-                            key=f"assessment-{trade.id}-{criterion}",
-                        )
+        tabs = st.tabs([f"{tr(title)} · {done}/{len(criteria)}" for (title, criteria), (done, _) in zip(pillars, summaries, strict=True)])
+        for tab, (title, criteria) in zip(tabs, pillars, strict=True):
+            with tab:
+                st.form_submit_button(
+                    tr("Mark {pillar} as Pass", pillar=tr(title)),
+                    key=f"assessment-{trade.id}-{title}-pass-all",
+                    icon=":material/done_all:",
+                    on_click=_set_pillar_grades_to_pass,
+                    args=(trade.id, criteria),
+                )
+                st.caption("Change only the criteria that were Partial or Fail.")
+                for criterion in criteria:
+                    grades[criterion] = _grade_control(
+                        CRITERION_LABELS[criterion],
+                        existing=existing.criterion_grades.get(criterion) if existing else None,
+                        key=f"assessment-{trade.id}-{criterion}",
+                    )
         actual_risk = st.text_input(
             "Actual risk amount (optional)",
             value=existing.declared_actual_risk_amount if existing and existing.declared_actual_risk_amount else "",
@@ -443,8 +488,9 @@ def _render_post_trade_review_dialog(repo: SQLiteJournalRepository, account: Acc
         )
         if not available_hard_rules:
             st.caption("No hard-rule events are enabled. Enable one in Settings → Review rules to record it on a new assessment.")
+        st.markdown("##### Review details")
         note = st.text_area("What happened and what did you learn?", value=existing.post_review_note if existing else "", placeholder="Describe execution independently of P&L.")
-        action = st.text_area("Corrective action", value=existing.corrective_action if existing and existing.corrective_action else "", placeholder="Required for partial, failed, or hard-rule reviews.")
+        action = st.text_area("Corrective action", value=existing.corrective_action if existing and existing.corrective_action else "", placeholder="Required when any criterion is Partial or Fail, or a hard rule is selected.")
         submitted = st.form_submit_button("Update assessment" if existing else "Save assessment", type="primary")
     if not submitted:
         _render_review_history(repo, account.id, trade)
