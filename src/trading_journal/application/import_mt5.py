@@ -57,7 +57,18 @@ class MT5ImportService:
         if not path.is_file():
             raise ImportValidationError(f"Export file does not exist: {path}")
 
-        raw_content = path.read_bytes()
+        return self.import_bytes(path, path.read_bytes())
+
+    def import_bytes(
+        self,
+        export_path: str | Path,
+        raw_content: bytes,
+        *,
+        source_file_mtime_ns: int | None = None,
+        source_file_size: int | None = None,
+    ) -> ImportResult:
+        """Import a previously-read export so auto-sync does not read it twice."""
+        path = Path(export_path)
         file_hash = hashlib.sha256(raw_content).hexdigest()
         try:
             rows = list(csv.DictReader(raw_content.decode("utf-8-sig").splitlines()))
@@ -114,4 +125,6 @@ class MT5ImportService:
             str(path),
             file_hash,
             live_account_balance=live_account_balance,
+            source_file_mtime_ns=source_file_mtime_ns,
+            source_file_size=source_file_size,
         )

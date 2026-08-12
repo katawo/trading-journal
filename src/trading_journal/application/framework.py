@@ -122,6 +122,7 @@ class AutoRiskEvidence:
 class TradeProcessScore:
     account_id: int
     trade_id: int
+    net_pnl: str
     exit_time: str
     server_utc_offset_minutes: int
     assessment_state: str
@@ -211,6 +212,7 @@ class FrameworkService:
         self._account_score_cache: dict[int, tuple[tuple[TradeProcessScore, ...], dict[int, dict[str, object]]]] = {}
         self._raw_risk_event_cache: dict[int, dict[int, dict[str, object]]] = {}
         self._pillar_score_cache: dict[tuple[int, int, date | None], tuple[PillarScore, ...]] = {}
+        self._reporting_time_basis_cache: str | None = None
 
     def trade_process_scores(self, account_id: int) -> tuple[TradeProcessScore, ...]:
         account_scores, _ = self._account_trade_scores(account_id)
@@ -441,7 +443,7 @@ class FrameworkService:
         if account_id in self._account_score_cache:
             return self._account_score_cache[account_id]
         trades = sorted(self._repository.list_closed_trades_for_review(account_id), key=lambda item: (item.exit_time, item.id))
-        assessments = {item.assessment.trade_id: item.assessment for item in self._repository.list_post_trade_assessment_outcomes(account_id)}
+        assessments = {item.trade_id: item for item in self._repository.list_active_post_trade_assessments(account_id)}
         approvals = {item.trade_id: item for item in self._repository.list_active_auto_review_approvals(account_id)}
         raw_positions = self._repository.list_imported_positions_for_risk(account_id)
         policies = self._policies_for(raw_positions, assessments, account_id)
@@ -486,7 +488,8 @@ class FrameworkService:
         unreviewed = sum(item.assessment_state != "reviewed" for item in scores)
         if not sample:
             return PillarScore(pillar, None, None, "incomplete", 0, 0, unreviewed, automatic, False, 0, (), "No complete post-trade review evidence yet.", scope)
-        components = self._period_components(pillar, sample, historical_events)
+        pnl_by_trade = {item.trade_id: Decimal(item.net_pnl) for item in scores}
+        components = self._period_components(pillar, sample, historical_events, pnl_by_trade)
         values = [value for _, value in components]
         raw = None if any(value is None for value in values) else sum(
             (value * weight for value, weight in zip(values, PERIOD_WEIGHTS[pillar], strict=True) if value is not None), Decimal("0")
@@ -505,9 +508,14 @@ class FrameworkService:
             detail += " Repeated critical violations cap this pillar at 59 until a period review is saved."
         return PillarScore(pillar, None if score is None else _decimal_text(score), None if raw is None else _decimal_text(raw), status, len(reviewed), len(sample), unreviewed, automatic, hard_block, critical, formatted, detail, scope)
 
-    def _period_components(self, pillar: str, sample: list[TradeProcessScore], historical_events: dict[int, dict[str, object]] | None) -> tuple[tuple[str, Decimal | None], ...]:
+    def _period_components(
+        self,
+        pillar: str,
+        sample: list[TradeProcessScore],
+        historical_events: dict[int, dict[str, object]] | None,
+        pnl_by_trade: dict[int, Decimal],
+    ) -> tuple[tuple[str, Decimal | None], ...]:
         grades = {item.trade_id: item.criterion_grades for item in sample if item.criterion_grades is not None}
-        pnl_by_trade = {item.trade_id: Decimal(next(t.net_pnl for t in self._repository.list_closed_trades_for_review(item.account_id) if t.id == item.trade_id)) for item in sample}
         if pillar == "psychology":
             rules = self._average_grade((grades[item.trade_id] for item in sample), "rule_adherence")
             impulse = self._average_grade((grades[item.trade_id] for item in sample), "impulse_control")
@@ -627,6 +635,7 @@ class FrameworkService:
             return TradeProcessScore(
                 account_id,
                 trade.id,
+                trade.net_pnl,
                 trade.exit_time,
                 trade.server_utc_offset_minutes,
                 state,
@@ -670,7 +679,7 @@ class FrameworkService:
         quality_status = self._quality_status(overall, status)
         classification = self._classification(Decimal(trade.net_pnl), quality_status)
         return TradeProcessScore(
-            account_id, trade.id, trade.exit_time, trade.server_utc_offset_minutes, "reviewed", "manual_review", assessment.criterion_grades, _decimal_text(psychology), _decimal_text(risk), _decimal_text(system), _decimal_text(overall), status, quality_status, classification,
+            account_id, trade.id, trade.net_pnl, trade.exit_time, trade.server_utc_offset_minutes, "reviewed", "manual_review", assessment.criterion_grades, _decimal_text(psychology), _decimal_text(risk), _decimal_text(system), _decimal_text(overall), status, quality_status, classification,
             psychology_hard,
             risk_hard,
             system_hard,
@@ -1001,7 +1010,9 @@ class FrameworkService:
         return Decimal(trade.close_stop_price) < Decimal(trade.entry_stop_price) if trade.direction == "long" else Decimal(trade.close_stop_price) > Decimal(trade.entry_stop_price)
 
     def _reporting_time_basis(self) -> str:
-        return self._repository.get_journal_settings().reporting_time_basis
+        if self._reporting_time_basis_cache is None:
+            self._reporting_time_basis_cache = self._repository.get_journal_settings().reporting_time_basis
+        return self._reporting_time_basis_cache
 
     def _trade_date(self, value: str, server_utc_offset_minutes: int) -> date:
         return reporting_date(value, server_utc_offset_minutes, self._reporting_time_basis())

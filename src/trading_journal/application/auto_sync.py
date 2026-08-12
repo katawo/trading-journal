@@ -45,8 +45,18 @@ class MT5AutoSyncService:
                 continue
 
             try:
-                export_updated_at = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
-                file_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+                file_stat = path.stat()
+                export_updated_at = datetime.fromtimestamp(file_stat.st_mtime, tz=timezone.utc)
+                fingerprint = self._repository.latest_mt5_import_fingerprint(
+                    login=account.login,
+                    broker_server=account.broker_server,
+                    source_file_path=source_path,
+                )
+                if fingerprint is not None and fingerprint[1:] == (file_stat.st_mtime_ns, file_stat.st_size):
+                    results.append(MT5AutoSyncResult(account.display_name, account.login, account.broker_server, source_path, "up_to_date", export_updated_at=export_updated_at))
+                    continue
+                raw_content = path.read_bytes()
+                file_hash = hashlib.sha256(raw_content).hexdigest()
             except OSError as error:
                 message = f"Could not read MT5 export: {error}"
                 results.append(MT5AutoSyncResult(account.display_name, account.login, account.broker_server, source_path, "failed", message))
@@ -62,7 +72,12 @@ class MT5AutoSyncService:
                 continue
 
             try:
-                imported = self._import_service.import_csv(path)
+                imported = self._import_service.import_bytes(
+                    path,
+                    raw_content,
+                    source_file_mtime_ns=file_stat.st_mtime_ns,
+                    source_file_size=file_stat.st_size,
+                )
             except (ImportValidationError, OSError, RuntimeError) as error:
                 message = str(error)
                 results.append(MT5AutoSyncResult(account.display_name, account.login, account.broker_server, source_path, "failed", message))
