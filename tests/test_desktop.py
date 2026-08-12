@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 from pathlib import Path
+import subprocess
 
 import pytest
 from streamlit.testing.v1 import AppTest
@@ -16,6 +17,7 @@ from trading_journal.desktop import (
     desktop_runtime_paths,
     reset_desktop_database,
     self_check,
+    _terminate,
 )
 from trading_journal.infrastructure.sqlite_repository import SQLiteJournalRepository
 
@@ -129,6 +131,37 @@ def test_desktop_server_disables_the_source_file_watcher(monkeypatch) -> None:
     desktop.run_streamlit_server(18501)
 
     assert captured["server_fileWatcherType"] == "none"
+
+
+def test_desktop_termination_reaps_a_forcibly_killed_child() -> None:
+    class UnresponsiveProcess:
+        def __init__(self) -> None:
+            self.wait_calls = 0
+            self.terminated = False
+            self.killed = False
+
+        def poll(self) -> None:
+            return None
+
+        def terminate(self) -> None:
+            self.terminated = True
+
+        def wait(self, *, timeout: float) -> int:
+            self.wait_calls += 1
+            if self.wait_calls == 1:
+                raise subprocess.TimeoutExpired("desktop", timeout)
+            return 0
+
+        def kill(self) -> None:
+            self.killed = True
+
+    process = UnresponsiveProcess()
+
+    _terminate(process)  # type: ignore[arg-type]
+
+    assert process.terminated is True
+    assert process.killed is True
+    assert process.wait_calls == 2
 
 
 def test_desktop_status_preserves_last_import_and_rebuilds_results(tmp_path: Path) -> None:

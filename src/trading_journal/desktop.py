@@ -441,6 +441,7 @@ def _terminate(process: subprocess.Popen[Any] | None) -> None:
         process.wait(timeout=8)
     except subprocess.TimeoutExpired:
         process.kill()
+        process.wait(timeout=8)
 
 
 def reset_desktop_database(paths: DesktopRuntimePaths) -> None:

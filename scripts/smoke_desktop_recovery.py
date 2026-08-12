@@ -15,6 +15,7 @@ from urllib.request import urlopen
 
 
 _STARTUP_TIMEOUT_SECONDS = 90
+_SHUTDOWN_TIMEOUT_SECONDS = 10
 
 
 def _available_loopback_port() -> int:
@@ -31,6 +32,35 @@ def _failure_details(process: subprocess.Popen[object], log_path: Path) -> str:
         except OSError as error:
             log = f"<could not read desktop.log: {error}>"
     return f"process status: {process.poll()}\ndesktop log:\n{log}"
+
+
+def _remove_sqlite_files_when_unlocked(database: Path) -> None:
+    """Remove the smoke database before TemporaryDirectory cleanup on Windows.
+
+    Windows does not allow deleting an open SQLite file.  A killed Streamlit
+    child can take a moment to release inherited SQLite handles after the
+    desktop supervisor has exited.
+    """
+
+    paths = (database, Path(f"{database}-wal"), Path(f"{database}-shm"))
+    deadline = time.monotonic() + _SHUTDOWN_TIMEOUT_SECONDS
+    pending = set(paths)
+    while pending:
+        for path in tuple(pending):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pending.remove(path)
+            except PermissionError:
+                continue
+            else:
+                pending.remove(path)
+        if not pending:
+            return
+        if time.monotonic() >= deadline:
+            locked_paths = ", ".join(str(path) for path in sorted(pending))
+            raise RuntimeError(f"Desktop shutdown left SQLite files locked: {locked_paths}")
+        time.sleep(0.2)
 
 
 def main() -> int:
@@ -83,10 +113,11 @@ def main() -> int:
         finally:
             (data_directory / "shutdown.request").write_text("smoke test", encoding="utf-8")
             try:
-                process.wait(timeout=10)
+                process.wait(timeout=_SHUTDOWN_TIMEOUT_SECONDS)
             except subprocess.TimeoutExpired:
                 process.terminate()
-                process.wait(timeout=10)
+                process.wait(timeout=_SHUTDOWN_TIMEOUT_SECONDS)
+            _remove_sqlite_files_when_unlocked(database)
 
 
 if __name__ == "__main__":
