@@ -1,0 +1,56 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(make setup*)",
+      "Bash(make run*)",
+      "Bash(make test*)",
+      "Bash(make check*)",
+      "Bash(.venv/bin/python -m pytest*)",
+      "Bash(git status*)",
+      "Bash(git diff*)",
+      "Bash(git log*)"
+    ],
+    "ask": [
+      "Bash(make bundle*)",
+      "Bash(make desktop*)",
+      "Bash(git commit*)",
+      "Bash(git push*)"
+    ],
+    "deny": [
+      "Bash(make reset-db*)",
+      "Bash(rm -rf*)",
+      "Bash(git push --force*)",
+      "Edit(build/**)",
+      "Edit(dist/**)",
+      "Edit(release/**)",
+      "Edit(**/*.egg-info/**)",
+      "Write(build/**)",
+      "Write(dist/**)",
+      "Write(release/**)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 .claude/hooks/block_dangerous_bash.py"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 .claude/hooks/schema_pairing_reminder.py"
+          }
+        ]
+      }
+    ]
+  }
+}
