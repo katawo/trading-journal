@@ -2,6 +2,7 @@ from pathlib import Path
 import csv
 import sqlite3
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 from streamlit.testing.v1 import AppTest
@@ -66,6 +67,39 @@ def test_format_relative_time_uses_compact_human_readable_durations():
     assert format_relative_time(now - timedelta(minutes=1), now=now) == "1 min ago"
     assert format_relative_time(now - timedelta(hours=2), now=now) == "2 hr ago"
     assert format_relative_time(now - timedelta(days=3), now=now) == "3 days ago"
+
+
+def test_global_framework_alert_bubble_combines_and_orders_cross_account_alerts(monkeypatch):
+    import app as journal_app
+
+    accounts = [
+        SimpleNamespace(id=1, display_name="Zulu"),
+        SimpleNamespace(id=2, display_name="Alpha"),
+    ]
+    alerts_by_account = {
+        1: [SimpleNamespace(severity="warning", code="review_due", message="Review is due")],
+        2: [SimpleNamespace(severity="critical", code="risk_stop", message="Daily risk stop reached")],
+    }
+    captured = {}
+
+    class StubFrameworkService:
+        def __init__(self, repo):
+            pass
+
+        def framework_alerts(self, account_id):
+            return alerts_by_account[account_id]
+
+    monkeypatch.setattr(journal_app, "FrameworkService", StubFrameworkService)
+    monkeypatch.setattr(journal_app, "render_global_alert_bubble", lambda **kwargs: captured.update(kwargs))
+
+    journal_app.render_global_framework_alert_bubble(SimpleNamespace(list_mt5_accounts=lambda: accounts))
+
+    assert captured["label"] == "1 critical · 1 warning"
+    assert captured["has_critical"] is True
+    assert captured["alerts"] == [
+        {"account_name": "Alpha", "code": "risk_stop", "message": "Daily risk stop reached", "severity": "critical"},
+        {"account_name": "Zulu", "code": "review_due", "message": "Review is due", "severity": "warning"},
+    ]
 
 
 def test_settings_groups_reporting_accounts_risk_strategies_and_review_rules(monkeypatch, tmp_path):

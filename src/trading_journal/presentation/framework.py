@@ -170,18 +170,11 @@ def _render_score_cards(scores: tuple[PillarScore, ...]) -> None:
             st.metric(PILLAR_NAMES[score.pillar], _score_text(score.score), f"{label} · {score.sample_size} in sample", border=True)
 
 
-def _render_alerts(service: FrameworkService, account_id: int) -> None:
-    alerts = service.framework_alerts(account_id)
-    if not alerts:
-        st.success("No active framework alerts.", icon=":material/check_circle:")
-        return
-    for alert in alerts:
-        if alert.severity == "critical":
-            st.error(alert.message, icon=":material/error:")
-        elif alert.severity == "warning":
-            st.warning(alert.message, icon=":material/warning:")
-        else:
-            st.info(alert.message, icon=":material/info:")
+def _render_risk_configuration_notice(service: FrameworkService, account_id: int) -> None:
+    """Keep the setup-only risk notice visible without duplicating global alerts."""
+    notice = next((alert for alert in service.framework_alerts(account_id) if alert.code == "risk_unconfigured"), None)
+    if notice is not None:
+        st.info(notice.message, icon=":material/info:")
 
 
 def render_framework_dashboard(repo: SQLiteJournalRepository, account: AccountListItem) -> None:
@@ -192,7 +185,7 @@ def render_framework_dashboard(repo: SQLiteJournalRepository, account: AccountLi
     readiness = service.readiness(account.id)
     st.markdown("#### Three-pillar monitor")
     st.caption(f"Psychology and System are trader-wide. Risk is scoped to {_account_label(account)}.")
-    _render_alerts(service, account.id)
+    _render_risk_configuration_notice(service, account.id)
     with st.container(horizontal=True, gap="small"):
         st.metric("Readiness", _score_text(readiness.score), readiness.status.capitalize(), border=True)
         st.metric("Risk state", _state_label(snapshot), border=True)
@@ -860,8 +853,8 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
 
 def _render_monitor(repo: SQLiteJournalRepository, account: AccountListItem) -> None:
     service = FrameworkService(repo)
-    st.markdown("#### Monitoring and alerts")
-    _render_alerts(service, account.id)
+    st.markdown("#### Monitoring")
+    _render_risk_configuration_notice(service, account.id)
     window = st.segmented_control("Rolling sample", [20, 30, 50], default=20, required=True, width="content", key=f"framework-window-{account.id}")
     scores = service.pillar_scores(account.id, window=int(window))
     readiness = service.readiness(account.id, window=int(window))

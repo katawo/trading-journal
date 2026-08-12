@@ -10,6 +10,7 @@ import streamlit as st
 
 from trading_journal.application.auto_sync import MT5AutoSyncResult, MT5AutoSyncService
 from trading_journal.application.dashboard import DashboardService
+from trading_journal.application.framework import FrameworkService
 from trading_journal.application.display_time import format_relative_time
 from trading_journal.application.mt5_paths import default_mt5_export_path, find_mt5_common_files
 from trading_journal.desktop import DesktopSyncControl, DesktopSyncStatusStore, desktop_runtime_paths, is_desktop_mode
@@ -20,6 +21,7 @@ from trading_journal.presentation.framework import (
     render_framework_dashboard,
     render_framework_page,
 )
+from trading_journal.presentation.global_alert_bubble import GlobalAlertItem, render_global_alert_bubble
 
 
 _CURRENCY_SYMBOLS = {"USD": "$", "EUR": "€", "GBP": "£", "JPY": "¥", "AUD": "A$", "CAD": "C$", "CHF": "CHF", "NZD": "NZ$"}
@@ -82,6 +84,38 @@ def apply_application_style() -> None:
         .stButton > button { border-radius: 6px; font-weight: 650; }
         </style>
         """)
+
+
+def render_global_framework_alert_bubble(repo: SQLiteJournalRepository) -> None:
+    """Persistent cross-account warning/critical alert entry point."""
+    severity_order = {"critical": 0, "warning": 1}
+    service = FrameworkService(repo)
+    alerts = [
+        (account, alert)
+        for account in repo.list_mt5_accounts()
+        for alert in service.framework_alerts(account.id)
+        if alert.severity in severity_order
+    ]
+    if not alerts:
+        return
+    alerts.sort(key=lambda item: (severity_order[item[1].severity], item[0].display_name, item[1].code))
+    critical = sum(alert.severity == "critical" for _, alert in alerts)
+    warnings = len(alerts) - critical
+    label = (
+        f"{critical} critical · {warnings} warning{'s' if warnings != 1 else ''}"
+        if critical
+        else f"{warnings} warning{'s' if warnings != 1 else ''}"
+    )
+    bubble_alerts: list[GlobalAlertItem] = [
+        {
+            "account_name": account.display_name,
+            "code": alert.code,
+            "message": alert.message,
+            "severity": alert.severity,
+        }
+        for account, alert in alerts
+    ]
+    render_global_alert_bubble(alerts=bubble_alerts, label=label, has_critical=bool(critical))
 
 
 def repository() -> SQLiteJournalRepository:
@@ -900,6 +934,7 @@ def main() -> None:
         position="sidebar",
     )
     page.run()
+    render_global_framework_alert_bubble(repo)
 
 
 if __name__ == "__main__":
