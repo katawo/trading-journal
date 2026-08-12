@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from uuid import uuid4
 from decimal import Decimal
 from pathlib import Path
 
@@ -22,6 +23,7 @@ from trading_journal.presentation.framework import (
     render_framework_page,
 )
 from trading_journal.presentation.global_alert_bubble import GlobalAlertItem, render_global_alert_bubble
+from trading_journal.presentation.desktop_reset_restart import render_desktop_reset_restart_bridge
 from trading_journal.presentation.i18n import (
     LANGUAGES,
     format_relative_time_localized,
@@ -575,8 +577,55 @@ def render_settings(repo: SQLiteJournalRepository) -> None:
             st.caption("The journal, MT5 sync worker, and your data are running locally on this computer. Closing this desktop application stops automatic MT5 imports.")
             if st.button("Quit desktop journal", icon=":material/power_settings_new:", type="primary"):
                 paths = desktop_runtime_paths()
-                DesktopSyncControl(paths.sync_request_path, paths.shutdown_request_path).request_shutdown()
+                DesktopSyncControl(paths.sync_request_path, paths.shutdown_request_path, paths.reset_request_path).request_shutdown()
                 st.success("Closing the local Trading Journal…")
+        render_desktop_database_reset()
+
+
+def render_desktop_database_reset() -> None:
+    """Request a supervisor-owned reset; the browser never deletes SQLite files."""
+
+    pending_reset_id = st.session_state.get("desktop-database-reset-pending")
+    if pending_reset_id:
+        st.info("Restarting Trading Journal. This page will reload automatically when the clean journal is ready.")
+        ready_reset_id = render_desktop_reset_restart_bridge(pending_reset_id)
+        if ready_reset_id == pending_reset_id and st.session_state.get("desktop-database-reset-dispatched") != pending_reset_id:
+            request_desktop_database_reset()
+            st.session_state["desktop-database-reset-dispatched"] = pending_reset_id
+        return
+
+    with st.container(border=True):
+        st.markdown("##### Reset local database")
+        st.warning("This permanently removes all local accounts, imports, reviews, policies, strategies, and framework evidence. MT5 export files and desktop logs are kept.")
+        confirmation = st.text_input("Type RESET to confirm", key="desktop-database-reset-confirmation")
+        if st.button(
+            "Reset local database",
+            icon=":material/delete_forever:",
+            type="primary",
+            disabled=confirmation.strip() != "RESET",
+            key="desktop-database-reset",
+        ):
+            st.session_state["desktop-database-reset-pending"] = uuid4().hex
+            st.session_state.pop("desktop-database-reset-dispatched", None)
+            st.rerun()
+
+
+def request_desktop_database_reset() -> None:
+    """Send the reset signal only after the browser restart bridge is ready."""
+
+    paths = desktop_runtime_paths()
+    DesktopSyncControl(paths.sync_request_path, paths.shutdown_request_path, paths.reset_request_path).request_reset()
+
+
+def render_desktop_database_diagnostic(error: Exception) -> None:
+    """Keep unexpected local database failures in the browser, without resetting data."""
+
+    st.set_page_config(page_title="Trading Journal recovery", page_icon="📈", layout="wide")
+    st.title("Trading Journal recovery")
+    st.error("Trading Journal could not open its local database.")
+    st.caption("No data was changed. Inspect desktop.log in the Trading Journal data directory before taking further action.")
+    st.code(str(error), language="text")
+    print("Trading Journal diagnostic recovery screen active.", flush=True)
 
 
 def render_strategy_settings(repo: SQLiteJournalRepository) -> None:
@@ -993,9 +1042,22 @@ def main() -> None:
     try:
         repo = repository()
     except JournalDatabaseResetRequiredError as error:
+        if is_desktop_mode():
+            st.set_page_config(page_title="Trading Journal recovery", page_icon="📈", layout="wide")
+            st.title("Trading Journal recovery")
+            st.error(str(error))
+            st.caption("Reset the local database to start a clean journal. This cannot be undone.")
+            render_desktop_database_reset()
+            print("Trading Journal reset recovery screen active.", flush=True)
+            return
         st.error(str(error))
         st.code("make reset-db CONFIRM_RESET=yes", language="bash")
         return
+    except Exception as error:
+        if is_desktop_mode():
+            render_desktop_database_diagnostic(error)
+            return
+        raise
     settings = repo.get_journal_settings()
     st.session_state.setdefault("display_language", settings.display_language)
     install_streamlit_translations()

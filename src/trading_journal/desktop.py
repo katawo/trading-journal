@@ -29,9 +29,11 @@ from trading_journal.infrastructure.sqlite_repository import SQLiteJournalReposi
 APPLICATION_NAME = "TradingJournal"
 DESKTOP_MODE_ENVIRONMENT_KEY = "TRADING_JOURNAL_DESKTOP_MODE"
 DESKTOP_DATA_DIRECTORY_ENVIRONMENT_KEY = "TRADING_JOURNAL_DESKTOP_DATA_DIR"
+DESKTOP_PORT_ENVIRONMENT_KEY = "TRADING_JOURNAL_DESKTOP_PORT"
 SYNC_STATUS_ENVIRONMENT_KEY = "TRADING_JOURNAL_SYNC_STATUS"
 SYNC_REQUEST_ENVIRONMENT_KEY = "TRADING_JOURNAL_SYNC_REQUEST"
 SHUTDOWN_REQUEST_ENVIRONMENT_KEY = "TRADING_JOURNAL_SHUTDOWN_REQUEST"
+RESET_REQUEST_ENVIRONMENT_KEY = "TRADING_JOURNAL_RESET_REQUEST"
 _DEFAULT_SYNC_INTERVAL_SECONDS = 5.0
 
 
@@ -44,6 +46,7 @@ class DesktopRuntimePaths:
     sync_status_path: Path
     sync_request_path: Path
     shutdown_request_path: Path
+    reset_request_path: Path
     lock_path: Path
     log_path: Path
 
@@ -92,6 +95,7 @@ def desktop_runtime_paths(
         sync_status_path=Path(env.get(SYNC_STATUS_ENVIRONMENT_KEY, str(data_directory / "mt5-sync-status.json"))).expanduser(),
         sync_request_path=Path(env.get(SYNC_REQUEST_ENVIRONMENT_KEY, str(data_directory / "mt5-sync.request"))).expanduser(),
         shutdown_request_path=Path(env.get(SHUTDOWN_REQUEST_ENVIRONMENT_KEY, str(data_directory / "shutdown.request"))).expanduser(),
+        reset_request_path=Path(env.get(RESET_REQUEST_ENVIRONMENT_KEY, str(data_directory / "reset.request"))).expanduser(),
         lock_path=data_directory / "desktop.lock",
         log_path=data_directory / "desktop.log",
     )
@@ -132,6 +136,7 @@ def desktop_environment(paths: DesktopRuntimePaths) -> dict[str, str]:
             SYNC_STATUS_ENVIRONMENT_KEY: str(paths.sync_status_path),
             SYNC_REQUEST_ENVIRONMENT_KEY: str(paths.sync_request_path),
             SHUTDOWN_REQUEST_ENVIRONMENT_KEY: str(paths.shutdown_request_path),
+            RESET_REQUEST_ENVIRONMENT_KEY: str(paths.reset_request_path),
         }
     )
     return environment
@@ -244,17 +249,21 @@ class DesktopSyncStatusStore:
 
 
 class DesktopSyncControl:
-    """Small file-based signals between the browser UI and the local worker."""
+    """Small file-based signals between the browser UI and the desktop supervisor."""
 
-    def __init__(self, request_path: Path, shutdown_path: Path) -> None:
+    def __init__(self, request_path: Path, shutdown_path: Path, reset_path: Path | None = None) -> None:
         self._request_path = request_path
         self._shutdown_path = shutdown_path
+        self._reset_path = reset_path or shutdown_path.with_name("reset.request")
 
     def request_sync(self) -> None:
         self._write_request(self._request_path)
 
     def request_shutdown(self) -> None:
         self._write_request(self._shutdown_path)
+
+    def request_reset(self) -> None:
+        self._write_request(self._reset_path)
 
     def consume_sync_request(self) -> bool:
         return self._consume_request(self._request_path)
@@ -263,10 +272,13 @@ class DesktopSyncControl:
         return self._shutdown_path.is_file()
 
     def clear_shutdown_request(self) -> None:
-        try:
-            self._shutdown_path.unlink()
-        except FileNotFoundError:
-            pass
+        self._clear_request(self._shutdown_path)
+
+    def consume_reset_request(self) -> bool:
+        return self._consume_request(self._reset_path)
+
+    def clear_reset_request(self) -> None:
+        self._clear_request(self._reset_path)
 
     @staticmethod
     def _write_request(path: Path) -> None:
@@ -282,6 +294,13 @@ class DesktopSyncControl:
         except FileNotFoundError:
             return False
         return True
+
+    @staticmethod
+    def _clear_request(path: Path) -> None:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 class DesktopSyncWorker:
@@ -379,6 +398,21 @@ def _available_loopback_port() -> int:
         return int(socket_handle.getsockname()[1])
 
 
+def desktop_server_port(environment: dict[str, str] | None = None) -> int:
+    """Use a requested loopback port when a launcher or smoke test needs one."""
+
+    configured = (os.environ if environment is None else environment).get(DESKTOP_PORT_ENVIRONMENT_KEY, "").strip()
+    if not configured:
+        return _available_loopback_port()
+    try:
+        port = int(configured)
+    except ValueError as error:
+        raise RuntimeError(f"{DESKTOP_PORT_ENVIRONMENT_KEY} must be a valid TCP port") from error
+    if not 1 <= port <= 65535:
+        raise RuntimeError(f"{DESKTOP_PORT_ENVIRONMENT_KEY} must be between 1 and 65535")
+    return port
+
+
 def _child_command(mode: str, *arguments: str) -> list[str]:
     if getattr(sys, "frozen", False):
         return [sys.executable, mode, *arguments]
@@ -407,6 +441,21 @@ def _terminate(process: subprocess.Popen[Any] | None) -> None:
         process.wait(timeout=8)
     except subprocess.TimeoutExpired:
         process.kill()
+
+
+def reset_desktop_database(paths: DesktopRuntimePaths) -> None:
+    """Remove only replaceable local journal state after all children stop."""
+
+    for path in (paths.database_path, Path(f"{paths.database_path}-wal"), Path(f"{paths.database_path}-shm")):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+    for path in (paths.sync_status_path, paths.sync_request_path):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def run_streamlit_server(port: int) -> None:
@@ -462,54 +511,73 @@ def start_desktop_application() -> int:
     ensure_desktop_runtime_paths(paths)
     lock = DesktopInstanceLock(paths.lock_path)
     lock.acquire()
-    control = DesktopSyncControl(paths.sync_request_path, paths.shutdown_request_path)
+    control = DesktopSyncControl(paths.sync_request_path, paths.shutdown_request_path, paths.reset_request_path)
     control.clear_shutdown_request()
+    control.clear_reset_request()
     environment = desktop_environment(paths)
-    port = _available_loopback_port()
-    url = f"http://127.0.0.1:{port}"
-    server_process: subprocess.Popen[Any] | None = None
-    worker_process: subprocess.Popen[Any] | None = None
     log_handle = paths.log_path.open("a", encoding="utf-8")
     try:
-        # Create and validate the database before two child processes use it.
-        # Subsequent writes use SQLite WAL and a bounded busy timeout.
-        repository = SQLiteJournalRepository(paths.database_path)
-        repository.initialize()
-        worker_process = subprocess.Popen(
-            _child_command(
-                "--sync-worker",
-                "--database",
-                str(paths.database_path),
-                "--status",
-                str(paths.sync_status_path),
-                "--request",
-                str(paths.sync_request_path),
-                "--shutdown-request",
-                str(paths.shutdown_request_path),
-                "--parent-pid",
-                str(os.getpid()),
-            ),
-            env=environment,
-            cwd=application_resource_root(),
-            stdout=log_handle,
-            stderr=subprocess.STDOUT,
-        )
-        server_process = subprocess.Popen(
-            _child_command("--run-server", "--port", str(port)),
-            env=environment,
-            cwd=application_resource_root(),
-            stdout=log_handle,
-            stderr=subprocess.STDOUT,
-        )
-        if not _wait_for_server(url, server_process):
-            raise RuntimeError(f"Trading Journal could not start. See {paths.log_path}")
-        webbrowser.open(url, new=1)
-        while server_process.poll() is None and not control.shutdown_requested():
-            time.sleep(0.25)
-        return 0
+        port = desktop_server_port()
+        url = f"http://127.0.0.1:{port}"
+        open_browser = True
+        while True:
+            server_process: subprocess.Popen[Any] | None = None
+            worker_process: subprocess.Popen[Any] | None = None
+            try:
+                # An incompatible database still gets a local recovery UI, but
+                # never starts a worker that could touch the legacy schema.
+                database_ready = True
+                try:
+                    SQLiteJournalRepository(paths.database_path).initialize()
+                except Exception as error:
+                    database_ready = False
+                    log_handle.write(f"Desktop database startup check failed: {error}\n")
+                    log_handle.flush()
+                if database_ready:
+                    worker_process = subprocess.Popen(
+                        _child_command(
+                            "--sync-worker",
+                            "--database",
+                            str(paths.database_path),
+                            "--status",
+                            str(paths.sync_status_path),
+                            "--request",
+                            str(paths.sync_request_path),
+                            "--shutdown-request",
+                            str(paths.shutdown_request_path),
+                            "--parent-pid",
+                            str(os.getpid()),
+                        ),
+                        env=environment,
+                        cwd=application_resource_root(),
+                        stdout=log_handle,
+                        stderr=subprocess.STDOUT,
+                    )
+                server_process = subprocess.Popen(
+                    _child_command("--run-server", "--port", str(port)),
+                    env=environment,
+                    cwd=application_resource_root(),
+                    stdout=log_handle,
+                    stderr=subprocess.STDOUT,
+                )
+                if not _wait_for_server(url, server_process):
+                    raise RuntimeError(f"Trading Journal could not start. See {paths.log_path}")
+                if open_browser:
+                    webbrowser.open(url, new=1)
+                    open_browser = False
+                while server_process.poll() is None and not control.shutdown_requested() and not control.consume_reset_request():
+                    time.sleep(0.25)
+                if control.shutdown_requested():
+                    return 0
+                if server_process.poll() is not None:
+                    return 0
+            finally:
+                _terminate(server_process)
+                _terminate(worker_process)
+            # The supervisor exclusively owns deletion, after both SQLite
+            # processes have stopped, then starts a fresh journal at the same URL.
+            reset_desktop_database(paths)
     finally:
-        _terminate(server_process)
-        _terminate(worker_process)
         log_handle.close()
         lock.release()
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
+import pytest
 from streamlit.testing.v1 import AppTest
 
 from trading_journal.application.auto_sync import MT5AutoSyncResult
@@ -11,7 +12,9 @@ from trading_journal.desktop import (
     DesktopSyncStatusStore,
     DesktopSyncWorker,
     desktop_data_directory,
+    desktop_server_port,
     desktop_runtime_paths,
+    reset_desktop_database,
     self_check,
 )
 from trading_journal.infrastructure.sqlite_repository import SQLiteJournalRepository
@@ -106,6 +109,14 @@ def test_desktop_data_directory_uses_platform_conventions_and_override(tmp_path:
     assert desktop_data_directory(environment={"TRADING_JOURNAL_DESKTOP_DATA_DIR": str(tmp_path / "journal")}, home=tmp_path, platform="linux") == tmp_path / "journal"
 
 
+def test_desktop_server_port_uses_an_optional_explicit_port() -> None:
+    assert desktop_server_port({"TRADING_JOURNAL_DESKTOP_PORT": "18501"}) == 18501
+    with pytest.raises(RuntimeError, match="valid TCP port"):
+        desktop_server_port({"TRADING_JOURNAL_DESKTOP_PORT": "not-a-port"})
+    with pytest.raises(RuntimeError, match="between 1 and 65535"):
+        desktop_server_port({"TRADING_JOURNAL_DESKTOP_PORT": "70000"})
+
+
 def test_desktop_status_preserves_last_import_and_rebuilds_results(tmp_path: Path) -> None:
     store = DesktopSyncStatusStore(tmp_path / "status.json")
     imported = MT5AutoSyncResult("Primary", "123456", "DemoBroker-Live", "positions.csv", "imported", created_count=2, updated_count=1)
@@ -120,7 +131,7 @@ def test_desktop_status_preserves_last_import_and_rebuilds_results(tmp_path: Pat
 
 
 def test_desktop_sync_control_consumes_a_manual_request_and_keeps_shutdown_separate(tmp_path: Path) -> None:
-    control = DesktopSyncControl(tmp_path / "sync.request", tmp_path / "shutdown.request")
+    control = DesktopSyncControl(tmp_path / "sync.request", tmp_path / "shutdown.request", tmp_path / "reset.request")
 
     control.request_sync()
     assert control.consume_sync_request() is True
@@ -131,6 +142,36 @@ def test_desktop_sync_control_consumes_a_manual_request_and_keeps_shutdown_separ
     assert control.shutdown_requested() is True
     control.clear_shutdown_request()
     assert control.shutdown_requested() is False
+
+    control.request_reset()
+    assert control.consume_reset_request() is True
+    assert control.consume_reset_request() is False
+
+
+def test_reset_desktop_database_removes_only_journal_database_state(tmp_path: Path) -> None:
+    paths = desktop_runtime_paths(environment={"TRADING_JOURNAL_DESKTOP_DATA_DIR": str(tmp_path / "desktop-data")}, home=tmp_path, platform="linux")
+    paths.data_directory.mkdir(parents=True)
+    for path in (
+        paths.database_path,
+        Path(f"{paths.database_path}-wal"),
+        Path(f"{paths.database_path}-shm"),
+        paths.sync_status_path,
+        paths.sync_request_path,
+    ):
+        path.write_text("replaceable", encoding="utf-8")
+    paths.log_path.write_text("keep", encoding="utf-8")
+    preserved = paths.data_directory / "positions.csv"
+    preserved.write_text("keep", encoding="utf-8")
+
+    reset_desktop_database(paths)
+
+    assert not paths.database_path.exists()
+    assert not Path(f"{paths.database_path}-wal").exists()
+    assert not Path(f"{paths.database_path}-shm").exists()
+    assert not paths.sync_status_path.exists()
+    assert not paths.sync_request_path.exists()
+    assert paths.log_path.read_text(encoding="utf-8") == "keep"
+    assert preserved.read_text(encoding="utf-8") == "keep"
 
 
 def test_desktop_worker_uses_the_existing_hash_based_mt5_importer(tmp_path: Path) -> None:

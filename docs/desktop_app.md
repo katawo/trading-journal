@@ -31,6 +31,10 @@ This directory contains `trading_journal.db`, the current sync status, and `desk
 
 Use **Settings → Quit desktop journal** before replacing the application bundle or copying a backup. To recover from a failed launch, inspect `desktop.log`; deleting only `mt5-sync-status.json` is safe, but deleting the SQLite database permanently removes the local journal.
 
+## Reset a local database
+
+If the journal cannot open an older incompatible database, or you intentionally want a clean start, use **Settings → Reset local database**. Type `RESET` to enable the action. The desktop supervisor stops the local server and MT5 worker, deletes `trading_journal.db` and its SQLite sidecars, clears the transient sync status, then restarts with a clean database. MT5 export CSVs, `desktop.log`, and the application bundle are preserved. This is irreversible, so copy the data directory while the app is closed if you may need the old journal later.
+
 ## Development and releases
 
 For source development, run `make setup` then `make desktop`. Run `make bundle` to build a portable folder and archive for the current operating system. GitHub Actions builds separate Windows and Linux archives whenever a `v*` tag is pushed.
