@@ -1,0 +1,272 @@
+@startuml
+title Trading Journal — current SQLite schema
+
+hide methods
+hide stereotypes
+skinparam linetype ortho
+skinparam shadowing false
+skinparam defaultFontName Arial
+
+legend top left
+  * primary key
+  + foreign key
+  UQ unique constraint / unique index
+  Types reflect the SQLAlchemy SQLite model.
+endlegend
+
+entity "journal_settings" as journal_settings {
+  * id : INTEGER
+  --
+  reporting_time_basis : VARCHAR(16)
+  default_strategy_name : VARCHAR(100)?
+  + default_strategy_profile_id : INTEGER?
+}
+
+entity "mt5_accounts" as mt5_accounts {
+  * id : INTEGER
+  --
+  display_name : VARCHAR(100)
+  login : VARCHAR(64) <<UQ>>
+  broker_server : VARCHAR(255)
+  account_currency : VARCHAR(3)
+  opening_balance : VARCHAR?
+  latest_mt5_balance : VARCHAR?
+  latest_server_utc_offset_minutes : INTEGER?
+  export_file_path : VARCHAR(1024)
+  active : BOOLEAN
+}
+
+entity "strategy_profiles" as strategy_profiles {
+  * id : INTEGER
+  --
+  name : VARCHAR(100)
+  normalized_name : VARCHAR(100) <<UQ>>
+  description : VARCHAR(2000)?
+  backtest_start_date : VARCHAR(10)?
+  backtest_end_date : VARCHAR(10)?
+  backtest_trade_count : INTEGER?
+  backtest_win_rate : VARCHAR?
+  backtest_expectancy_r : VARCHAR?
+  backtest_net_r : VARCHAR?
+  backtest_notes : VARCHAR(2000)?
+}
+
+entity "strategy_magic_numbers" as strategy_magic_numbers {
+  * id : INTEGER
+  --
+  + strategy_profile_id : INTEGER
+  magic_number : VARCHAR(32) <<UQ>>
+}
+
+entity "logical_trades" as logical_trades {
+  * id : INTEGER
+  --
+  + mt5_account_id : INTEGER
+  display_label : VARCHAR(160)?
+  created_at : VARCHAR(64)
+}
+
+entity "account_risk_policies" as account_risk_policies {
+  * id : INTEGER
+  --
+  + mt5_account_id : INTEGER
+  version : INTEGER
+  active : BOOLEAN
+  risk_per_trade_percent : VARCHAR
+  maximum_risk_per_trade_percent : VARCHAR
+  daily_loss_limit_r : VARCHAR
+  weekly_loss_limit_r : VARCHAR
+  max_drawdown_percent : VARCHAR
+  max_open_risk_r : VARCHAR
+  max_consecutive_losses : INTEGER
+  minimum_rr : VARCHAR
+  correlation_policy : VARCHAR(500)?
+  pretrade_balance_auto_evidence_enabled : BOOLEAN
+  created_at : VARCHAR(64)
+  --
+  UQ(mt5_account_id, version)
+}
+
+entity "trades" as trades {
+  * id : INTEGER
+  --
+  source : VARCHAR(10)
+  + mt5_account_id : INTEGER?
+  + logical_trade_id : INTEGER
+  mt5_position_id : VARCHAR(64)?
+  source_updated_at : VARCHAR(64)
+  symbol : VARCHAR(32)
+  direction : VARCHAR(8)
+  entry_time : VARCHAR(64)
+  exit_time : VARCHAR(64)
+  server_utc_offset_minutes : INTEGER
+  entry_price : VARCHAR
+  exit_price : VARCHAR
+  volume : VARCHAR
+  gross_pnl : VARCHAR
+  commission : VARCHAR
+  swap : VARCHAR
+  fees : VARCHAR
+  net_pnl : VARCHAR
+  entry_stop_price : VARCHAR?
+  entry_target_price : VARCHAR?
+  close_stop_price : VARCHAR?
+  entry_magic_number : VARCHAR(32)?
+  entry_deal_count : INTEGER?
+  exit_reason : VARCHAR(32)?
+  initial_risk_amount : VARCHAR?
+  initial_reward_amount : VARCHAR?
+  pretrade_account_balance : VARCHAR?
+  + auto_risk_policy_id : INTEGER?
+  --
+  UQ(mt5_account_id, mt5_position_id)
+}
+
+entity "mt5_import_runs" as mt5_import_runs {
+  * id : INTEGER
+  --
+  + mt5_account_id : INTEGER
+  source_file_path : VARCHAR(1024)
+  source_file_hash : VARCHAR(64)
+  status : VARCHAR(16)
+  created_count : INTEGER
+  updated_count : INTEGER
+  skipped_count : INTEGER
+  error_count : INTEGER
+  created_at : VARCHAR(64)
+}
+
+entity "post_trade_assessments" as post_trade_assessments {
+  * id : INTEGER
+  --
+  + mt5_account_id : INTEGER
+  + logical_trade_id : INTEGER
+  + risk_policy_id : INTEGER?
+  + strategy_profile_id : INTEGER
+  strategy_snapshot : TEXT
+  criterion_grades : TEXT
+  violation_codes : TEXT
+  hard_rule_codes : TEXT
+  declared_actual_risk_amount : VARCHAR?
+  post_review_note : TEXT
+  corrective_action : TEXT?
+  assessed_position_ids : TEXT
+  assessed_trade_label : VARCHAR(160)
+  superseded_at : VARCHAR(64)?
+  superseded_reason : VARCHAR(255)?
+  created_at : VARCHAR(64)
+  updated_at : VARCHAR(64)
+  version : INTEGER
+  --
+  UQ(logical_trade_id) WHERE superseded_at IS NULL
+}
+
+entity "post_trade_assessment_revisions" as post_trade_assessment_revisions {
+  * id : INTEGER
+  --
+  + post_trade_assessment_id : INTEGER
+  version : INTEGER
+  risk_policy_id : INTEGER?
+  strategy_profile_id : INTEGER
+  strategy_snapshot : TEXT
+  criterion_grades : TEXT
+  violation_codes : TEXT
+  hard_rule_codes : TEXT
+  declared_actual_risk_amount : VARCHAR?
+  post_review_note : TEXT
+  corrective_action : TEXT?
+  archived_at : VARCHAR(64)
+  --
+  UQ(post_trade_assessment_id, version)
+}
+
+entity "auto_review_approvals" as auto_review_approvals {
+  * id : INTEGER
+  --
+  + mt5_account_id : INTEGER
+  + logical_trade_id : INTEGER
+  + risk_policy_id : INTEGER?
+  risk_evidence_source : VARCHAR(64)
+  risk_policy_state : VARCHAR(32)
+  actual_risk_amount : VARCHAR?
+  criterion_grades : TEXT
+  superseded_at : VARCHAR(64)?
+  superseded_reason : VARCHAR(255)?
+  created_at : VARCHAR(64)
+  --
+  UQ(logical_trade_id) WHERE superseded_at IS NULL
+}
+
+entity "framework_rule_settings" as framework_rule_settings {
+  * id : INTEGER
+  --
+  oversized_revenge_hard : BOOLEAN
+  mandatory_setup_hard : BOOLEAN
+  stop_widened_hard : BOOLEAN
+  shutdown_breach_hard : BOOLEAN
+  repeated_critical_threshold : INTEGER
+}
+
+entity "framework_period_reviews" as framework_period_reviews {
+  * id : INTEGER
+  --
+  + mt5_account_id : INTEGER
+  cadence : VARCHAR(12)
+  period_start : VARCHAR(10)
+  period_end : VARCHAR(10)
+  psychology_score : VARCHAR?
+  risk_score : VARCHAR?
+  system_score : VARCHAR?
+  readiness_score : VARCHAR?
+  alert_codes : TEXT
+  recurring_issues : TEXT
+  review_note : TEXT
+  priority_action : TEXT
+  created_at : VARCHAR(64)
+  --
+  UQ(mt5_account_id, cadence, period_start, period_end)
+}
+
+entity "pillar_roadmap_evidence" as pillar_roadmap_evidence {
+  * id : INTEGER
+  --
+  scope_key : VARCHAR(80)
+  pillar : VARCHAR(24)
+  level : INTEGER
+  item_key : VARCHAR(80)
+  completed : BOOLEAN
+  evidence_note : TEXT?
+  updated_at : VARCHAR(64)
+  --
+  UQ(scope_key, pillar, level, item_key)
+}
+
+journal_settings }o--|| strategy_profiles : default strategy profile
+strategy_profiles ||--o{ strategy_magic_numbers : maps
+mt5_accounts ||--o{ logical_trades : owns
+mt5_accounts ||--o{ trades : imports
+logical_trades ||--o{ trades : groups
+mt5_accounts ||--o{ mt5_import_runs : records
+mt5_accounts ||--o{ account_risk_policies : versions
+account_risk_policies ||--o{ trades : auto-applied to
+mt5_accounts ||--o{ post_trade_assessments : assesses
+logical_trades ||--o{ post_trade_assessments : reviewed by
+account_risk_policies ||--o{ post_trade_assessments : baseline for
+strategy_profiles ||--o{ post_trade_assessments : evaluated against
+post_trade_assessments ||--o{ post_trade_assessment_revisions : archives
+mt5_accounts ||--o{ framework_period_reviews : summarizes
+
+note bottom of post_trade_assessment_revisions
+  risk_policy_id and strategy_profile_id are historical
+  snapshot values, not database foreign keys.
+end note
+
+note bottom of pillar_roadmap_evidence
+  Standalone progress evidence, scoped by scope_key.
+end note
+
+note bottom of framework_rule_settings
+  Singleton-style trader-wide configuration;
+  no foreign-key relationships.
+end note
+@enduml

@@ -56,8 +56,73 @@ bool ContainsPosition(const ulong &positions[],const ulong position_id)
    return false;
   }
 
+// Reconstruct the balance immediately before a position's first entry from
+// MT5's complete deal ledger. A same-millisecond competing cash movement has
+// no reliable order in exported history, so report no value rather than guess.
+bool PreTradeBalance(const ulong position_id,const double current_balance,double &balance_before)
+  {
+   if(!HistorySelect(0,TimeCurrent()))
+      return false;
+   ulong tickets[];
+   long times[];
+   double cash_flows[];
+   ulong first_ticket=0;
+   long first_time=0;
+   for(uint index=0;index<HistoryDealsTotal();index++)
+     {
+      ulong ticket=HistoryDealGetTicket(index);
+      if(ticket==0)
+         continue;
+      long time_msc=HistoryDealGetInteger(ticket,DEAL_TIME_MSC);
+      long deal_type=HistoryDealGetInteger(ticket,DEAL_TYPE);
+      long entry=HistoryDealGetInteger(ticket,DEAL_ENTRY);
+      ulong deal_position=(ulong)HistoryDealGetInteger(ticket,DEAL_POSITION_ID);
+      if(deal_position==position_id &&
+         (deal_type==DEAL_TYPE_BUY || deal_type==DEAL_TYPE_SELL) &&
+         entry==DEAL_ENTRY_IN &&
+         (first_ticket==0 || time_msc<first_time || (time_msc==first_time && ticket<first_ticket)))
+        {
+         first_ticket=ticket;
+         first_time=time_msc;
+        }
+      int size=ArraySize(tickets);
+      ArrayResize(tickets,size+1);
+      ArrayResize(times,size+1);
+      ArrayResize(cash_flows,size+1);
+      tickets[size]=ticket;
+      times[size]=time_msc;
+      cash_flows[size]=HistoryDealGetDouble(ticket,DEAL_PROFIT)+HistoryDealGetDouble(ticket,DEAL_COMMISSION)+HistoryDealGetDouble(ticket,DEAL_SWAP)+HistoryDealGetDouble(ticket,DEAL_FEE);
+     }
+   if(first_ticket==0)
+      return false;
+   for(int left=0;left<ArraySize(tickets)-1;left++)
+      for(int right=left+1;right<ArraySize(tickets);right++)
+         if(times[right]<times[left] || (times[right]==times[left] && tickets[right]<tickets[left]))
+           {
+            ulong ticket=tickets[left]; tickets[left]=tickets[right]; tickets[right]=ticket;
+            long time_msc=times[left]; times[left]=times[right]; times[right]=time_msc;
+            double cash=cash_flows[left]; cash_flows[left]=cash_flows[right]; cash_flows[right]=cash;
+           }
+   for(int index=0;index<ArraySize(tickets);index++)
+      if(times[index]==first_time && tickets[index]!=first_ticket && MathAbs(cash_flows[index])>0.00000001)
+         return false;
+   double running=current_balance;
+   for(int index=ArraySize(tickets)-1;index>=0;index--)
+     {
+      if(tickets[index]==first_ticket)
+        {
+         balance_before=running-cash_flows[index];
+         return true;
+        }
+      running-=cash_flows[index];
+     }
+   return false;
+  }
+
 bool ExportPosition(const ulong position_id,const int handle,const double account_balance,const int server_utc_offset_minutes)
   {
+   double pretrade_balance=0.0;
+   bool has_pretrade_balance=PreTradeBalance(position_id,account_balance,pretrade_balance);
    if(!HistorySelectByPosition(position_id))
       return false;
 
@@ -148,7 +213,7 @@ bool ExportPosition(const ulong position_id,const int handle,const double accoun
          initial_reward=MathAbs(calculated);
      }
    FileWrite(handle,
-             4,
+             5,
              (string)AccountInfoInteger(ACCOUNT_LOGIN),
              AccountInfoString(ACCOUNT_SERVER),
              AccountInfoString(ACCOUNT_CURRENCY),
@@ -174,7 +239,8 @@ bool ExportPosition(const ulong position_id,const int handle,const double accoun
              DealReasonText(exit_reason),
              OptionalNumber(initial_risk,2),
              OptionalNumber(initial_reward,2),
-             DoubleToString(account_balance,2));
+             DoubleToString(account_balance,2),
+             has_pretrade_balance ? DoubleToString(pretrade_balance,2) : "");
    return true;
   }
 
@@ -213,7 +279,7 @@ void OnStart()
      }
    double account_balance=AccountInfoDouble(ACCOUNT_BALANCE);
    int server_utc_offset_minutes=ServerUtcOffsetMinutes();
-   FileWrite(handle,"schema_version","account_login","broker_server","account_currency","position_id","symbol","direction","entry_time","exit_time","server_utc_offset_minutes","entry_price","exit_price","volume","gross_pnl","commission","swap","fees","net_pnl","entry_stop_price","entry_target_price","close_stop_price","entry_magic_number","entry_deal_count","exit_reason","initial_risk_amount","initial_reward_amount","account_balance");
+   FileWrite(handle,"schema_version","account_login","broker_server","account_currency","position_id","symbol","direction","entry_time","exit_time","server_utc_offset_minutes","entry_price","exit_price","volume","gross_pnl","commission","swap","fees","net_pnl","entry_stop_price","entry_target_price","close_stop_price","entry_magic_number","entry_deal_count","exit_reason","initial_risk_amount","initial_reward_amount","account_balance","pretrade_account_balance");
 
    int exported=0;
    for(int index=0;index<ArraySize(position_ids);index++)

@@ -239,7 +239,7 @@ def test_dashboard_builds_kpis_and_time_series_from_effective_risk(tmp_path: Pat
     assert report.win_rate == "50"
     assert [point.cumulative_pnl for point in report.cumulative] == ["20", "15"]
     assert [point.cumulative_r for point in report.cumulative] == ["2", "1.5"]
-    assert [(item.strategy, item.net_pnl, item.total_r) for item in report.by_strategy] == [("Untagged", "15", "1.5")]
+    assert [(item.strategy, item.net_pnl, item.total_r) for item in report.by_strategy] == [("Journal default", "15", "1.5")]
 
 
 def test_dashboard_collapses_equity_curve_to_one_point_per_day(tmp_path: Path) -> None:

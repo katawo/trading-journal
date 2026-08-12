@@ -37,7 +37,7 @@ def _repository(tmp_path):
     return repository, account.id
 
 
-def _policy(repository: SQLiteJournalRepository, account_id: int):
+def _policy(repository: SQLiteJournalRepository, account_id: int, *, pretrade_balance_auto_evidence_enabled: bool = False):
     return repository.save_account_risk_policy(
         account_id=account_id,
         standard_risk_per_trade_percent="1",
@@ -49,6 +49,7 @@ def _policy(repository: SQLiteJournalRepository, account_id: int):
         max_consecutive_losses=3,
         minimum_rr="1.5",
         correlation_policy=None,
+        pretrade_balance_auto_evidence_enabled=pretrade_balance_auto_evidence_enabled,
     )
 
 
@@ -79,12 +80,13 @@ def _import_position(
     entry_stop_price: str | None = None,
     close_stop_price: str | None = None,
     account_balance: str | None = None,
+    pretrade_account_balance: str | None = None,
 ) -> int:
     repository.upsert_mt5_positions(
         account_id,
         [
             MT5PositionExport(
-                schema_version=3,
+                schema_version=5,
                 account_login="123456",
                 broker_server="DemoBroker-Live",
                 account_currency="USD",
@@ -107,6 +109,7 @@ def _import_position(
                 close_stop_price=close_stop_price,
                 entry_deal_count=1,
                 account_balance=account_balance,
+                pretrade_account_balance=pretrade_account_balance,
             )
         ],
         "positions.csv",
@@ -267,7 +270,7 @@ def test_low_raw_score_is_not_classified_as_a_good_trade_without_a_hard_rule(tmp
     assert score.classification == "Needs improvement Win"
 
 
-def test_automatic_risk_evidence_is_advisory_and_never_creates_a_pillar_score(tmp_path) -> None:
+def test_within_policy_automatic_risk_is_a_neutral_auto_review(tmp_path) -> None:
     repository, account_id = _repository(tmp_path)
     _policy(repository, account_id)
     trade_id = _import_position(repository, account_id, initial_risk_amount="8", initial_reward_amount="16", entry_stop_price="3290")
@@ -276,10 +279,13 @@ def test_automatic_risk_evidence_is_advisory_and_never_creates_a_pillar_score(tm
     score = next(item for item in service.trade_process_scores(account_id) if item.trade_id == trade_id)
     pillars = service.pillar_scores(account_id)
 
-    assert score.assessment_state == "automatic_evidence"
+    assert score.assessment_state == "reviewed"
+    assert score.review_kind == "auto_review"
     assert score.auto_risk.state == "within_policy"
-    assert score.risk_score is score.overall_score is None
-    assert all(item.score is None for item in pillars)
+    assert score.psychology_score == "50"
+    assert score.risk_score == "67.5"
+    assert score.system_score == "50"
+    assert all(item.reviewed_total == 1 for item in pillars)
 
 
 def test_risk_snapshot_clears_an_expired_daily_limit_breach(tmp_path) -> None:
@@ -362,17 +368,50 @@ def test_confirmed_shutdown_breach_is_a_hard_process_failure(tmp_path) -> None:
     assert "Traded after hard shutdown" in (_process_failure_detail(score) or "")
 
 
-def test_real_loss_and_live_balance_evidence_have_explicit_confidence(tmp_path) -> None:
+def test_real_loss_and_disabled_pretrade_balance_leave_no_profitable_no_sl_evidence(tmp_path) -> None:
     repository, account_id = _repository(tmp_path)
     _policy(repository, account_id)
     loser = _import_position(repository, account_id, position_id="loss", net_pnl="-8")
-    winner = _import_position(repository, account_id, position_id="win", net_pnl="8", account_balance="1000")
+    winner = _import_position(repository, account_id, position_id="win", net_pnl="8", pretrade_account_balance="1000")
     scores = {item.trade_id: item for item in FrameworkService(repository).trade_process_scores(account_id)}
 
     assert scores[loser].auto_risk.risk_basis == "real_loss_sl"
     assert scores[loser].auto_risk.confidence == "inferred"
-    assert scores[winner].auto_risk.risk_basis == "live_account_balance_sl"
-    assert scores[winner].auto_risk.confidence == "conservative"
+    assert scores[winner].auto_risk.risk_basis == "unavailable"
+
+
+def test_enabled_pretrade_balance_is_advisory_no_sl_risk_evidence(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    _policy(repository, account_id, pretrade_balance_auto_evidence_enabled=True)
+    winner = _import_position(repository, account_id, position_id="win", net_pnl="8", pretrade_account_balance="900")
+
+    score = next(item for item in FrameworkService(repository).trade_process_scores(account_id) if item.trade_id == winner)
+
+    assert score.assessment_state == "not_scored"
+    assert score.review_kind == "needs_approval"
+    assert score.auto_risk.risk_basis == "pretrade_account_balance_sl"
+    assert score.auto_risk.source_amount == "900"
+    assert score.auto_risk.confidence == "conservative"
+
+
+def test_approval_needed_auto_review_can_be_approved_and_then_replaced_by_full_review(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    trade_id = _import_position(repository, account_id, initial_risk_amount="20", entry_stop_price="3290")
+    before = FrameworkService(repository).trade_process_scores(account_id)[0]
+    assert before.review_kind == "needs_approval"
+    approval = repository.approve_auto_review(
+        account_id=account_id, trade_id=trade_id, risk_policy_id=policy.id,
+        risk_evidence_source=before.risk_evidence_source, risk_policy_state=before.risk_policy_state,
+        actual_risk_amount=before.actual_risk_amount,
+        criterion_grades=FrameworkService._automatic_review_grades(before.risk_policy_state),
+    )
+    assert approval.risk_policy_state == "over_policy"
+    approved = FrameworkService(repository).trade_process_scores(account_id)[0]
+    assert approved.review_kind == "approved_auto_review"
+    assert approved.risk_score == "32.5"
+    _review(repository, account_id, trade_id, policy, strategy)
+    assert FrameworkService(repository).trade_process_scores(account_id)[0].review_kind == "manual_review"
 
 
 def test_reviewed_actual_risk_replaces_automatic_policy_comparison_only(tmp_path) -> None:
@@ -529,7 +568,7 @@ def test_regrouping_reviewed_trades_supersedes_scores_and_keeps_member_audit(tmp
     assert archived[0].assessed_trade_label == "Initial scale-in"
     assert archived[0].superseded_reason == "Logical-trade membership changed"
     assert len(repository.list_post_trade_assessment_outcomes(account_id)) == 0
-    assert all(item.strategy is None for item in repository.list_trade_performance(account_id))
+    assert all(item.strategy == "Journal default" for item in repository.list_trade_performance(account_id))
     assert report.trade_count == 2
     assert report.net_pnl == "24"
 
@@ -604,11 +643,11 @@ def test_group_rejects_positions_with_different_imported_risk_policy_versions(tm
         repository.create_logical_trade_group(account_id=account_id, logical_trade_ids=(first, second), display_label=None)
 
 
-def test_group_live_balance_risk_is_one_account_level_fallback(tmp_path) -> None:
+def test_group_pretrade_balance_risk_is_one_account_level_fallback(tmp_path) -> None:
     repository, account_id = _repository(tmp_path)
-    _policy(repository, account_id)
+    _policy(repository, account_id, pretrade_balance_auto_evidence_enabled=True)
+    winning = _import_position(repository, account_id, position_id="win", net_pnl="8", entry_time="2026-08-10T07:00:00+00:00", pretrade_account_balance="1000")
     losing = _import_position(repository, account_id, position_id="loss", net_pnl="-8")
-    winning = _import_position(repository, account_id, position_id="win", net_pnl="8", account_balance="1000")
     group_id = repository.create_logical_trade_group(account_id=account_id, logical_trade_ids=(losing, winning), display_label=None)
 
     score = FrameworkService(repository).trade_process_scores(account_id)[0]
@@ -622,16 +661,16 @@ def test_group_live_balance_risk_is_one_account_level_fallback(tmp_path) -> None
     assert "applied once for the logical trade" in score.auto_risk.detail
 
 
-def test_grouped_winners_do_not_multiply_the_live_balance_fallback(tmp_path) -> None:
+def test_grouped_winners_do_not_multiply_the_pretrade_balance_fallback(tmp_path) -> None:
     repository, account_id = _repository(tmp_path)
-    _policy(repository, account_id)
-    first = _import_position(repository, account_id, position_id="win-1", net_pnl="8", account_balance="1000")
-    second = _import_position(repository, account_id, position_id="win-2", net_pnl="6", account_balance="1000")
+    _policy(repository, account_id, pretrade_balance_auto_evidence_enabled=True)
+    first = _import_position(repository, account_id, position_id="win-1", net_pnl="8", pretrade_account_balance="1000")
+    second = _import_position(repository, account_id, position_id="win-2", net_pnl="6", pretrade_account_balance="1000")
     repository.create_logical_trade_group(account_id=account_id, logical_trade_ids=(first, second), display_label=None)
 
     score = FrameworkService(repository).trade_process_scores(account_id)[0]
 
-    assert score.auto_risk.risk_basis == "live_account_balance_sl"
+    assert score.auto_risk.risk_basis == "pretrade_account_balance_sl"
     assert score.auto_risk.source_amount == "1000"
     assert score.auto_risk.state == "over_policy"
 

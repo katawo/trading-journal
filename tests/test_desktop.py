@@ -45,12 +45,13 @@ HEADER = [
     "initial_risk_amount",
     "initial_reward_amount",
     "account_balance",
+    "pretrade_account_balance",
 ]
 
 
 def write_export(path: Path) -> None:
     row = {
-        "schema_version": "4",
+        "schema_version": "5",
         "account_login": "123456",
         "broker_server": "DemoBroker-Live",
         "account_currency": "USD",
@@ -77,6 +78,7 @@ def write_export(path: Path) -> None:
         "initial_risk_amount": "",
         "initial_reward_amount": "",
         "account_balance": "1000.00",
+        "pretrade_account_balance": "",
     }
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=HEADER)

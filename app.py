@@ -14,7 +14,12 @@ from trading_journal.application.display_time import format_relative_time
 from trading_journal.application.mt5_paths import default_mt5_export_path, find_mt5_common_files
 from trading_journal.desktop import DesktopSyncControl, DesktopSyncStatusStore, desktop_runtime_paths, is_desktop_mode
 from trading_journal.infrastructure.sqlite_repository import AccountListItem, JournalDatabaseResetRequiredError, SQLiteJournalRepository
-from trading_journal.presentation.framework import render_framework_dashboard, render_framework_page
+from trading_journal.presentation.framework import (
+    _render_framework_rules,
+    _render_risk_policy,
+    render_framework_dashboard,
+    render_framework_page,
+)
 
 
 _CURRENCY_SYMBOLS = {"USD": "$", "EUR": "€", "GBP": "£", "JPY": "¥", "AUD": "A$", "CAD": "C$", "CHF": "CHF", "NZD": "NZ$"}
@@ -200,9 +205,8 @@ def render_manual_sync_button(repo: SQLiteJournalRepository, *, key: str) -> Non
 
 
 def render_journal_reporting_settings(repo: SQLiteJournalRepository) -> None:
-    st.markdown("#### Journal reporting")
-    with st.form("journal-reporting-settings", border=True):
-        st.markdown("**Reporting calendar**")
+    st.markdown("#### Reporting calendar")
+    with st.form("journal-reporting-settings", border=False):
         current = repo.get_journal_settings()
         labels = {"server": "Server Timezone", "utc": "UTC", "local": "Local Timezone"}
         selected = st.segmented_control(
@@ -212,11 +216,8 @@ def render_journal_reporting_settings(repo: SQLiteJournalRepository) -> None:
             required=True,
             width="content",
         )
-        st.caption("Server Timezone reproduces the MT5 broker clock saved with each export. Local Timezone uses the computer running this journal. Currency is taken from the selected account; accounts are never converted or aggregated.")
-        st.caption("Configure standard risk (1R) and risk limits per account in Framework → Risk policy.")
-        if current and current.default_strategy_name:
-            st.caption(f"Default strategy: {current.default_strategy_name}. Manage it in Settings → Strategies.")
-        submitted = st.form_submit_button("Save reporting settings", type="primary", icon=":material/save:")
+        st.caption("Choose the calendar used for reports and limits. Server Timezone follows the MT5 broker clock.")
+        submitted = st.form_submit_button("Save calendar", type="primary", icon=":material/save:")
     if submitted:
         try:
             repo.configure_journal(reporting_time_basis=next(key for key, label in labels.items() if label == selected))
@@ -226,7 +227,7 @@ def render_journal_reporting_settings(repo: SQLiteJournalRepository) -> None:
             st.success("Journal settings saved.")
 
 
-def render_mt5_account_settings(repo: SQLiteJournalRepository) -> None:
+def render_mt5_account_settings(repo: SQLiteJournalRepository) -> AccountListItem | None:
     st.markdown("#### Approved MT5 accounts")
     st.caption("Each account has a unique MT5 account ID. Its broker server confirms the export source. Funded capital can be updated later; it recalculates historical growth, drawdown, and Risk limits without changing MT5 trades.")
     common_files_location = find_mt5_common_files()
@@ -441,17 +442,25 @@ def render_mt5_account_settings(repo: SQLiteJournalRepository) -> None:
         notice = st.session_state.pop("mt5-account-notice", None)
         if notice:
             st.success(notice)
+    return selected
 
 def render_settings(repo: SQLiteJournalRepository) -> None:
     st.subheader("Settings")
-    st.caption("Configure reporting, approved MT5 accounts, and reusable strategies.")
-    accounts_tab, strategies_tab = st.tabs(["MT5 Accounts", "Strategies"])
+    st.caption("Configure reporting, account risk, reusable strategies, and review rules.")
+    accounts_tab, strategies_tab, rules_tab = st.tabs(["Account & risk", "Strategies", "Review rules"])
     with accounts_tab:
         render_journal_reporting_settings(repo)
         st.divider()
-        render_mt5_account_settings(repo)
+        account = render_mt5_account_settings(repo)
+        st.divider()
+        if account is None:
+            st.info("Save an MT5 account before configuring its Risk policy.")
+        else:
+            _render_risk_policy(repo, account)
     with strategies_tab:
         render_strategy_settings(repo)
+    with rules_tab:
+        _render_framework_rules(repo)
     if is_desktop_mode():
         st.divider()
         with st.container(border=True):

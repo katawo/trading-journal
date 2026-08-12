@@ -15,14 +15,14 @@ def write_auto_export(path: Path) -> None:
     header = [
         "schema_version", "account_login", "broker_server", "account_currency", "position_id", "symbol", "direction",
         "entry_time", "exit_time", "server_utc_offset_minutes", "entry_price", "exit_price", "volume", "gross_pnl", "commission", "swap", "fees", "net_pnl",
-        "entry_stop_price", "entry_target_price", "close_stop_price", "entry_magic_number", "entry_deal_count", "exit_reason", "initial_risk_amount", "initial_reward_amount", "account_balance",
+        "entry_stop_price", "entry_target_price", "close_stop_price", "entry_magic_number", "entry_deal_count", "exit_reason", "initial_risk_amount", "initial_reward_amount", "account_balance", "pretrade_account_balance",
     ]
     row = {
-        "schema_version": "4", "account_login": "123456", "broker_server": "DemoBroker-Live", "account_currency": "USD",
+        "schema_version": "5", "account_login": "123456", "broker_server": "DemoBroker-Live", "account_currency": "USD",
         "position_id": "9010", "symbol": "XAUUSD", "direction": "long", "entry_time": "2026-08-10T08:00:00+00:00",
         "exit_time": "2026-08-10T09:00:00+00:00", "server_utc_offset_minutes": "0", "entry_price": "3300", "exit_price": "3310", "volume": "0.01",
         "gross_pnl": "20", "commission": "0", "swap": "0", "fees": "0", "net_pnl": "20",
-        "entry_stop_price": "", "entry_target_price": "", "close_stop_price": "", "entry_magic_number": "", "entry_deal_count": "", "exit_reason": "client", "initial_risk_amount": "", "initial_reward_amount": "", "account_balance": "1000",
+        "entry_stop_price": "", "entry_target_price": "", "close_stop_price": "", "entry_magic_number": "", "entry_deal_count": "", "exit_reason": "client", "initial_risk_amount": "", "initial_reward_amount": "", "account_balance": "1000", "pretrade_account_balance": "",
     }
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=header)
@@ -68,7 +68,7 @@ def test_format_relative_time_uses_compact_human_readable_durations():
     assert format_relative_time(now - timedelta(days=3), now=now) == "3 days ago"
 
 
-def test_settings_groups_reporting_with_accounts_and_strategies(monkeypatch, tmp_path):
+def test_settings_groups_reporting_accounts_risk_strategies_and_review_rules(monkeypatch, tmp_path):
     common_files = tmp_path / "MetaQuotes" / "Terminal" / "Common" / "Files"
     monkeypatch.setenv("TRADING_JOURNAL_DB", str(tmp_path / "journal.db"))
     monkeypatch.setenv("TRADING_JOURNAL_MT5_COMMON_FILES", str(common_files))
@@ -76,7 +76,7 @@ def test_settings_groups_reporting_with_accounts_and_strategies(monkeypatch, tmp
     app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
     app.switch_page("app_pages/settings.py").run()
 
-    assert [tab.label for tab in app.tabs] == ["MT5 Accounts", "Strategies"]
+    assert [tab.label for tab in app.tabs] == ["Account & risk", "Strategies", "Review rules"]
     assert any(item.label == "Account name" for item in app.text_input)
     assert any(item.label == "MT5 account ID" for item in app.text_input)
     funded_capital = next(item for item in app.text_input if item.label == "Funded capital (optional)")
@@ -86,8 +86,8 @@ def test_settings_groups_reporting_with_accounts_and_strategies(monkeypatch, tmp
     assert all(item.label != "Monthly target" for item in app.number_input)
     assert all(item.label != "Default risk (1R)" for item in app.number_input)
     assert all(item.label != "Apply a default planned-risk baseline to all trades" for item in app.checkbox)
-    assert any("Framework → Risk policy" in item.value for item in app.caption)
-    assert any(item.label == "Save reporting settings" for item in app.button)
+    assert any("calendar used for reports and limits" in item.value for item in app.caption)
+    assert any(item.label == "Save calendar" for item in app.button)
     export_path = next(item for item in app.text_input if item.label == "Custom export path (optional)")
     assert export_path.value == ""
     assert export_path.proto.placeholder == str(common_files / "trading_journal" / "<MT5-login>_positions.csv")
@@ -236,7 +236,7 @@ def test_framework_workspace_renders_account_scoped_post_trade_journal(monkeypat
 
     assert not app.exception
     assert app.subheader[0].value == "Three-pillar framework"
-    assert [tab.label for tab in app.tabs] == ["Review trades", "Monitor", "Roadmap", "Risk policy", "Framework rules"]
+    assert [tab.label for tab in app.tabs] == ["Review trades", "Monitor", "Roadmap"]
     assert any("No completed MT5 positions" in item.value for item in app.info)
     assert not any(item.label == "Roadmap pillar" for item in app.segmented_control)
 
@@ -333,21 +333,21 @@ def test_framework_renders_a_filtered_review_register(monkeypatch, tmp_path):
     app.switch_page("app_pages/framework.py").run()
 
     assert not app.exception
-    assert [tab.label for tab in app.tabs] == ["Review trades", "Monitor", "Roadmap", "Risk policy", "Framework rules"]
-    assert any(item.label == "Review status" and item.value == "Needs review" for item in app.segmented_control)
-    assert any(item.label == "Needs review" and item.value == "1" for item in app.metric)
-    assert any(item.label == "Automatic risk evidence" and item.value == "0" for item in app.metric)
-    assert any(item.label == "Reviewed" and item.value == "0" for item in app.metric)
+    assert [tab.label for tab in app.tabs] == ["Review trades", "Monitor", "Roadmap"]
+    review_filter = next(item for item in app.segmented_control if item.label == "Review status")
+    assert review_filter.value == "needs_approval"
+    assert review_filter.options == ["Needs approval (1)", "Auto-reviewed (0)", "Manually reviewed (0)", "All (1)"]
+    assert any(item.label == "Show failed only" for item in app.checkbox)
     assert any(item.label.startswith("Select LT-") for item in app.checkbox)
     assert any(item.label == "Review" for item in app.button)
     assert not any(item.label == "Ungroup" for item in app.button)
-    assert any("Automatic risk evidence is advisory" in item.value for item in app.caption)
+    assert any("automatic evidence is counted as an Auto-review" in item.value for item in app.caption)
     assert not any(item.label == "Closed MT5 position" for item in app.selectbox)
     assert not any(item.label == "Save review" for item in app.button)
 
-    next(item for item in app.segmented_control if item.label == "Review status").set_value("Reviewed").run()
+    review_filter.set_value("manual_reviewed").run()
 
-    assert any("No reviewed trades" in item.value for item in app.info)
+    assert any("No manually reviewed trades" in item.value for item in app.info)
 
     trade = repository.list_closed_trades_for_review(account.id)[0]
     policy = repository.get_active_risk_policy(account.id)
@@ -372,8 +372,12 @@ def test_framework_renders_a_filtered_review_register(monkeypatch, tmp_path):
     app.run()
 
     assert not app.exception
-    assert any(item.label == "Reviewed" and item.value == "1" for item in app.metric)
+    assert next(item for item in app.segmented_control if item.label == "Review status").value == "manual_reviewed"
     assert any(item.label == "Review" for item in app.button)
+
+    next(item for item in app.checkbox if item.label == "Show failed only").set_value(True).run()
+
+    assert any("No manually reviewed failed trades" in item.value for item in app.info)
 
 
 def test_framework_groups_positions_through_a_confirmation_step(monkeypatch, tmp_path):
@@ -638,7 +642,7 @@ def test_settings_strategies_tab_renders_optional_backtest_fields(monkeypatch, t
     app.switch_page("app_pages/settings.py").run()
 
     assert not app.exception
-    assert [tab.label for tab in app.tabs] == ["MT5 Accounts", "Strategies"]
+    assert [tab.label for tab in app.tabs] == ["Account & risk", "Strategies", "Review rules"]
     assert any(item.value == "Strategy library" for item in app.subheader)
     assert any(item.label == "Backtest sample size" for item in app.text_input)
     assert any(item.label == "MT5 magic numbers (optional)" for item in app.text_input)

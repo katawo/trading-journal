@@ -14,6 +14,7 @@ from trading_journal.infrastructure.sqlite_repository import (
     RISK_CRITERIA,
     SYSTEM_CRITERIA,
     AccountRiskPolicyView,
+    AutoReviewApprovalView,
     ClosedTradeReviewItem,
     PostTradeAssessmentView,
     SQLiteJournalRepository,
@@ -89,7 +90,7 @@ class AutoRiskEvidence:
     detail: str
     specific_preset_sl_amount: str | None
     real_loss_sl_amount: str | None
-    live_account_balance_sl_amount: str | None
+    pretrade_account_balance_sl_amount: str | None
     risk_basis: str
     confidence: str
     initial_reward_amount: str | None
@@ -99,10 +100,10 @@ class AutoRiskEvidence:
 
     @property
     def source_amount(self) -> str | None:
-        # Live balance is one account-level fallback for a logical trade. It
+        # The imported pre-trade balance is one account-level fallback. It
         # is never added again for each position in a scaled trade.
-        if self.live_account_balance_sl_amount is not None:
-            return self.live_account_balance_sl_amount
+        if self.pretrade_account_balance_sl_amount is not None:
+            return self.pretrade_account_balance_sl_amount
         total = sum(
             (
                 Decimal(value)
@@ -124,6 +125,8 @@ class TradeProcessScore:
     exit_time: str
     server_utc_offset_minutes: int
     assessment_state: str
+    review_kind: str
+    criterion_grades: dict[str, str] | None
     psychology_score: str | None
     risk_score: str | None
     system_score: str | None
@@ -439,11 +442,11 @@ class FrameworkService:
             return self._account_score_cache[account_id]
         trades = sorted(self._repository.list_closed_trades_for_review(account_id), key=lambda item: (item.exit_time, item.id))
         assessments = {item.assessment.trade_id: item.assessment for item in self._repository.list_post_trade_assessment_outcomes(account_id)}
+        approvals = {item.trade_id: item for item in self._repository.list_active_auto_review_approvals(account_id)}
         raw_positions = self._repository.list_imported_positions_for_risk(account_id)
         policies = self._policies_for(raw_positions, assessments, account_id)
         active_policy = self._repository.get_active_risk_policy(account_id)
         funded = self._repository.get_account_funded_capital(account_id)
-        live_balance = self._repository.get_latest_mt5_balance(account_id)
         strategies = {magic: profile for profile in self._repository.list_strategy_profiles() for magic in profile.magic_numbers}
         raw_events = self._historical_risk_events(account_id)
         events = {
@@ -455,11 +458,11 @@ class FrameworkService:
                 account_id,
                 trade,
                 assessments.get(trade.id),
+                approvals.get(trade.id),
                 policies,
                 strategies,
                 funded,
                 active_policy,
-                live_balance,
                 tuple(events[trade.id]["events"]),
                 tuple(events[trade.id]["shutdown_candidates"]),
             )
@@ -479,8 +482,8 @@ class FrameworkService:
     ) -> PillarScore:
         reviewed = [item for item in scores if item.assessment_state == "reviewed"]
         sample = reviewed[-window:]
-        automatic = sum(item.assessment_state == "automatic_evidence" for item in scores)
-        unreviewed = sum(item.assessment_state == "not_scored" for item in scores)
+        automatic = sum(item.review_kind == "auto_review" for item in scores)
+        unreviewed = sum(item.assessment_state != "reviewed" for item in scores)
         if not sample:
             return PillarScore(pillar, None, None, "incomplete", 0, 0, unreviewed, automatic, False, 0, (), "No complete post-trade review evidence yet.", scope)
         components = self._period_components(pillar, sample, historical_events)
@@ -503,48 +506,46 @@ class FrameworkService:
         return PillarScore(pillar, None if score is None else _decimal_text(score), None if raw is None else _decimal_text(raw), status, len(reviewed), len(sample), unreviewed, automatic, hard_block, critical, formatted, detail, scope)
 
     def _period_components(self, pillar: str, sample: list[TradeProcessScore], historical_events: dict[int, dict[str, object]] | None) -> tuple[tuple[str, Decimal | None], ...]:
-        outcomes = self._repository.list_post_trade_assessment_outcomes()
-        assessments = {item.assessment.trade_id: item.assessment for item in outcomes}
-        pnl_by_trade = {item.trade.id: Decimal(item.trade.net_pnl) for item in outcomes}
+        grades = {item.trade_id: item.criterion_grades for item in sample if item.criterion_grades is not None}
+        pnl_by_trade = {item.trade_id: Decimal(next(t.net_pnl for t in self._repository.list_closed_trades_for_review(item.account_id) if t.id == item.trade_id)) for item in sample}
         if pillar == "psychology":
-            rules = self._average_grade((assessments[item.trade_id] for item in sample), "rule_adherence")
-            impulse = self._average_grade((assessments[item.trade_id] for item in sample), "impulse_control")
-            emotion = self._average_grade((assessments[item.trade_id] for item in sample), "emotional_control")
-            after_loss = self._post_loss_discipline(sample, assessments, pnl_by_trade)
+            rules = self._average_grade((grades[item.trade_id] for item in sample), "rule_adherence")
+            impulse = self._average_grade((grades[item.trade_id] for item in sample), "impulse_control")
+            emotion = self._average_grade((grades[item.trade_id] for item in sample), "emotional_control")
+            after_loss = self._post_loss_discipline(sample, grades, pnl_by_trade)
             return (("Rule adherence", rules), ("Impulse control", impulse), ("Emotional control", emotion), ("Post-loss discipline", after_loss))
         if pillar == "risk":
-            policy = self._average_grade((assessments[item.trade_id] for item in sample), "policy_adherence")
-            stop = self._average_grade((assessments[item.trade_id] for item in sample), "stop_discipline")
-            exposure = self._average_grade((assessments[item.trade_id] for item in sample), "exposure_limit_compliance")
+            policy = self._average_grade((grades[item.trade_id] for item in sample), "policy_adherence")
+            stop = self._average_grade((grades[item.trade_id] for item in sample), "stop_discipline")
+            exposure = self._average_grade((grades[item.trade_id] for item in sample), "exposure_limit_compliance")
             limits = self._risk_limit_component(sample, historical_events)
             return (("Policy adherence", policy), ("Stop discipline", stop), ("Limit compliance", limits), ("Exposure control", exposure))
-        setup = self._average_grade((assessments[item.trade_id] for item in sample), "setup_validity")
+        setup = self._average_grade((grades[item.trade_id] for item in sample), "setup_validity")
         execution_values = []
         for item in sample:
-            grades = assessments[item.trade_id].criterion_grades
-            execution_values.extend(GRADE_VALUES[grades[key]] for key in ("entry_fidelity", "invalidation_fidelity", "management_exit_fidelity"))
+            execution_values.extend(GRADE_VALUES[grades[item.trade_id][key]] for key in ("entry_fidelity", "invalidation_fidelity", "management_exit_fidelity"))
         execution = sum(execution_values, Decimal("0")) / len(execution_values) if execution_values else None
-        context = self._average_grade((assessments[item.trade_id] for item in sample), "context_alignment")
-        evidence_quality = self._strategy_evidence_component(sample, assessments, edge=False)
-        edge = self._strategy_evidence_component(sample, assessments, edge=True)
+        context = self._average_grade((grades[item.trade_id] for item in sample), "context_alignment")
+        evidence_quality = self._strategy_evidence_component(sample, edge=False)
+        edge = self._strategy_evidence_component(sample, edge=True)
         return (("Setup validity", setup), ("Execution fidelity", execution), ("Context alignment", context), ("Evidence quality", evidence_quality), ("Edge evidence", edge))
 
     @staticmethod
     def _average_grade(assessment_iter, criterion: str) -> Decimal | None:  # type: ignore[no-untyped-def]
-        values = [GRADE_VALUES[assessment.criterion_grades[criterion]] for assessment in assessment_iter]
+        values = [GRADE_VALUES[assessment[criterion]] for assessment in assessment_iter]
         return sum(values, Decimal("0")) / len(values) if values else Decimal("100")
 
     @staticmethod
     def _post_loss_discipline(
-        sample: list[TradeProcessScore], assessments: dict[int, PostTradeAssessmentView], pnl_by_trade: dict[int, Decimal]
+        sample: list[TradeProcessScore], assessments: dict[int, dict[str, str]], pnl_by_trade: dict[int, Decimal]
     ) -> Decimal | None:
         values = []
         ordered = sorted(sample, key=lambda item: (item.exit_time, item.trade_id))
         for previous, current in zip(ordered, ordered[1:], strict=False):
             if pnl_by_trade.get(previous.trade_id, Decimal("0")) >= 0:
                 continue
-            grade = assessments[current.trade_id].criterion_grades["impulse_control"]
-            values.append(Decimal("0") if "post_loss_reset" in assessments[current.trade_id].violation_codes else GRADE_VALUES[grade])
+            grade = assessments[current.trade_id]["impulse_control"]
+            values.append(GRADE_VALUES[grade])
         return sum(values, Decimal("0")) / len(values) if values else Decimal("100")
 
     @staticmethod
@@ -555,10 +556,13 @@ class FrameworkService:
         return sum(values, Decimal("0")) / len(values) if values else None
 
     @staticmethod
-    def _strategy_evidence_component(sample: list[TradeProcessScore], assessments: dict[int, PostTradeAssessmentView], *, edge: bool) -> Decimal | None:
+    def _strategy_evidence_component(sample: list[TradeProcessScore], *, edge: bool) -> Decimal | None:
         values = []
         for item in sample:
-            strategy = assessments[item.trade_id].strategy_snapshot
+            strategy = item.mapped_strategy
+            if strategy is None:
+                values.append(Decimal("100") if item.review_kind == "manual_review" else Decimal("50"))
+                continue
             documented = bool(strategy.description and strategy.backtest_start_date and strategy.backtest_end_date)
             count = strategy.backtest_trade_count or 0
             expectancy = Decimal(strategy.backtest_expectancy_r) if strategy.backtest_expectancy_r is not None else None
@@ -588,15 +592,15 @@ class FrameworkService:
         account_id: int,
         trade: ClosedTradeReviewItem,
         assessment: PostTradeAssessmentView | None,
+        approval: AutoReviewApprovalView | None,
         policies: dict[int, AccountRiskPolicyView],
         strategies_by_magic: dict[str, StrategyProfileView],
         funded: str | None,
         active_policy: AccountRiskPolicyView | None,
-        live_balance: str | None,
         automatic_risk_events: tuple[str, ...],
         shutdown_candidates: tuple[str, ...],
     ) -> TradeProcessScore:
-        auto_risk = self._auto_risk_evidence(trade, policies, funded, active_policy, live_balance)
+        auto_risk = self._auto_risk_evidence(trade, policies, funded, active_policy)
         policy = self._risk_policy_for_trade(assessment, trade, policies, active_policy)
         policy_risk = _decimal_text(self._maximum_risk_amount(funded, policy)) if funded is not None and policy is not None else None
         actual_risk = assessment.declared_actual_risk_amount if assessment and assessment.declared_actual_risk_amount else auto_risk.source_amount
@@ -604,20 +608,37 @@ class FrameworkService:
         risk_policy_state = self._risk_policy_state(actual_risk, policy_risk)
         mapped = strategies_by_magic.get(trade.entry_magic_number or "")
         if assessment is None:
-            state = "automatic_evidence" if auto_risk.state in {"within_policy", "over_policy"} else "not_scored"
+            if approval is not None:
+                state, kind, grades = "reviewed", "approved_auto_review", approval.criterion_grades
+            elif auto_risk.state == "within_policy":
+                state, kind, grades = "reviewed", "auto_review", self._automatic_review_grades("within_policy")
+            else:
+                state, kind, grades = "not_scored", "needs_approval", None
+            if grades is not None:
+                psychology = self._pillar_score_from_grades(grades, "psychology")
+                risk = self._pillar_score_from_grades(grades, "risk")
+                system = self._pillar_score_from_grades(grades, "system")
+                overall = (psychology + risk + system) / Decimal("3")
+                quality = self._quality_status(overall, "PASS")
+                classification = self._classification(Decimal(trade.net_pnl), quality)
+            else:
+                psychology = risk = system = overall = None
+                quality = classification = None
             return TradeProcessScore(
                 account_id,
                 trade.id,
                 trade.exit_time,
                 trade.server_utc_offset_minutes,
                 state,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
+                kind,
+                grades,
+                None if psychology is None else _decimal_text(psychology),
+                None if risk is None else _decimal_text(risk),
+                None if system is None else _decimal_text(system),
+                None if overall is None else _decimal_text(overall),
+                "PASS" if grades is not None else None,
+                quality,
+                classification,
                 False,
                 False,
                 False,
@@ -649,7 +670,7 @@ class FrameworkService:
         quality_status = self._quality_status(overall, status)
         classification = self._classification(Decimal(trade.net_pnl), quality_status)
         return TradeProcessScore(
-            account_id, trade.id, trade.exit_time, trade.server_utc_offset_minutes, "reviewed", _decimal_text(psychology), _decimal_text(risk), _decimal_text(system), _decimal_text(overall), status, quality_status, classification,
+            account_id, trade.id, trade.exit_time, trade.server_utc_offset_minutes, "reviewed", "manual_review", assessment.criterion_grades, _decimal_text(psychology), _decimal_text(risk), _decimal_text(system), _decimal_text(overall), status, quality_status, classification,
             psychology_hard,
             risk_hard,
             system_hard,
@@ -666,8 +687,21 @@ class FrameworkService:
         )
 
     @staticmethod
+    def _automatic_review_grades(risk_policy_state: str) -> dict[str, str]:
+        grades = {criterion: "partial" for criterion in PSYCHOLOGY_CRITERIA + RISK_CRITERIA + SYSTEM_CRITERIA}
+        if risk_policy_state == "within_policy":
+            grades["policy_adherence"] = "pass"
+        elif risk_policy_state == "over_policy":
+            grades["policy_adherence"] = "fail"
+        return grades
+
+    @staticmethod
     def _trade_pillar_score(assessment: PostTradeAssessmentView, pillar: str) -> Decimal:
         return sum((GRADE_VALUES[assessment.criterion_grades[key]] * weight for key, weight in TRADE_WEIGHTS[pillar]), Decimal("0"))
+
+    @staticmethod
+    def _pillar_score_from_grades(grades: dict[str, str], pillar: str) -> Decimal:
+        return sum((GRADE_VALUES[grades[key]] * weight for key, weight in TRADE_WEIGHTS[pillar]), Decimal("0"))
 
     @staticmethod
     def _quality_status(overall: Decimal, hard_rule_status: str) -> str:
@@ -702,7 +736,6 @@ class FrameworkService:
             policies,
             self._repository.get_active_risk_policy(account_id),
             self._repository.get_account_funded_capital(account_id),
-            self._repository.get_latest_mt5_balance(account_id),
         )
         self._raw_risk_event_cache[account_id] = events
         return events
@@ -722,7 +755,7 @@ class FrameworkService:
             ),
         }
 
-    def _historical_risk_events_from_context(self, trades, assessments, policies, active_policy, funded, live_balance):  # type: ignore[no-untyped-def]
+    def _historical_risk_events_from_context(self, trades, assessments, policies, active_policy, funded):  # type: ignore[no-untyped-def]
         events: dict[int, dict[str, object]] = {}
         if funded is None:
             return {
@@ -751,7 +784,7 @@ class FrameworkService:
             assessed = assessments.get(trade.id)
             policy = self._risk_policy_for_trade(assessed, trade, policies, active_policy)
             fallback = self._standard_risk_amount(funded, policy)
-            risk_amount = self._risk_amount(assessed, trade, fallback, live_balance)
+            risk_amount = self._risk_amount(assessed, trade, fallback, policy)
             result_r = Decimal(trade.net_pnl) / risk_amount if risk_amount > 0 else Decimal("0")
             trade_day = self._trade_date(trade.exit_time, trade.server_utc_offset_minutes)
             week_start = trade_day - timedelta(days=trade_day.weekday())
@@ -833,14 +866,14 @@ class FrameworkService:
         return Decimal("0") if funded is None or policy is None else Decimal(funded) * Decimal(policy.maximum_risk_per_trade_percent) / Decimal("100")
 
     @staticmethod
-    def _risk_amount(assessment, trade, fallback: Decimal, live_balance: str | None) -> Decimal:  # type: ignore[no-untyped-def]
+    def _risk_amount(assessment, trade, fallback: Decimal, policy: AccountRiskPolicyView | None) -> Decimal:  # type: ignore[no-untyped-def]
         if assessment is not None and assessment.declared_actual_risk_amount is not None:
             return Decimal(assessment.declared_actual_risk_amount)
         if (value := FrameworkService._specific_preset_sl_amount(trade)) is not None:
             return Decimal(value)
         if (value := FrameworkService._real_loss_sl_amount(trade)) is not None:
             return Decimal(value)
-        if (value := FrameworkService._live_account_balance_sl_amount(trade, live_balance)) is not None:
+        if (value := FrameworkService._pretrade_account_balance_sl_amount(trade, policy)) is not None:
             return Decimal(value)
         return fallback
 
@@ -859,27 +892,37 @@ class FrameworkService:
         return _decimal_text(-Decimal(trade.net_pnl)) if Decimal(trade.net_pnl) < 0 else None
 
     @staticmethod
-    def _live_account_balance_sl_amount(trade, live_balance: str | None) -> str | None:  # type: ignore[no-untyped-def]
-        if FrameworkService._specific_preset_sl_amount(trade) is not None or trade.entry_stop_price is not None or Decimal(trade.net_pnl) <= 0 or live_balance is None:
+    def _pretrade_account_balance_sl_amount(trade, policy: AccountRiskPolicyView | None) -> str | None:  # type: ignore[no-untyped-def]
+        if (
+            policy is None
+            or not policy.pretrade_balance_auto_evidence_enabled
+            or FrameworkService._specific_preset_sl_amount(trade) is not None
+            or trade.entry_stop_price is not None
+            or Decimal(trade.net_pnl) <= 0
+            or trade.pretrade_account_balance is None
+        ):
             return None
-        amount = Decimal(live_balance)
+        amount = Decimal(trade.pretrade_account_balance)
         return _decimal_text(amount) if amount > 0 else None
 
-    def _auto_risk_evidence(self, trade, policies, funded, active_policy, live_balance):  # type: ignore[no-untyped-def]
+    def _auto_risk_evidence(self, trade, policies, funded, active_policy):  # type: ignore[no-untyped-def]
         members = trade.members
         member_sources: list[tuple[str, Decimal]] = []
         unavailable = 0
         specific_total = Decimal("0")
         real_loss_total = Decimal("0")
-        live_balance_amount: Decimal | None = None
+        pretrade_balance_amount: Decimal | None = None
         reward_total = Decimal("0")
         all_specific = True
         all_rewards = True
         observed_stops: list[bool | None] = []
+        earliest_member = min(members, key=lambda item: (item.entry_time, item.id))
+        earliest_policy = policies.get(earliest_member.auto_risk_policy_id) or active_policy
+        group_pretrade = self._pretrade_account_balance_sl_amount(earliest_member, earliest_policy)
+        needs_group_pretrade = False
         for member in members:
             specific = self._specific_preset_sl_amount(member)
             real_loss = self._real_loss_sl_amount(member)
-            live = self._live_account_balance_sl_amount(member, live_balance)
             observed_stops.append(self._observed_stop_widened(member))
             if specific is not None:
                 amount = Decimal(specific)
@@ -895,50 +938,49 @@ class FrameworkService:
                 real_loss_total += amount
                 member_sources.append(("real_loss_sl", amount))
                 all_rewards = False
-            elif live is not None:
-                all_specific = False
-                amount = Decimal(live)
-                # The current account balance is one account-level loss
-                # bound. It is not a separate stop for every scaled position.
-                live_balance_amount = amount if live_balance_amount is None else max(live_balance_amount, amount)
-                member_sources.append(("live_account_balance_sl", amount))
-                all_rewards = False
             else:
                 all_specific = False
                 all_rewards = False
-                unavailable += 1
+                needs_group_pretrade = True
+        if needs_group_pretrade and group_pretrade is not None:
+            # A grouped idea has one opening balance: the snapshot captured for
+            # its earliest member. Never add it once for every scaled entry.
+            pretrade_balance_amount = Decimal(group_pretrade)
+            member_sources.append(("pretrade_account_balance_sl", pretrade_balance_amount))
+        elif needs_group_pretrade:
+            unavailable += 1
         specific = _decimal_text(specific_total) if specific_total > 0 else None
         real_loss = _decimal_text(real_loss_total) if real_loss_total > 0 else None
-        live = None if live_balance_amount is None else _decimal_text(live_balance_amount)
-        amount = live_balance_amount if live_balance_amount is not None else specific_total + real_loss_total
+        pretrade = None if pretrade_balance_amount is None else _decimal_text(pretrade_balance_amount)
+        amount = pretrade_balance_amount if pretrade_balance_amount is not None else specific_total + real_loss_total
         bases = {basis for basis, _ in member_sources}
         basis = next(iter(bases)) if len(bases) == 1 else "mixed_sources" if bases else "unavailable"
-        confidence = "verified" if all_specific and member_sources else "conservative" if live_balance_amount is not None else "inferred" if basis == "real_loss_sl" else "mixed" if bases else "unavailable"
+        confidence = "verified" if all_specific and member_sources else "conservative" if pretrade_balance_amount is not None else "inferred" if basis == "real_loss_sl" else "mixed" if bases else "unavailable"
         observed_stop = True if any(value is True for value in observed_stops) else False if observed_stops and all(value is False for value in observed_stops) else None
         initial_reward = _decimal_text(reward_total) if all_rewards and reward_total > 0 else None
         initial_rr = _decimal_text(reward_total / specific_total) if all_specific and all_rewards and specific_total > 0 else None
         policy = policies.get(trade.auto_risk_policy_id) or active_policy
         if not member_sources:
-            return AutoRiskEvidence("unavailable", "No usable automatic risk source is available.", specific, real_loss, live, basis, confidence, initial_reward, initial_rr, observed_stop, None if policy is None else policy.version)
+            return AutoRiskEvidence("unavailable", "No usable automatic risk source is available.", specific, real_loss, pretrade, basis, confidence, initial_reward, initial_rr, observed_stop, None if policy is None else policy.version)
         source_description = {
             "specific_preset_sl": "Specific preset SL",
             "real_loss_sl": "Real-loss estimate",
-            "live_account_balance_sl": "Live-account-balance estimate",
+            "pretrade_account_balance_sl": "Pre-trade-balance estimate",
             "mixed_sources": "Mixed automatic estimates",
         }[basis]
         amount_text = _decimal_text(amount)
-        live_balance_note = (
-            " The live-account-balance fallback is applied once for the logical trade, not once per position."
-            if live_balance_amount is not None and trade.position_count > 1
+        pretrade_balance_note = (
+            " The pre-trade-balance fallback is applied once for the logical trade, not once per position."
+            if pretrade_balance_amount is not None and trade.position_count > 1
             else ""
         )
         if unavailable:
             return AutoRiskEvidence(
                 "unavailable",
-                f"{source_description} totals {amount_text} across {len(member_sources)} of {trade.position_count} position(s); policy compliance is unavailable until every member has risk evidence or you enter Actual risk.{live_balance_note}",
+                f"{source_description} totals {amount_text} across {len(member_sources)} of {trade.position_count} position(s); policy compliance is unavailable until every member has risk evidence or you enter Actual risk.{pretrade_balance_note}",
                 specific,
                 real_loss,
-                live,
+                pretrade,
                 basis,
                 confidence,
                 initial_reward,
@@ -947,10 +989,10 @@ class FrameworkService:
                 None if policy is None else policy.version,
             )
         if policy is None or funded is None:
-            return AutoRiskEvidence("unavailable", f"{source_description} totals {amount_text}. Set funded capital and save a Risk policy to compare it.{live_balance_note}", specific, real_loss, live, basis, confidence, initial_reward, initial_rr, observed_stop, None if policy is None else policy.version)
+            return AutoRiskEvidence("unavailable", f"{source_description} totals {amount_text}. Set funded capital and save a Risk policy to compare it.{pretrade_balance_note}", specific, real_loss, pretrade, basis, confidence, initial_reward, initial_rr, observed_stop, None if policy is None else policy.version)
         limit = self._maximum_risk_amount(funded, policy)
         state = "within_policy" if amount <= limit else "over_policy"
-        return AutoRiskEvidence(state, f"{source_description} total {amount_text} is {'within' if state == 'within_policy' else 'over'} policy v{policy.version} limit {_decimal_text(limit)} across {trade.position_count} position(s).{live_balance_note}", specific, real_loss, live, basis, confidence, initial_reward, initial_rr, observed_stop, policy.version)
+        return AutoRiskEvidence(state, f"{source_description} total {amount_text} is {'within' if state == 'within_policy' else 'over'} policy v{policy.version} limit {_decimal_text(limit)} across {trade.position_count} position(s).{pretrade_balance_note}", specific, real_loss, pretrade, basis, confidence, initial_reward, initial_rr, observed_stop, policy.version)
 
     @staticmethod
     def _observed_stop_widened(trade) -> bool | None:  # type: ignore[no-untyped-def]

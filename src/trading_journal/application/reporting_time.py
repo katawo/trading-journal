@@ -12,7 +12,7 @@ REPORTING_TIME_BASES = frozenset({"utc", "server", "local"})
 
 
 def normalize_server_timestamp(value: str, server_utc_offset_minutes: int) -> str:
-    """Store a schema-v4 MT5 server-clock timestamp as an absolute UTC time."""
+    """Store a schema-v5 MT5 server-clock timestamp as an absolute UTC time."""
     if not -840 <= server_utc_offset_minutes <= 840:
         raise ValueError("MT5 server UTC offset must be between -840 and 840 minutes")
     try:

@@ -62,17 +62,18 @@ A logical trade counts once in dashboard logical-trade count, win rate, expectan
 
 Account balance, daily realized P&L, and account drawdown always use the immutable chronological MT5 positions. Regrouping therefore cannot rewrite account history or Risk-limit monitoring.
 
-For a group, the automatic Risk amount sums its per-position **specific preset SL** and **real-loss** estimates. A **live-account-balance** fallback is account-level: it applies once to the entire logical trade, never once per member position, and takes precedence over lower per-position amounts. The evidence is `verified` only when every member has a specific preset SL; every live-balance or mixed estimate remains advisory. If any member has no usable source, policy compliance is unavailable until the reviewer supplies a verified **Actual risk amount**.
+For a group, the automatic Risk amount sums its per-position **specific preset SL** and **real-loss** estimates. An enabled **pre-trade-balance** fallback uses only the actual balance captured by MT5 immediately before the earliest entry and applies once to the logical trade, never once per member position. It is advisory and conservative; it never changes a missing MT5 SL. If MT5 could not establish the pre-entry balance, policy compliance is unavailable until the reviewer supplies a verified **Actual risk amount**.
 
 ## 1. Set up the evidence before reviewing
 
 1. Add each MT5 account in **Settings → MT5 Accounts** and set its funded capital when known.
-2. Save an account **Risk policy** in **Framework → Risk policy**:
+2. Save an account **Risk policy** in **Settings → Account & risk**:
    - Standard risk (1R) for normalized reporting;
    - maximum risk per trade for compliance;
    - daily and weekly loss limits, maximum drawdown, maximum loss streak, and minimum R:R.
+   - optionally enable **Use MT5 pre-trade balance as advisory no-SL risk evidence**. It defaults off and never uses funded capital or the current account balance as a substitute.
 3. Create one or more **Strategies** in **Settings → Strategies**. Record the rules and available backtest evidence. A full review needs a selected strategy so the System score has evidence to assess.
-4. In **Framework → Framework rules**, choose which critical events are hard failures for new or corrected assessments. These settings affect journal scores and alerts only; they never control MT5.
+4. In **Settings → Review rules**, choose which critical events are hard failures for new or corrected assessments. These settings affect journal scores and alerts only; they never control MT5.
 
 Risk policies are versioned. A completed assessment retains the policy and strategy evidence that was attached when it was saved. Its effective hard-rule events are also snapshotted, so later configuration changes do not rewrite an earlier review.
 
@@ -80,11 +81,11 @@ Risk policies are versioned. A completed assessment retains the policy and strat
 
 | State shown in Review trades | What it means | Three-pillar score? | What to do |
 |---|---|---:|---|
-| Needs review | The logical trade has no usable automatic risk evidence and no saved assessment. | No | Open it and complete a post-trade assessment. |
-| Automatic evidence | The importer found a usable risk estimate. | No | Use it as evidence, then complete a human assessment if the trade should count. |
-| Reviewed | All 13 criteria, the strategy, notes, and required follow-up were saved. | Yes | It contributes to the rolling scores and roadmap. |
+| Needs approval | Automatic Risk evidence is over policy or unavailable. | No | Approve its evidence or complete a post-trade assessment. |
+| Auto-review | Automatic Risk evidence is within policy. | Yes | It uses neutral Psychology/System defaults and counts toward readiness. |
+| Reviewed | A full 13-criterion assessment was saved. | Yes | It replaces any approval and contributes to the rolling scores and roadmap. |
 
-Automatic MT5 evidence is helpful, but it cannot assess Psychology or System execution. It never creates a completed Risk, Psychology, System, Process, readiness, or roadmap score on its own.
+An Auto-review uses `Partial` (neutral) for Psychology and System. For Risk, policy adherence is `Pass` only when the automatic amount is within policy; the remaining criteria are neutral. One-click approval records the same defaults, with policy adherence `Fail` for an over-policy amount. A full assessment remains the only way to record violations or hard-rule events.
 
 ### Automatic risk evidence
 
@@ -92,7 +93,7 @@ Automatic MT5 evidence is helpful, but it cannot assess Psychology or System exe
 |---|---|---|
 | Specific preset SL | Verified | MT5-calculated initial risk was present in the export. |
 | Real-loss estimate | Inferred | `abs(net P&L)` for a losing trade without a calculated initial risk. |
-| Live-account-balance estimate | Conservative | The latest schema-v4 MT5 balance for a profitable trade without an entry stop. It is a conservative fallback, not proof of the original stop. |
+| Pre-trade-balance estimate | Conservative | The actual MT5 balance immediately before a profitable no-SL position opened, captured from the MT5 deal ledger. It is available only when enabled in the account Risk policy. |
 
 The app compares the available amount with the account's maximum-risk policy and labels it within policy, over policy, or unavailable. Enter a verified **Actual risk amount** during review when the automatic amount is not the best evidence. It replaces the automatic amount for that logical trade's policy comparison, but it does **not** rewrite the immutable MT5-position chronology used for daily/weekly limits, drawdown, or loss-streak monitoring.
 
@@ -100,11 +101,11 @@ The app compares the available amount with the account's maximum-risk policy and
 
 Daily loss, weekly loss, drawdown, and losing-streak limits are calculated from completed MT5 positions. When a position first reaches a limit, the app records a **Risk monitor reached** warning. That position is not automatically a failed trade: the journal cannot infer the trader's intention or what was known while an order was open.
 
-For a later position whose entry timestamp is after an earlier completed position reached a limit, the app shows a **Shutdown review** candidate. It is a prompt to inspect the sequence, not a verdict. Select **Trading after hard shutdown** only when your post-trade review confirms that the entry broke your own stop rule and that hard rule is enabled in **Framework rules** when the assessment is saved. Only that confirmed, enabled event changes the Hard-rule status to `FAIL`.
+For a later position whose entry timestamp is after an earlier completed position reached a limit, the app shows a **Shutdown review** candidate. It is a prompt to inspect the sequence, not a verdict. Select **Trading after hard shutdown** only when your post-trade review confirms that the entry broke your own stop rule and that hard rule is enabled in **Settings → Review rules** when the assessment is saved. Only that confirmed, enabled event changes the Hard-rule status to `FAIL`.
 
 ## 3. Complete one post-trade assessment
 
-Open **Framework → Review trades**, choose a logical trade from **Needs review**, **Automatic evidence**, or **Reviewed**, and rate all 13 criteria once. A grouped logical trade contributes one review to the rolling sample, not one review per member position.
+Open **Framework → Review trades**, choose a logical trade from **Needs approval**, **Auto-review**, or **Reviewed**. Approval-needed evidence can be accepted in one click, or you can rate all 13 criteria in a full assessment. A grouped logical trade contributes one review to the rolling sample, not one review per member position.
 
 | Rating | Numeric value | Use it when |
 |---|---:|---|
@@ -196,7 +197,7 @@ If the trade made money, it is a **Bad Win**. If it lost money, it is a **Bad Lo
 
 ## 5. Hard rules and critical violations
 
-The following events can be enabled as hard failures in **Framework rules**:
+The following events can be enabled as hard failures in **Settings → Review rules**:
 
 | Event | Affected pillar(s) when enabled | Meaning |
 |---|---|---|
@@ -211,11 +212,11 @@ Hard rules do three things:
 2. Mark the affected pillar as hard-blocked while that reviewed trade remains in the selected rolling window.
 3. Prevent the readiness assessment from reporting `Ready`, even if its numeric score is high.
 
-Reason tags also make recurring patterns visible. Psychology critical tags include revenge, emotional sizing, and failure to reset after a loss; Risk critical tags include daily/weekly/drawdown/exposure breaches and stop widening; the System critical tag is a mandatory setup absent. A tag is not automatically a hard rule unless its related hard-rule setting is enabled when the assessment is saved. In particular, automatic MT5 limit warnings and Shutdown review candidates never create a hard failure without a reviewer recording the enabled **Trading after hard shutdown** event. Changing Framework rules later applies to new or corrected assessments; it does not revise historical classifications.
+Reason tags also make recurring patterns visible. Psychology critical tags include revenge, emotional sizing, and failure to reset after a loss; Risk critical tags include daily/weekly/drawdown/exposure breaches and stop widening; the System critical tag is a mandatory setup absent. A tag is not automatically a hard rule unless its related hard-rule setting is enabled when the assessment is saved. In particular, automatic MT5 limit warnings and Shutdown review candidates never create a hard failure without a reviewer recording the enabled **Trading after hard shutdown** event. Changing Review rules later applies to new or corrected assessments; it does not revise historical classifications.
 
 ## 6. How rolling monitoring is calculated
 
-In **Framework → Monitor**, choose a 20-, 30-, or 50-trade window. Only fully **Reviewed** trades enter the window. Automatic evidence and unreviewed imports are counted separately and do not improve a score.
+In **Framework → Monitor**, choose a 20-, 30-, or 50-trade window. **Auto-reviews**, approved Auto-reviews, and full Reviews enter the window. Needs-approval imports remain outside it until approved or fully assessed.
 
 The Monitor computes a second set of period components from the reviewed window. These are not a simple average of the visible per-trade pillar scores; they are designed to reveal repeated behaviour and evidence quality.
 

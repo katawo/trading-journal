@@ -18,7 +18,7 @@ No Python, web server, Cloud account, MT5 password, or broker password is requir
 3. Add each account in **Settings → MT5 Accounts**. Leave the custom export path empty to use the detected Windows or Linux/Wine Common Files location.
 4. The desktop worker checks configured exports every five seconds. **Sync MT5 now** sends an immediate local request and the result appears within one second.
 
-The worker validates schema v4, account login, broker server, and currency before importing. Invalid files only appear as a sync error; they never overwrite journal data.
+The worker validates schema v5, account login, broker server, and currency before importing. Invalid files only appear as a sync error; they never overwrite journal data.
 
 ## Data and backup
 

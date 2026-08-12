@@ -30,7 +30,7 @@ BASE_REQUIRED_COLUMNS = {
     "fees",
     "net_pnl",
 }
-V4_REQUIRED_COLUMNS = BASE_REQUIRED_COLUMNS | {
+V5_REQUIRED_COLUMNS = BASE_REQUIRED_COLUMNS | {
     "entry_stop_price",
     "entry_target_price",
     "close_stop_price",
@@ -40,9 +40,10 @@ V4_REQUIRED_COLUMNS = BASE_REQUIRED_COLUMNS | {
     "initial_risk_amount",
     "initial_reward_amount",
     "account_balance",
+    "pretrade_account_balance",
     "server_utc_offset_minutes",
 }
-SUPPORTED_SCHEMA_VERSIONS = frozenset({4})
+SUPPORTED_SCHEMA_VERSIONS = frozenset({5})
 
 
 class MT5ImportService:
@@ -75,7 +76,7 @@ class MT5ImportService:
         if schema_version not in SUPPORTED_SCHEMA_VERSIONS:
             supported = " or ".join(str(version) for version in sorted(SUPPORTED_SCHEMA_VERSIONS))
             raise ImportValidationError(f"Unsupported MT5 export schema version; expected {supported}")
-        required_columns = V4_REQUIRED_COLUMNS
+        required_columns = V5_REQUIRED_COLUMNS
         if not required_columns.issubset(rows[0]):
             missing = ", ".join(sorted(required_columns - set(rows[0])))
             raise ImportValidationError(f"MT5 export is missing required columns: {missing}")
@@ -90,9 +91,9 @@ class MT5ImportService:
         live_account_balance = None
         balances = {position.account_balance for position in positions}
         if None in balances:
-            raise ImportValidationError("Schema-v4 MT5 export requires an account balance on every position")
+            raise ImportValidationError("Schema-v5 MT5 export requires an account balance on every position")
         if len(balances) != 1:
-            raise ImportValidationError("Schema-v4 MT5 export must use one current account balance")
+            raise ImportValidationError("Schema-v5 MT5 export must use one current account balance")
         live_account_balance = balances.pop()
 
         identities = {(item.account_login, item.broker_server, item.account_currency) for item in positions}

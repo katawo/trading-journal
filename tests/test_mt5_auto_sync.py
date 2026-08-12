@@ -36,12 +36,13 @@ HEADER = [
     "initial_risk_amount",
     "initial_reward_amount",
     "account_balance",
+    "pretrade_account_balance",
 ]
 
 
 def write_export(path: Path, *, net_pnl: str = "98.00") -> None:
     row = {
-        "schema_version": "4",
+        "schema_version": "5",
         "account_login": "123456",
         "broker_server": "DemoBroker-Live",
         "account_currency": "USD",
@@ -68,6 +69,7 @@ def write_export(path: Path, *, net_pnl: str = "98.00") -> None:
         "initial_risk_amount": "",
         "initial_reward_amount": "",
         "account_balance": "1000.00",
+        "pretrade_account_balance": "",
     }
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=HEADER)
@@ -256,7 +258,9 @@ def test_resident_mt5_export_ea_is_event_driven_and_has_no_trading_operations() 
     assert '"initial_risk_amount"' in source
     assert '"entry_magic_number"' in source
     assert '"account_balance"' in source
+    assert '"pretrade_account_balance"' in source
     assert "AccountInfoDouble(ACCOUNT_BALANCE)" in source
+    assert "PreTradeBalance" in source
     for forbidden_operation in ("OrderSend(", "OrderDelete(", "PositionClose(", "PositionModify(", "CTrade"):
         assert forbidden_operation not in source
 

@@ -28,7 +28,7 @@ class MT5PositionExport(BaseModel):
     swap: Decimal
     fees: Decimal
     net_pnl: Decimal
-    # Schema v4 evidence. Empty values mean MT5 could not establish that fact;
+    # Schema v5 evidence. Empty values mean MT5 could not establish that fact;
     # they are deliberately not inferred from the trade outcome.
     entry_stop_price: Decimal | None = None
     entry_target_price: Decimal | None = None
@@ -38,12 +38,15 @@ class MT5PositionExport(BaseModel):
     exit_reason: str | None = None
     initial_risk_amount: Decimal | None = Field(default=None, gt=0)
     initial_reward_amount: Decimal | None = None
-    # Schema v4 snapshot. This is the terminal's current account balance when
+    # Schema v5 snapshot. This is the terminal's current account balance when
     # it exported the CSV, not a historical balance at each trade's close.
     # A depleted account can legitimately report zero or a negative balance.
-    # Preserve the snapshot so imports continue; Risk scoring treats non-positive
-    # balances as unavailable for the live-account-balance assumption.
+    # Preserve the snapshot for traceability; automatic Risk scoring ignores it
+    # in favour of the separate per-position pre-trade balance below.
     account_balance: Decimal | None = None
+    # Calculated in MT5 from its deal ledger as the balance immediately before
+    # the position's first entry. Empty means it could not be established.
+    pretrade_account_balance: Decimal | None = None
 
     @field_validator("account_currency")
     @classmethod
@@ -60,6 +63,7 @@ class MT5PositionExport(BaseModel):
         "initial_risk_amount",
         "initial_reward_amount",
         "account_balance",
+        "pretrade_account_balance",
         mode="before",
     )
     @classmethod

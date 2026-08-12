@@ -103,7 +103,7 @@ def _auto_risk_label(score: TradeProcessScore) -> str:
     source = {
         "specific_preset_sl": "Preset SL",
         "real_loss_sl": "Real-loss estimate",
-        "live_account_balance_sl": "Live-balance estimate",
+        "pretrade_account_balance_sl": "Pre-trade-balance estimate",
         "mixed_sources": "Mixed estimates",
         "unavailable": "No source",
     }.get(evidence.risk_basis, "No source")
@@ -209,8 +209,8 @@ def render_framework_page(repo: SQLiteJournalRepository) -> None:
     account = _select_account(repo, key="framework-account")
     if account is None:
         return
-    review_tab, monitor_tab, roadmap_tab, policy_tab, rules_tab = st.tabs(
-        ["Review trades", "Monitor", "Roadmap", "Risk policy", "Framework rules"],
+    review_tab, monitor_tab, roadmap_tab = st.tabs(
+        ["Review trades", "Monitor", "Roadmap"],
         key="framework-tab",
         on_change="rerun",
     )
@@ -223,12 +223,6 @@ def render_framework_page(repo: SQLiteJournalRepository) -> None:
     if roadmap_tab.open:
         with roadmap_tab:
             _render_roadmap(repo, account)
-    if policy_tab.open:
-        with policy_tab:
-            _render_risk_policy(repo, account)
-    if rules_tab.open:
-        with rules_tab:
-            _render_framework_rules(repo)
 
 
 def _render_post_trade_review(repo: SQLiteJournalRepository, account: AccountListItem) -> None:
@@ -240,7 +234,7 @@ def _render_post_trade_review(repo: SQLiteJournalRepository, account: AccountLis
         return
     profiles = repo.list_strategy_profiles()
     if not profiles:
-        st.warning("Create a strategy in Settings before saving a full three-pillar review.", icon=":material/info:")
+        st.warning("Create or select a strategy in Settings → Strategies before saving a full three-pillar review.", icon=":material/info:")
     score_items = service.trade_process_scores(account.id)
     snapshot = service.risk_snapshot(account.id)
     st.caption(f"Risk state: {_state_label(snapshot)} · {snapshot.message}")
@@ -446,10 +440,10 @@ def _render_post_trade_review_dialog(repo: SQLiteJournalRepository, account: Acc
             options=available_hard_rules,
             default=list(existing.hard_rule_codes) if existing else [],
             format_func=HARD_RULE_LABELS.get,
-            help="Enabled events selected on save set Hard-rule status to Fail. That result is snapshotted for this assessment, so later Framework rules changes do not rewrite it. Automatic Risk limits are monitoring evidence, not hard failures by themselves.",
+            help="Enabled events selected on save set Hard-rule status to Fail. That result is snapshotted for this assessment, so later Review rules changes do not rewrite it. Automatic Risk limits are monitoring evidence, not hard failures by themselves.",
         )
         if not available_hard_rules:
-            st.caption("No hard-rule events are enabled. Enable one in Framework rules to record it on a new assessment.")
+            st.caption("No hard-rule events are enabled. Enable one in Settings → Review rules to record it on a new assessment.")
         note = st.text_area("What happened and what did you learn?", value=existing.post_review_note if existing else "", placeholder="Describe execution independently of P&L.")
         action = st.text_area("Corrective action", value=existing.corrective_action if existing and existing.corrective_action else "", placeholder="Required for partial, failed, or hard-rule reviews.")
         submitted = st.form_submit_button("Update assessment" if existing else "Save assessment", type="primary")
@@ -658,26 +652,40 @@ def _render_logical_trade_regroup_confirmation(repo: SQLiteJournalRepository, ac
 def _render_review_register(repo: SQLiteJournalRepository, account: AccountListItem, trades, scores: dict[int, TradeProcessScore], profiles) -> None:  # type: ignore[no-untyped-def]
     ordered = sorted(trades, key=lambda item: (item.exit_time, item.id), reverse=True)
     groups = {
-        "Needs review": [(trade, scores[trade.id]) for trade in ordered if scores[trade.id].assessment_state == "not_scored"],
-        "Automatic risk evidence": [(trade, scores[trade.id]) for trade in ordered if scores[trade.id].assessment_state == "automatic_evidence"],
-        "Reviewed": [(trade, scores[trade.id]) for trade in ordered if scores[trade.id].assessment_state == "reviewed"],
-        "Failed": [(trade, scores[trade.id]) for trade in ordered if scores[trade.id].process_status == "FAIL"],
+        "needs_approval": [(trade, scores[trade.id]) for trade in ordered if scores[trade.id].review_kind == "needs_approval"],
+        "auto_reviewed": [
+            (trade, scores[trade.id])
+            for trade in ordered
+            if scores[trade.id].review_kind in {"auto_review", "approved_auto_review"}
+        ],
+        "manual_reviewed": [(trade, scores[trade.id]) for trade in ordered if scores[trade.id].review_kind == "manual_review"],
+        "all": [(trade, scores[trade.id]) for trade in ordered],
     }
-    with st.container(horizontal=True, gap="small"):
-        for label in ("Needs review", "Automatic risk evidence", "Reviewed", "Failed"):
-            st.metric(label, len(groups[label]), border=True)
     _prepare_logical_trade_register_state(account.id)
+    filter_names = {
+        "needs_approval": "Needs approval",
+        "auto_reviewed": "Auto-reviewed",
+        "manual_reviewed": "Manually reviewed",
+        "all": "All",
+    }
+    filter_labels = {key: f"{filter_names[key]} ({len(items)})" for key, items in groups.items()}
     filter_value = st.segmented_control(
-        "Review status", ["Needs review", "Automatic risk evidence", "Reviewed", "Failed", "All"],
-        default="Needs review", required=True, width="content", key=f"review-filter-{account.id}",
+        "Review status", list(groups),
+        format_func=filter_labels.get,
+        default="needs_approval", required=True, width="content", key=f"review-filter-{account.id}",
     )
+    selected_group = filter_value
+    failed_only = st.checkbox("Show failed only", key=f"review-failed-only-{account.id}")
     filter_key = f"logical-trade-selection-filter-{account.id}"
+    current_filter = (selected_group, failed_only)
     previous_filter = st.session_state.get(filter_key)
-    if previous_filter is not None and previous_filter != filter_value:
+    if previous_filter is not None and previous_filter != current_filter:
         _clear_logical_trade_selection(account.id)
         st.session_state[_logical_trade_page_key(account.id)] = 1
-    st.session_state[filter_key] = filter_value
-    visible = [(trade, scores[trade.id]) for trade in ordered] if filter_value == "All" else groups[filter_value]
+    st.session_state[filter_key] = current_filter
+    visible = groups[selected_group]
+    if failed_only:
+        visible = [(trade, score) for trade, score in visible if score.process_status == "FAIL"]
     single_position_trades = [trade for trade, _ in visible if not trade.is_group]
     single_position_by_id = {trade.id: trade for trade in single_position_trades}
     selected_logical_trade_ids = tuple(
@@ -736,7 +744,8 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
             args=(account.id, 1, page_count),
         )
     if not visible:
-        st.info(f"No {filter_value.casefold()} trades for this account.")
+        qualifier = " failed" if failed_only else ""
+        st.info(f"No {filter_names[selected_group].casefold()}{qualifier} trades for this account.")
     else:
         start = (current_page - 1) * REVIEW_PAGE_SIZE
         page_items = visible[start : start + REVIEW_PAGE_SIZE]
@@ -748,7 +757,12 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
         ):
             column.caption(label)
         for trade, score in page_items:
-            review = "Needs review" if score.assessment_state == "not_scored" else "Automatic evidence" if score.assessment_state == "automatic_evidence" else "Reviewed"
+            review = {
+                "needs_approval": "Needs approval",
+                "auto_review": "Auto-review",
+                "approved_auto_review": "Approved auto-review",
+                "manual_review": "Reviewed",
+            }.get(score.review_kind, "Needs approval")
             with st.container(border=True):
                 select_column, logical_column, trade_column, positions_column, pnl_column, review_column, score_column, process_column, actions_column = st.columns(
                     [0.5, 0.85, 1.35, 1.45, 0.75, 1.1, 0.7, 0.75, 1.0]
@@ -787,6 +801,22 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
                 ):
                     st.session_state["post-trade-review-trade-id"] = trade.id
                     st.rerun()
+                if score.review_kind == "needs_approval" and actions_column.button(
+                    "Approve", key=f"approve-auto-review-{account.id}-{trade.id}", type="tertiary", icon=":material/check:",
+                ):
+                    try:
+                        repo.approve_auto_review(
+                            account_id=account.id, trade_id=trade.id, risk_policy_id=None,
+                            risk_evidence_source=score.risk_evidence_source,
+                            risk_policy_state=score.risk_policy_state,
+                            actual_risk_amount=score.actual_risk_amount,
+                            criterion_grades=FrameworkService._automatic_review_grades(score.risk_policy_state),
+                        )
+                    except ValueError as error:
+                        st.error(str(error))
+                    else:
+                        st.session_state["post-trade-review-notice"] = "Automatic risk evidence approved."
+                        st.rerun()
                 if trade.is_group and actions_column.button(
                     "Ungroup",
                     key=f"ungroup-logical-trade-{account.id}-{trade.id}",
@@ -804,7 +834,7 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
                     st.caption(failure_detail)
                 if monitoring_detail := _automatic_risk_monitoring_detail(score):
                     st.caption(monitoring_detail)
-        st.caption("Automatic risk evidence is advisory. Only a saved assessment creates three-pillar scores, classifications, roadmap evidence, and readiness data.")
+        st.caption("Within-policy automatic evidence is counted as an Auto-review. Approval-needed evidence can be approved here or replaced by a full assessment.")
     group_editor = st.session_state.get("logical-trade-group-editor")
     if group_editor is not None and group_editor.get("account_id") == account.id:
         group_id = group_editor.get("logical_trade_id")
@@ -941,7 +971,7 @@ def _render_risk_policy(repo: SQLiteJournalRepository, account: AccountListItem)
     st.markdown("#### Account risk policy")
     st.caption("The policy defines reporting 1R and safety limits. It monitors closed MT5 trades only and never controls MT5.")
     if funded is None:
-        st.warning("Set funded capital in Settings → MT5 Accounts before saving a Risk policy.")
+        st.warning("Set funded capital in Settings → Account & risk before saving a Risk policy.")
     else:
         st.info(f"Funded capital: {funded} {account.account_currency}.")
     with st.form(f"account-risk-policy-{account.id}"):
@@ -959,6 +989,11 @@ def _render_risk_policy(repo: SQLiteJournalRepository, account: AccountListItem)
             open_risk = st.number_input("Maximum open risk (R)", min_value=0.01, value=float(policy.max_open_risk_r) if policy else 1.0, step=0.25)
             correlation = st.text_area("Correlation / exposure policy", value=policy.correlation_policy if policy and policy.correlation_policy else "")
             st.caption("The closed-trade MT5 exporter cannot verify open risk or correlation exposure automatically.")
+        pretrade_balance_evidence = st.checkbox(
+            "Use MT5 pre-trade balance as advisory no-SL risk evidence",
+            value=policy.pretrade_balance_auto_evidence_enabled if policy else False,
+            help="Uses only the balance captured by MT5 immediately before entry. It does not create a post-trade review or modify the imported stop loss.",
+        )
         submitted = st.form_submit_button("Save risk policy", type="primary")
     if submitted:
         try:
@@ -966,6 +1001,7 @@ def _render_risk_policy(repo: SQLiteJournalRepository, account: AccountListItem)
                 account_id=account.id, standard_risk_per_trade_percent=str(standard), maximum_risk_per_trade_percent=str(maximum),
                 daily_loss_limit_r=str(daily), weekly_loss_limit_r=str(weekly), max_drawdown_percent=str(drawdown),
                 max_open_risk_r=str(open_risk), max_consecutive_losses=int(streak), minimum_rr=str(minimum_rr), correlation_policy=correlation,
+                pretrade_balance_auto_evidence_enabled=pretrade_balance_evidence,
             )
         except ValueError as error:
             st.error(str(error))
@@ -976,7 +1012,7 @@ def _render_risk_policy(repo: SQLiteJournalRepository, account: AccountListItem)
 
 def _render_framework_rules(repo: SQLiteJournalRepository) -> None:
     settings = repo.get_framework_rule_settings()
-    st.markdown("#### Framework rules")
+    st.markdown("#### Review rules")
     st.caption("These rules affect new or corrected assessments and alerts only. Their effective result is snapshotted when an assessment is saved; later changes never rewrite history or lock MT5 trading.")
     with st.form("framework-rule-settings"):
         revenge = st.checkbox("Oversized revenge trade is a hard Psychology and Risk failure", value=settings.oversized_revenge_hard)
@@ -994,5 +1030,5 @@ def _render_framework_rules(repo: SQLiteJournalRepository) -> None:
         except ValueError as error:
             st.error(str(error))
         else:
-            st.success("Framework rules saved.")
+            st.success("Review rules saved.")
             st.rerun()

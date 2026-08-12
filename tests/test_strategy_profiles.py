@@ -14,6 +14,17 @@ def _repository(tmp_path) -> SQLiteJournalRepository:
     return repository
 
 
+def test_new_journal_starts_with_a_default_strategy(tmp_path) -> None:
+    repository = _repository(tmp_path)
+
+    settings = repository.get_journal_settings()
+    profiles = repository.list_strategy_profiles()
+
+    assert [profile.name for profile in profiles] == ["Journal default"]
+    assert settings.default_strategy_profile_id == profiles[0].id
+    assert settings.default_strategy_name == "Journal default"
+
+
 def test_strategy_profile_persists_optional_backtest_context(tmp_path) -> None:
     repository = _repository(tmp_path)
 
@@ -273,6 +284,6 @@ def test_profile_rename_preserves_the_default_strategy_by_id(tmp_path) -> None:
     )
 
     assert renamed.id == profile.id
-    assert [item.name for item in repository.list_strategy_profiles()] == ["Motimoti Trend"]
+    assert [item.name for item in repository.list_strategy_profiles()] == ["Journal default", "Motimoti Trend"]
     assert repository.get_journal_settings().default_strategy_name == "Motimoti Trend"
     assert repository.list_trades()[0].strategy == "Motimoti Trend"
