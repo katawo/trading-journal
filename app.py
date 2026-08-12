@@ -49,6 +49,11 @@ def format_currency(value: str | Decimal, currency: str) -> str:
     return f"{prefix}{symbol}{amount}" if symbol else f"{prefix}{currency.upper()} {amount}"
 
 
+def format_currency_caption(value: str | Decimal, currency: str) -> str:
+    """Format currency safely for Streamlit text elements that parse Markdown."""
+    return format_currency(value, currency).replace("$", r"\$")
+
+
 def format_account_label(account: AccountListItem) -> str:
     return f"{account.display_name} · {account.login} · {account.broker_server}"
 
@@ -742,9 +747,9 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
         st.caption("Set funded capital in Settings to enable the balance curve, balance growth, and drawdown percentage.")
     else:
         st.caption(
-            f"Current drawdown: {format_currency(-Decimal(report.current_drawdown), currency)}"
+            f"Current drawdown: {format_currency_caption(-Decimal(report.current_drawdown), currency)}"
             + (f" ({format_number(report.current_drawdown_percent, 1)}%)" if report.current_drawdown_percent is not None else "")
-            + f" · Balance at period start: {format_currency(report.starting_balance, currency)}."
+            + f" · Balance at period start: {format_currency_caption(report.starting_balance, currency)}."
         )
 
     chart_view = st.segmented_control(

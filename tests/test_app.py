@@ -9,7 +9,8 @@ from streamlit.testing.v1 import AppTest
 
 from trading_journal.application.display_time import format_relative_time
 from trading_journal.domain.models import MT5PositionExport
-from trading_journal.infrastructure.sqlite_repository import SQLiteJournalRepository
+from trading_journal.infrastructure.sqlite_repository import PillarRoadmapEvidenceView, SQLiteJournalRepository
+from trading_journal.presentation.framework import _next_roadmap_item
 
 
 def write_auto_export(path: Path) -> None:
@@ -69,6 +70,13 @@ def test_format_relative_time_uses_compact_human_readable_durations():
     assert format_relative_time(now - timedelta(days=3), now=now) == "3 days ago"
 
 
+def test_currency_caption_escapes_markdown_math_delimiters():
+    import app as journal_app
+
+    assert journal_app.format_currency_caption("-30.63", "USD") == "−\\$30.63"
+    assert journal_app.format_currency_caption("1000", "USD") == "+\\$1,000.00"
+
+
 def test_global_framework_alert_bubble_combines_and_orders_cross_account_alerts(monkeypatch):
     import app as journal_app
 
@@ -100,6 +108,15 @@ def test_global_framework_alert_bubble_combines_and_orders_cross_account_alerts(
         {"account_name": "Alpha", "code": "risk_stop", "message": "Daily risk stop reached", "severity": "critical"},
         {"account_name": "Zulu", "code": "review_due", "message": "Review is due", "severity": "warning"},
     ]
+
+
+def test_roadmap_selects_only_the_first_incomplete_item_for_each_pillar():
+    evidence = {
+        ("psychology", 1, "triggers"): PillarRoadmapEvidenceView("trader", "psychology", 1, "triggers", True, "Written triggers.", "2026-08-12T00:00:00+00:00"),
+    }
+
+    assert _next_roadmap_item("psychology", evidence) == (1, "behaviour_rules", "Document no-revenge and no-chase rules")
+    assert _next_roadmap_item("risk", evidence) == (1, "policy", "Define account risk policy and hard limits")
 
 
 def test_settings_groups_reporting_accounts_risk_strategies_and_review_rules(monkeypatch, tmp_path):
@@ -270,7 +287,7 @@ def test_framework_workspace_renders_account_scoped_post_trade_journal(monkeypat
 
     assert not app.exception
     assert app.subheader[0].value == "Three-pillar framework"
-    assert [tab.label for tab in app.tabs] == ["Review trades", "Monitor", "Roadmap"]
+    assert [tab.label for tab in app.tabs] == ["Review", "Monitor", "Improve"]
     assert any("No completed MT5 positions" in item.value for item in app.info)
     assert not any(item.label == "Roadmap pillar" for item in app.segmented_control)
 
@@ -367,7 +384,7 @@ def test_framework_renders_a_filtered_review_register(monkeypatch, tmp_path):
     app.switch_page("app_pages/framework.py").run()
 
     assert not app.exception
-    assert [tab.label for tab in app.tabs] == ["Review trades", "Monitor", "Roadmap"]
+    assert [tab.label for tab in app.tabs] == ["Review", "Monitor", "Improve"]
     review_filter = next(item for item in app.segmented_control if item.label == "Review status")
     assert review_filter.value == "needs_approval"
     assert review_filter.options == ["Needs approval (1)", "Auto-reviewed (0)", "Manually reviewed (0)", "All (1)"]

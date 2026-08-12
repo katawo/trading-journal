@@ -22,6 +22,7 @@ from trading_journal.infrastructure.sqlite_repository import (
     RISK_CRITERIA,
     SYSTEM_CRITERIA,
     AccountListItem,
+    PillarRoadmapEvidenceView,
     SQLiteJournalRepository,
 )
 
@@ -202,8 +203,8 @@ def render_framework_page(repo: SQLiteJournalRepository) -> None:
     account = _select_account(repo, key="framework-account")
     if account is None:
         return
-    review_tab, monitor_tab, roadmap_tab = st.tabs(
-        ["Review trades", "Monitor", "Roadmap"],
+    review_tab, monitor_tab, improve_tab = st.tabs(
+        ["Review", "Monitor", "Improve"],
         key="framework-tab",
         on_change="rerun",
     )
@@ -213,8 +214,8 @@ def render_framework_page(repo: SQLiteJournalRepository) -> None:
     if monitor_tab.open:
         with monitor_tab:
             _render_monitor(repo, account)
-    if roadmap_tab.open:
-        with roadmap_tab:
+    if improve_tab.open:
+        with improve_tab:
             _render_roadmap(repo, account)
 
 
@@ -922,40 +923,83 @@ def _render_period_reviews(repo: SQLiteJournalRepository, account: AccountListIt
             st.markdown(f"**Priority action:** {latest.priority_action}")
 
 
+def _next_roadmap_item(
+    pillar: str,
+    evidence: dict[tuple[str, int, str], PillarRoadmapEvidenceView],
+) -> tuple[int, str, str] | None:
+    """Return the first incomplete saved-evidence item for a roadmap pillar."""
+    for level, items in ROADMAP_ITEMS[pillar].items():
+        for item_key, label in items:
+            item = evidence.get((pillar, level, item_key))
+            if item is None or not item.completed:
+                return level, item_key, label
+    return None
+
+
 def _render_roadmap(repo: SQLiteJournalRepository, account: AccountListItem) -> None:
     service = FrameworkService(repo)
     statuses = {item.pillar: item for item in service.roadmap_status(account.id)}
     evidence = {(item.pillar, item.level, item.item_key): item for item in repo.list_pillar_roadmap_evidence(account.id)}
-    st.markdown("#### Parallel readiness roadmap")
-    with st.container(horizontal=True, gap="small"):
-        for pillar in PILLAR_NAMES:
-            status = statuses[pillar]
-            st.metric(PILLAR_NAMES[pillar], f"Level {status.current_level}", f"{status.completed_items}/{status.total_items} evidence", border=True)
-    pillar = st.segmented_control("Roadmap pillar", list(PILLAR_NAMES), format_func=PILLAR_NAMES.get, default="psychology", required=True, width="content", key=f"roadmap-pillar-{account.id}")
-    status = statuses[pillar]
-    items = ROADMAP_ITEMS[pillar][status.current_level]
-    st.markdown(f"##### {PILLAR_NAMES[pillar]} · Level {status.current_level}")
-    st.caption(status.gate)
-    if status.can_complete_current_level:
-        with st.form(f"roadmap-{pillar}-{status.current_level}"):
-            values: dict[str, tuple[bool, str]] = {}
-            for item_key, label in items:
-                existing = evidence.get((pillar, status.current_level, item_key))
-                complete = st.checkbox(label, value=bool(existing and existing.completed), key=f"roadmap-complete-{pillar}-{status.current_level}-{item_key}")
-                note = st.text_area("Evidence", value=existing.evidence_note if existing and existing.evidence_note else "", key=f"roadmap-note-{pillar}-{status.current_level}-{item_key}")
-                values[item_key] = (complete, note)
-            submitted = st.form_submit_button("Save roadmap evidence", type="primary")
-        if submitted:
-            try:
-                for item_key, (complete, note) in values.items():
-                    repo.save_pillar_roadmap_evidence(account_id=account.id, pillar=pillar, level=status.current_level, item_key=item_key, completed=complete, evidence_note=note)
-            except ValueError as error:
-                st.error(str(error))
-            else:
-                st.success("Roadmap evidence saved.")
-                st.rerun()
-    else:
-        st.info(status.gate)
+    st.markdown("#### Readiness roadmap")
+    st.caption("Complete the next evidence item for each pillar. Score and review gates unlock automatically when met.")
+    for pillar, name in PILLAR_NAMES.items():
+        status = statuses[pillar]
+        next_item = _next_roadmap_item(pillar, evidence)
+        with st.container(border=True):
+            st.markdown(f"##### {name}")
+            st.caption(f"Level {status.current_level} · {status.completed_items}/{status.total_items} evidence complete")
+            if next_item is None:
+                st.success("All roadmap evidence is complete. Continue monitoring the current sample.", icon=":material/check_circle:")
+                continue
+            level, item_key, label = next_item
+            st.markdown(f"**Next:** {label}")
+            if not status.can_complete_current_level:
+                st.info(status.gate, icon=":material/lock:")
+                continue
+            existing = evidence.get((pillar, level, item_key))
+            with st.form(f"roadmap-next-{pillar}-{level}-{item_key}"):
+                complete = st.checkbox("I completed this step", value=bool(existing and existing.completed))
+                note = st.text_area(
+                    "Evidence note",
+                    value=existing.evidence_note if existing and existing.evidence_note else "",
+                    placeholder="Briefly record the evidence for this step.",
+                )
+                submitted = st.form_submit_button("Mark complete", type="primary")
+            if submitted:
+                if not complete:
+                    st.warning("Confirm completion before saving this roadmap item.")
+                else:
+                    try:
+                        repo.save_pillar_roadmap_evidence(
+                            account_id=account.id,
+                            pillar=pillar,
+                            level=level,
+                            item_key=item_key,
+                            completed=True,
+                            evidence_note=note,
+                        )
+                    except ValueError as error:
+                        st.error(str(error))
+                    else:
+                        st.success(f"{name} roadmap item completed.")
+                        st.rerun()
+    completed = [item for item in evidence.values() if item.completed]
+    if completed:
+        with st.expander("Completed evidence", icon=":material/history:"):
+            for pillar, name in PILLAR_NAMES.items():
+                pillar_items = sorted((item for item in completed if item.pillar == pillar), key=lambda item: (item.level, item.item_key))
+                if not pillar_items:
+                    continue
+                st.markdown(f"**{name}**")
+                labels = {
+                    (level, item_key): label
+                    for level, items in ROADMAP_ITEMS[pillar].items()
+                    for item_key, label in items
+                }
+                for item in pillar_items:
+                    label = labels[(item.level, item.item_key)]
+                    detail = f" — {item.evidence_note}" if item.evidence_note else ""
+                    st.markdown(f"- Level {item.level}: {label}{detail}")
 
 
 def _render_risk_policy(repo: SQLiteJournalRepository, account: AccountListItem) -> None:
