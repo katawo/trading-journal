@@ -121,7 +121,9 @@ def default_mt5_export_path(account_login: str | None = None, *, home: Path | No
     filename = mt5_export_filename(account_login)
     location = find_mt5_common_files(account_login, home=home)
     if location.path is None:
-        return str(MT5_EXPORT_DIRECTORY / filename)
+        # This is a portable, app-relative default rather than a local filesystem
+        # path, so keep its separator stable on Windows as well.
+        return (MT5_EXPORT_DIRECTORY / filename).as_posix()
     return str(location.path / MT5_EXPORT_DIRECTORY / filename)
 
 
