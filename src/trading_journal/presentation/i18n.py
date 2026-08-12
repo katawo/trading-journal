@@ -1,0 +1,517 @@
+"""Small, dependency-free localization helpers for the local Streamlit UI."""
+
+from __future__ import annotations
+
+from functools import wraps
+from typing import Any
+
+import streamlit as st
+
+LANGUAGES = {"en": "English", "vi": "Tiếng Việt"}
+
+# English is the source language. Keep keys as source text so new wording is
+# obvious during review and untranslated text safely remains readable.
+VI: dict[str, str] = {
+    "Trading Journal": "Nhật ký giao dịch",
+    "Local-only journal with read-only MT5 imports.": "Nhật ký cục bộ với dữ liệu MT5 chỉ đọc.",
+    "Workspace": "Không gian làm việc",
+    "Dashboard": "Tổng quan",
+    "Framework": "Framework",
+    "Settings": "Cài đặt",
+    "Guide": "Hướng dẫn",
+    "Review": "Đánh giá",
+    "Monitor": "Theo dõi",
+    "Improve": "Cải thiện",
+    "Psychology": "Tâm lý",
+    "Risk management": "Quản lý rủi ro",
+    "Trading system": "Hệ thống giao dịch",
+    "Clear": "An toàn",
+    "Caution": "Cảnh báo",
+    "Stop": "Dừng",
+    "Set up": "Thiết lập",
+    "Incomplete": "Chưa đủ",
+    "Ready": "Sẵn sàng",
+    "Trading account": "Tài khoản giao dịch",
+    "Performance dashboard": "Tổng quan hiệu suất",
+    "Sync MT5 now": "Đồng bộ MT5 ngay",
+    "Settings": "Cài đặt",
+    "Account & risk": "Tài khoản và rủi ro",
+    "Strategies": "Chiến lược",
+    "Review rules": "Quy tắc đánh giá",
+    "Reporting calendar": "Lịch báo cáo",
+    "Save calendar": "Lưu lịch",
+    "Approved MT5 accounts": "Tài khoản MT5 đã phê duyệt",
+    "New account": "Tài khoản mới",
+    "Account name": "Tên tài khoản",
+    "MT5 account ID": "ID tài khoản MT5",
+    "Broker server": "Máy chủ môi giới",
+    "Funded capital (optional)": "Vốn ban đầu (không bắt buộc)",
+    "Save account": "Lưu tài khoản",
+    "Update account": "Cập nhật tài khoản",
+    "Deactivate account": "Ngừng kích hoạt tài khoản",
+    "Account risk policy": "Chính sách rủi ro tài khoản",
+    "Save risk policy": "Lưu chính sách rủi ro",
+    "Standard risk (1R) (%)": "Rủi ro chuẩn (1R) (%)",
+    "Maximum risk per trade (%)": "Rủi ro tối đa mỗi giao dịch (%)",
+    "Minimum R:R": "R:R tối thiểu",
+    "Hard limits": "Giới hạn cứng",
+    "Daily loss limit (R)": "Giới hạn lỗ ngày (R)",
+    "Weekly loss limit (R)": "Giới hạn lỗ tuần (R)",
+    "Maximum drawdown (%)": "Sụt giảm tối đa (%)",
+    "Maximum loss streak": "Chuỗi lỗ tối đa",
+    "Review status": "Trạng thái đánh giá",
+    "Needs approval": "Cần phê duyệt",
+    "Auto-reviewed": "Đã đánh giá tự động",
+    "Manually reviewed": "Đã đánh giá thủ công",
+    "All": "Tất cả",
+    "Show failed only": "Chỉ hiển thị mục không đạt",
+    "Clear selection": "Bỏ chọn",
+    "Previous": "Trước",
+    "Next": "Tiếp",
+    "Review trades": "Đánh giá giao dịch đã đóng",
+    "Closed-trade reviews": "Đánh giá giao dịch đã đóng",
+    "Monitoring": "Theo dõi",
+    "Overall readiness": "Mức sẵn sàng tổng thể",
+    "Readiness roadmap": "Lộ trình mức sẵn sàng",
+    "Completed evidence": "Bằng chứng đã hoàn tất",
+    "Evidence note": "Ghi chú bằng chứng",
+    "Mark complete": "Đánh dấu hoàn tất",
+    "I completed this step": "Tôi đã hoàn tất bước này",
+    "Weekly and monthly review": "Đánh giá tuần và tháng",
+    "Save period review": "Lưu đánh giá giai đoạn",
+    "Review note": "Ghi chú đánh giá",
+    "One priority corrective action": "Một hành động cải thiện ưu tiên",
+    "Account balance": "Số dư tài khoản",
+    "Account growth": "Tăng trưởng tài khoản",
+    "Realized P&L": "P&L đã thực hiện",
+    "Account drawdown": "Sụt giảm tài khoản",
+    "Logical-trade quality": "Chất lượng giao dịch logic",
+    "Total R": "Tổng R",
+    "Win rate": "Tỷ lệ thắng",
+    "Profit factor": "Hệ số lợi nhuận",
+    "Expectancy": "Kỳ vọng",
+    "Worst day": "Ngày tệ nhất",
+    "Chart view": "Chế độ biểu đồ",
+    "Daily": "Theo ngày",
+    "Per trade": "Theo giao dịch",
+    "Language": "Ngôn ngữ",
+    "English": "English",
+    "Tiếng Việt": "Tiếng Việt",
+    "just now": "vừa xong",
+    "Active alerts": "Cảnh báo đang hoạt động",
+    "Drag to move. Click to view active alerts.": "Kéo để di chuyển. Nhấp để xem cảnh báo đang hoạt động.",
+    "{critical} critical · {warnings} warning{plural}": "{critical} nghiêm trọng · {warnings} cảnh báo",
+    "{warnings} warning{plural}": "{warnings} cảnh báo",
+    "Critical": "Nghiêm trọng",
+    "warning": "cảnh báo",
+    "warnings": "cảnh báo",
+    "Unknown error": "Lỗi không xác định",
+    "No export checked yet": "Chưa kiểm tra tệp xuất nào",
+    "MT5 sync needs attention": "Đồng bộ MT5 cần được chú ý",
+    "MT5 auto-sync needs attention": "Tự động đồng bộ MT5 cần được chú ý",
+    "Journal settings saved.": "Đã lưu cài đặt nhật ký.",
+    "MT5 account added.": "Đã thêm tài khoản MT5.",
+    "MT5 account updated.": "Đã cập nhật tài khoản MT5.",
+    "No accounts yet. Create the first one to start importing MT5 trades.": "Chưa có tài khoản. Hãy tạo tài khoản đầu tiên để bắt đầu nhập giao dịch MT5.",
+    "No approved MT5 accounts are configured for sync.": "Chưa cấu hình tài khoản MT5 được phê duyệt để đồng bộ.",
+    "MT5 journal is already up to date.": "Nhật ký MT5 đã được cập nhật.",
+    "Configure journal settings before viewing reports.": "Hãy cấu hình cài đặt nhật ký trước khi xem báo cáo.",
+    "Add an approved MT5 account in Settings before viewing reports.": "Hãy thêm tài khoản MT5 được phê duyệt trong Cài đặt trước khi xem báo cáo.",
+    "No MT5 positions were closed in the selected period.": "Không có vị thế MT5 nào được đóng trong giai đoạn đã chọn.",
+    "Awaiting risk": "Đang chờ dữ liệu rủi ro",
+    "No losses": "Không có lệnh lỗ",
+    "Untagged": "Chưa gắn chiến lược",
+    "Current": "Hiện tại",
+    "Accounts": "Tài khoản",
+    "Account": "Tài khoản",
+    "Connection": "Kết nối",
+    "MT5 connection": "Kết nối MT5",
+    "Open this account": "Mở tài khoản này",
+    "Currency": "Tiền tệ",
+    "Set now or later": "Thiết lập ngay hoặc sau",
+    "Advanced: custom export location": "Nâng cao: vị trí tệp xuất tùy chỉnh",
+    "Custom export path (optional)": "Đường dẫn tệp xuất tùy chỉnh (không bắt buộc)",
+    "Add account": "Thêm tài khoản",
+    "Delete account": "Xóa tài khoản",
+    "Quit desktop journal": "Thoát nhật ký desktop",
+    "Strategy library": "Thư viện chiến lược",
+    "Add strategy": "Thêm chiến lược",
+    "Strategy name": "Tên chiến lược",
+    "Strategy description": "Mô tả chiến lược",
+    "Magic numbers (optional)": "Magic number (không bắt buộc)",
+    "Use as the journal default strategy": "Dùng làm chiến lược mặc định của nhật ký",
+    "Save strategy": "Lưu chiến lược",
+    "Update strategy": "Cập nhật chiến lược",
+    "No strategies yet. Create one before reviewing trade quality.": "Chưa có chiến lược. Hãy tạo một chiến lược trước khi đánh giá chất lượng giao dịch.",
+    "Three-pillar framework": "Khung ba trụ cột",
+    "Three-pillar monitor": "Theo dõi ba trụ cột",
+    "Readiness": "Mức sẵn sàng",
+    "Risk state": "Trạng thái rủi ro",
+    "Today": "Hôm nay",
+    "Max drawdown": "Sụt giảm tối đa",
+    "Closed-trade detail": "Chi tiết giao dịch đã đóng",
+    "Strategy results and backtest context": "Kết quả chiến lược và bối cảnh backtest",
+    "Symbol": "Mã giao dịch",
+    "Positions": "Vị thế",
+    "Trade score": "Điểm giao dịch",
+    "Risk evidence": "Bằng chứng rủi ro",
+    "Assessment": "Đánh giá",
+    "Strategy": "Chiến lược",
+    "Actual risk amount": "Số tiền rủi ro thực tế",
+    "Corrective action": "Hành động cải thiện",
+    "Update assessment": "Cập nhật đánh giá",
+    "Save assessment": "Lưu đánh giá",
+    "Pass": "Đạt",
+    "Partial": "Một phần",
+    "Fail": "Không đạt",
+    "Rule adherence": "Tuân thủ quy tắc",
+    "Impulse control": "Kiểm soát bốc đồng",
+    "Emotional control": "Kiểm soát cảm xúc",
+    "Patience & discipline": "Kiên nhẫn và kỷ luật",
+    "Risk-policy adherence": "Tuân thủ chính sách rủi ro",
+    "Position-size accuracy": "Độ chính xác khối lượng",
+    "Stop discipline": "Kỷ luật stop",
+    "Exposure & limit compliance": "Tuân thủ phơi nhiễm và giới hạn",
+    "Setup validity": "Tính hợp lệ setup",
+    "Context alignment": "Phù hợp bối cảnh",
+    "Entry fidelity": "Độ chính xác điểm vào",
+    "Invalidation / stop fidelity": "Độ chính xác vô hiệu hóa / stop",
+    "Management / exit fidelity": "Độ chính xác quản lý / thoát lệnh",
+    "Back": "Quay lại",
+    "Manage positions": "Quản lý vị thế",
+    "Create logical trade": "Tạo giao dịch logic",
+    "Disband into individual trades": "Tách thành các giao dịch riêng lẻ",
+    "Rolling sample": "Mẫu trượt",
+    "What drives the current scores": "Yếu tố tạo nên điểm hiện tại",
+    "Selected-account execution trend": "Xu hướng thực hiện của tài khoản đã chọn",
+    "Process-quality distribution": "Phân bố chất lượng quy trình",
+    "Recurring issues": "Vấn đề lặp lại",
+    "No tagged recurring issues in this sample.": "Không có vấn đề lặp lại được gắn thẻ trong mẫu này.",
+    "Period review saved.": "Đã lưu đánh giá giai đoạn.",
+    "Within-policy automatic evidence is counted as an Auto-review. Approval-needed evidence can be approved here or replaced by a full assessment.": "Bằng chứng tự động trong chính sách được tính là đánh giá tự động. Bằng chứng cần phê duyệt có thể được phê duyệt tại đây hoặc thay bằng đánh giá đầy đủ.",
+    "Complete the next evidence item for each pillar. Score and review gates unlock automatically when met.": "Hoàn tất mục bằng chứng tiếp theo cho mỗi trụ cột. Các cổng điểm và đánh giá sẽ tự mở khi đủ điều kiện.",
+    "All roadmap evidence is complete. Continue monitoring the current sample.": "Đã hoàn tất toàn bộ bằng chứng lộ trình. Hãy tiếp tục theo dõi mẫu hiện tại.",
+    "Confirm completion before saving this roadmap item.": "Xác nhận hoàn tất trước khi lưu mục lộ trình này.",
+    "Within policy": "Trong chính sách",
+    "Over policy": "Vượt chính sách",
+    "Unavailable": "Chưa khả dụng",
+    "Preset SL": "SL thiết lập sẵn",
+    "Mixed estimates": "Ước tính hỗn hợp",
+    "No source": "Không có nguồn",
+    "Reviewed actual risk": "Rủi ro thực tế đã đánh giá",
+    "Reviewed Actual risk {amount} is {state}. {policy} It replaces automatic evidence for this logical-trade policy comparison only; daily, weekly, drawdown, and streak monitoring remain based on immutable MT5 positions.": "Rủi ro thực tế đã đánh giá {amount} là {state}. {policy} Nó chỉ thay thế bằng chứng tự động khi so sánh chính sách của giao dịch logic này; theo dõi ngày, tuần, drawdown và chuỗi lỗ vẫn dựa trên các vị thế MT5 bất biến.",
+    "Policy maximum: {amount}.": "Mức tối đa theo chính sách: {amount}.",
+    "No policy maximum is available.": "Chưa có mức tối đa theo chính sách.",
+    "Process failed — hard-rule event: {events}": "Quy trình không đạt — sự kiện quy tắc cứng: {events}",
+    "Psychology and System are trader-wide. Risk is scoped to {account}.": "Tâm lý và Hệ thống áp dụng cho toàn trader. Rủi ro áp dụng cho {account}.",
+    "{label} · {count} in sample": "{label} · {count} trong mẫu",
+    "Correct {trade}": "Sửa {trade}",
+    "Review {trade}": "Đánh giá {trade}",
+    "{trade} · Entry {entry} · Exit {exit}. MT5 execution data is read-only.": "{trade} · Vào {entry} · Thoát {exit}. Dữ liệu thực hiện MT5 chỉ đọc.",
+    "Member positions ({count})": "Vị thế thành viên ({count})",
+    "Position": "Vị thế",
+    "Opened": "Mở",
+    "Closed": "Đóng",
+    "Standalone": "Độc lập",
+    "Select": "Chọn",
+    "Actions": "Thao tác",
+    "Hard rules": "Quy tắc cứng",
+    "Score": "Điểm",
+    "Trade": "Giao dịch",
+    "Auto-review": "Đánh giá tự động",
+    "Approved auto-review": "Đánh giá tự động đã phê duyệt",
+    "Reviewed": "Đã đánh giá",
+    "Approve": "Phê duyệt",
+    "Ungroup": "Bỏ gộp",
+    "Classification": "Phân loại",
+    "Trades": "Giao dịch",
+    "Pillar": "Trụ cột",
+    "Metric": "Chỉ số",
+    "Scope": "Phạm vi",
+    "Issue": "Vấn đề",
+    "Count": "Số lượng",
+    "Due": "Đến hạn",
+    "Up to date": "Đã cập nhật",
+    "Weekly review": "Đánh giá tuần",
+    "Monthly review": "Đánh giá tháng",
+    "Latest saved period review": "Đánh giá giai đoạn đã lưu gần nhất",
+    "Priority action:": "Hành động ưu tiên:",
+    "Briefly record the evidence for this step.": "Ghi ngắn gọn bằng chứng cho bước này.",
+    "New strategy": "Chiến lược mới",
+    "Backtest start date": "Ngày bắt đầu backtest",
+    "Backtest end date": "Ngày kết thúc backtest",
+    "Backtest sample size": "Kích thước mẫu backtest",
+    "Backtest win rate (%)": "Tỷ lệ thắng backtest (%)",
+    "Backtest expectancy (R)": "Expectancy backtest (R)",
+    "Backtest net R": "Tổng R backtest",
+    "Good Win": "Lãi tốt",
+    "Good Loss": "Lỗ tốt",
+    "Good Breakeven": "Hòa vốn tốt",
+    "Bad Win": "Lãi xấu",
+    "Bad Loss": "Lỗ xấu",
+    "Bad Breakeven": "Hòa vốn xấu",
+    "Needs improvement Win": "Lãi cần cải thiện",
+    "Needs improvement Loss": "Lỗ cần cải thiện",
+    "Needs improvement Breakeven": "Hòa vốn cần cải thiện",
+    "Unclassified": "Chưa phân loại",
+    "Trader-wide": "Toàn trader",
+    "Selected account": "Tài khoản đã chọn",
+    "Post-loss discipline": "Kỷ luật sau lỗ",
+    "Policy adherence": "Tuân thủ chính sách",
+    "Limit compliance": "Tuân thủ giới hạn",
+    "Exposure control": "Kiểm soát phơi nhiễm",
+    "Execution fidelity": "Độ chính xác thực hiện",
+    "Evidence quality": "Chất lượng bằng chứng",
+    "Edge evidence": "Bằng chứng edge",
+    "Document triggers and stop conditions": "Ghi lại trigger và điều kiện dừng",
+    "Document no-revenge and no-chase rules": "Ghi lại quy tắc không trả thù và không đuổi giá",
+    "Record structured practice and recurring patterns": "Ghi lại thực hành có cấu trúc và mẫu hình lặp lại",
+    "Define account risk policy and hard limits": "Xác định chính sách rủi ro tài khoản và giới hạn cứng",
+    "Document the position-sizing method": "Ghi lại phương pháp xác định khối lượng",
+    "Record risk-calculation or simulation evidence": "Ghi lại bằng chứng tính rủi ro hoặc mô phỏng",
+    "Define context, entry, invalidation, exit, and no-trade rules": "Xác định quy tắc bối cảnh, vào lệnh, vô hiệu hóa, thoát lệnh và không giao dịch",
+    "Document valid and invalid examples": "Ghi lại ví dụ hợp lệ và không hợp lệ",
+    "Record 100+ backtest trades with positive expectancy after costs": "Ghi lại hơn 100 giao dịch backtest có expectancy dương sau chi phí",
+    "20 full reviews, score at least 70, no active hard failure": "20 đánh giá đầy đủ, điểm ít nhất 70, không có lỗi cứng đang hoạt động",
+    "30 full reviews, current period review, score at least 80": "30 đánh giá đầy đủ, đánh giá giai đoạn hiện tại, điểm ít nhất 80",
+    "Record one behavioural hypothesis, result, and keep/reject decision": "Ghi một giả thuyết hành vi, kết quả và quyết định giữ/loại",
+    "Record one risk-policy hypothesis, result, and keep/reject decision": "Ghi một giả thuyết chính sách rủi ro, kết quả và quyết định giữ/loại",
+    "Record one system hypothesis, result, and keep/reject decision": "Ghi một giả thuyết hệ thống, kết quả và quyết định giữ/loại",
+    "Account balance curve": "Đường số dư tài khoản",
+    "Account equity curve · P&L": "Đường vốn tài khoản · P&L",
+    "Account drawdown from daily peak": "Drawdown tài khoản từ đỉnh ngày",
+    "Daily realized P&L": "P&L thực hiện theo ngày",
+    "Cumulative logical-trade P&L": "P&L lũy kế giao dịch logic",
+    "Logical-trade drawdown": "Drawdown giao dịch logic",
+    "Logical-trade P&L": "P&L giao dịch logic",
+    "Strategy P&L": "P&L theo chiến lược",
+    "Closed-trade detail": "Chi tiết giao dịch đã đóng",
+    "Logical trade": "Giao dịch logic",
+    "Result R": "Kết quả R",
+    "Post-close drawdown": "Drawdown sau khi đóng",
+    "Live P&L ({currency})": "P&L thực tế ({currency})",
+    "Live total R": "Tổng R thực tế",
+    "Backtest trades": "Giao dịch backtest",
+    "Backtest win rate": "Tỷ lệ thắng backtest",
+    "Backtest expectancy": "Expectancy backtest",
+    "Backtest net R": "Tổng R backtest",
+}
+
+# Dynamic captions and messages often include account names, dates, amounts, or counts.
+# Translate their stable wording while deliberately leaving those values untouched.
+_PHRASES: dict[str, str] = {
+    "Last update:": "Cập nhật gần nhất:",
+    "Checks every configured account immediately (read-only).": "Kiểm tra ngay mọi tài khoản đã cấu hình (chỉ đọc).",
+    "Manual sync imported": "Đồng bộ thủ công đã nhập",
+    "Auto-imported": "Đã tự động nhập",
+    "created and": "đã tạo và",
+    "updated MT5 position(s).": "vị thế MT5 đã cập nhật.",
+    "Desktop sync requested.": "Đã yêu cầu đồng bộ desktop.",
+    "The local worker will check every configured export within one second.": "Tiến trình cục bộ sẽ kiểm tra mọi tệp xuất đã cấu hình trong vòng một giây.",
+    "All monetary figures below are for this": "Mọi số liệu tiền tệ bên dưới chỉ dành cho tài khoản",
+    "account only.": "này.",
+    "No currency conversion is applied.": "Không áp dụng quy đổi tiền tệ.",
+    "Report dates use": "Ngày báo cáo dùng",
+    "R is based on": "R dựa trên",
+    "logical trades with an effective planned risk.": "giao dịch logic có rủi ro kế hoạch hiệu lực.",
+    "All": "Tất cả",
+    "logical trades have an effective risk value.": "giao dịch logic có giá trị rủi ro hiệu lực.",
+    "Set funded capital in Settings to enable the balance curve, balance growth, and drawdown percentage.": "Thiết lập vốn ban đầu trong Cài đặt để bật đường số dư, tăng trưởng số dư và tỷ lệ sụt giảm.",
+    "No completed MT5 positions have been imported for this account yet.": "Chưa nhập vị thế MT5 đã đóng nào cho tài khoản này.",
+    "Create or select a strategy in Settings → Strategies before saving a full three-pillar review.": "Hãy tạo hoặc chọn chiến lược trong Cài đặt → Chiến lược trước khi lưu đánh giá ba trụ cột đầy đủ.",
+    "Risk state:": "Trạng thái rủi ro:",
+    "MT5 execution data is read-only.": "Dữ liệu thực hiện MT5 chỉ đọc.",
+    "Rate every criterion as Pass, Partial, or Fail before saving.": "Hãy chấm mọi tiêu chí là Đạt, Một phần hoặc Không đạt trước khi lưu.",
+    "No active Risk policy is attached;": "Chưa gắn Chính sách rủi ro đang hoạt động;",
+    "No hard-rule events are enabled.": "Chưa bật sự kiện quy tắc cứng nào.",
+    "Page": "Trang",
+    "of": "trên",
+    "logical trade": "giao dịch logic",
+    "logical trades": "giao dịch logic",
+    "No tagged recurring issues in this sample.": "Không có vấn đề lặp lại được gắn thẻ trong mẫu này.",
+    "Level": "Cấp độ",
+    "evidence complete": "bằng chứng đã hoàn tất",
+    "Next:": "Tiếp theo:",
+    "roadmap item completed.": "mục lộ trình đã hoàn tất.",
+    "Funded capital:": "Vốn ban đầu:",
+    "Risk policy saved as a new version.": "Đã lưu chính sách rủi ro thành phiên bản mới.",
+    "Review rules saved.": "Đã lưu quy tắc đánh giá.",
+    "Server Timezone": "Múi giờ máy chủ",
+    "Local Timezone": "Múi giờ cục bộ",
+    "UTC": "UTC",
+    "Risk limits are clear.": "Các giới hạn rủi ro đang an toàn.",
+    "A completed-trade Risk limit is approaching its threshold.": "Một giới hạn Rủi ro của giao dịch đã đóng đang gần ngưỡng.",
+    "A completed-trade Risk limit needs review.": "Một giới hạn Rủi ro của giao dịch đã đóng cần được xem xét.",
+    "logical trade(s) still need a full review.": "giao dịch logic vẫn cần đánh giá đầy đủ.",
+    "No usable automatic risk source is available.": "Không có nguồn rủi ro tự động khả dụng.",
+    "Specific preset SL": "SL thiết lập sẵn cụ thể",
+    "Real-loss estimate": "Ước tính lỗ thực tế",
+    "Pre-trade-balance estimate": "Ước tính số dư trước giao dịch",
+    "Mixed automatic estimates": "Ước tính tự động hỗn hợp",
+    "Needs": "Cần",
+    "complete reviews and measurable evidence in every pillar.": "đánh giá đầy đủ và bằng chứng có thể đo lường ở mọi trụ cột.",
+    "A hard-rule failure overrides readiness in the selected rolling sample.": "Một vi phạm quy tắc cứng sẽ ghi đè mức sẵn sàng trong mẫu trượt đã chọn.",
+    "Readiness is the weakest complete pillar.": "Mức sẵn sàng là điểm thấp nhất của trụ cột đã hoàn tất.",
+    "No complete post-trade review evidence yet.": "Chưa có bằng chứng đánh giá sau giao dịch đầy đủ.",
+    "A hard-rule failure overrides the numeric score.": "Một vi phạm quy tắc cứng sẽ ghi đè điểm số.",
+    "Repeated critical violations cap this pillar at 59 until a period review is saved.": "Vi phạm nghiêm trọng lặp lại giới hạn trụ cột này ở 59 cho đến khi lưu đánh giá giai đoạn.",
+    "Set funded capital and save an account Risk policy to monitor this account.": "Thiết lập vốn ban đầu và lưu Chính sách rủi ro tài khoản để theo dõi tài khoản này.",
+    "All framework evidence is complete; continue monitoring the current sample.": "Đã hoàn tất toàn bộ bằng chứng khung; hãy tiếp tục theo dõi mẫu hiện tại.",
+    "Needs 20 full reviews, a score of at least 70, and no active hard failure.": "Cần 20 đánh giá đầy đủ, điểm ít nhất 70 và không có vi phạm quy tắc cứng đang hoạt động.",
+    "Needs 30 full reviews, a 30-review score of at least 80, a saved weekly or monthly review for the latest completed period, and no active hard failure.": "Cần 30 đánh giá đầy đủ, điểm 30 đánh giá ít nhất 80, một đánh giá tuần hoặc tháng đã lưu cho giai đoạn hoàn tất gần nhất và không có vi phạm quy tắc cứng đang hoạt động.",
+    "Complete the current evidence item with a note.": "Hoàn tất mục bằng chứng hiện tại kèm ghi chú.",
+    "**Report scope**": "**Phạm vi báo cáo**",
+    "Account maintenance": "Quản lý tài khoản",
+    "Add backtest evidence (optional)": "Thêm bằng chứng backtest (không bắt buộc)",
+    "Backtest notes": "Ghi chú backtest",
+    "Choose the calendar used for reports and limits. Server Timezone follows the MT5 broker clock.": "Chọn lịch dùng cho báo cáo và giới hạn. Múi giờ máy chủ theo đồng hồ broker MT5.",
+    "Closing the local Trading Journal…": "Đang đóng Trading Journal cục bộ…",
+    "Configure reporting, account risk, reusable strategies, and review rules.": "Cấu hình báo cáo, rủi ro tài khoản, chiến lược tái sử dụng và quy tắc đánh giá.",
+    "Default: `trading_journal/<MT5-login>_positions.csv` under MT5 Common Files.": "Mặc định: `trading_journal/<MT5-login>_positions.csv` trong MT5 Common Files.",
+    "Desktop sync requested. The local worker will check every configured export within one second.": "Đã yêu cầu đồng bộ desktop. Tiến trình cục bộ sẽ kiểm tra mọi tệp xuất đã cấu hình trong vòng một giây.",
+    "Each account has a unique MT5 account ID. Its broker server confirms the export source. Funded capital can be updated later; it recalculates historical growth, drawdown, and Risk limits without changing MT5 trades.": "Mỗi tài khoản có ID MT5 duy nhất. Máy chủ broker xác nhận nguồn tệp xuất. Có thể cập nhật vốn ban đầu sau; dữ liệu này tính lại tăng trưởng lịch sử, drawdown và giới hạn Rủi ro mà không thay đổi giao dịch MT5.",
+    "Group trades and reports by": "Nhóm giao dịch và báo cáo theo",
+    "I understand this permanently deletes this unused account": "Tôi hiểu thao tác này xóa vĩnh viễn tài khoản chưa dùng này",
+    "Leave this closed unless you want to record the evidence behind this strategy.": "Hãy để mục này đóng trừ khi bạn muốn ghi lại bằng chứng cho chiến lược này.",
+    "MT5 Common Files was not detected. Set a custom path or `TRADING_JOURNAL_MT5_COMMON_FILES`.": "Không phát hiện MT5 Common Files. Hãy đặt đường dẫn tùy chỉnh hoặc `TRADING_JOURNAL_MT5_COMMON_FILES`.",
+    "MT5 magic numbers (optional)": "MT5 magic number (không bắt buộc)",
+    "No complete logical trades closed in this period. Showing the immutable MT5 position history instead.": "Không có giao dịch logic hoàn chỉnh nào đóng trong giai đoạn này. Thay vào đó đang hiển thị lịch sử vị thế MT5 bất biến.",
+    "Only one default strategy can exist. Every imported trade inherits it dynamically.": "Chỉ có thể có một chiến lược mặc định. Mỗi giao dịch đã nhập sẽ kế thừa nó động.",
+    "Report account": "Tài khoản báo cáo",
+    "Report period": "Giai đoạn báo cáo",
+    "Save an MT5 account before configuring its Risk policy.": "Hãy lưu tài khoản MT5 trước khi cấu hình Chính sách rủi ro.",
+    "Save reusable strategy definitions and, when available, their backtest evidence. Backtest fields are optional and do not alter live-trade results.": "Lưu định nghĩa chiến lược tái sử dụng và bằng chứng backtest khi có. Các trường backtest không bắt buộc và không thay đổi kết quả giao dịch thực tế.",
+    "Start date must be on or before end date.": "Ngày bắt đầu phải trước hoặc bằng ngày kết thúc.",
+    "Strategy profile saved.": "Đã lưu hồ sơ chiến lược.",
+    "The journal, MT5 sync worker, and your data are running locally on this computer. Closing this desktop application stops automatic MT5 imports.": "Nhật ký, tiến trình đồng bộ MT5 và dữ liệu của bạn đang chạy cục bộ trên máy tính này. Đóng ứng dụng desktop sẽ dừng nhập MT5 tự động.",
+    "This account has imported trades or reviews. Deactivate it to remove it from imports and reports while retaining its local history. Adding the same MT5 account ID later reactivates it.": "Tài khoản này có giao dịch hoặc đánh giá đã nhập. Hãy ngừng kích hoạt để loại khỏi nhập và báo cáo nhưng vẫn giữ lịch sử cục bộ. Thêm lại cùng ID MT5 sau này sẽ kích hoạt lại.",
+    "This account has no imported trades. Deleting it permanently removes its account settings, import log, and risk-policy setup.": "Tài khoản này chưa có giao dịch đã nhập. Xóa nó sẽ xóa vĩnh viễn cài đặt tài khoản, nhật ký nhập và thiết lập chính sách rủi ro.",
+    "This view follows the current logical-trade grouping for review analysis. Account balance and account drawdown remain based on immutable MT5 positions in Daily view.": "Chế độ xem này theo cách gộp giao dịch logic hiện tại để phân tích đánh giá. Số dư và drawdown tài khoản vẫn dựa trên vị thế MT5 bất biến ở chế độ Theo ngày.",
+    "**Hard limits**": "**Giới hạn cứng**",
+    "A Strategy profile is required for a full post-trade assessment.": "Cần có hồ sơ Chiến lược cho đánh giá sau giao dịch đầy đủ.",
+    "Actual risk amount (optional)": "Số tiền rủi ro thực tế (không bắt buộc)",
+    "Add an approved MT5 account in Settings before using the framework.": "Hãy thêm tài khoản MT5 được phê duyệt trong Cài đặt trước khi dùng khung này.",
+    "Changing member positions supersedes this assessment and requires a new review. Changing only the label keeps it active.": "Thay đổi vị thế thành viên sẽ thay thế đánh giá này và cần đánh giá mới. Chỉ thay đổi nhãn thì đánh giá vẫn hoạt động.",
+    "Correlation / exposure policy": "Chính sách tương quan / phơi nhiễm",
+    "Deliberately widened stop is a hard Risk failure": "Cố ý nới rộng stop là lỗi cứng về Rủi ro",
+    "Hard-rule events": "Sự kiện quy tắc cứng",
+    "Latest saved period review": "Đánh giá giai đoạn đã lưu gần nhất",
+    "Manage logical-trade positions": "Quản lý vị thế giao dịch logic",
+    "Mandatory setup absent is a hard System failure": "Thiếu setup bắt buộc là lỗi cứng về Hệ thống",
+    "Maximum open risk (R)": "Rủi ro mở tối đa (R)",
+    "No active Risk policy is attached; the assessment still records your judgement, while automatic limit checks remain unavailable.": "Chưa gắn Chính sách rủi ro đang hoạt động; đánh giá vẫn ghi nhận nhận định của bạn, nhưng kiểm tra giới hạn tự động chưa khả dụng.",
+    "No active saved assessment is affected. Dashboard reporting will recalculate from the new grouping.": "Không có đánh giá đã lưu đang hoạt động nào bị ảnh hưởng. Báo cáo dashboard sẽ tính lại theo cách gộp mới.",
+    "No hard-rule events are enabled. Enable one in Settings → Review rules to record it on a new assessment.": "Chưa bật sự kiện quy tắc cứng nào. Hãy bật một sự kiện trong Cài đặt → Quy tắc đánh giá để ghi nó trong đánh giá mới.",
+    "Oversized revenge trade is a hard Psychology and Risk failure": "Giao dịch trả thù quá khổ là lỗi cứng về Tâm lý và Rủi ro",
+    "Post-trade assessment": "Đánh giá sau giao dịch",
+    "Reason tags": "Thẻ lý do",
+    "Reference-only open-risk controls": "Kiểm soát rủi ro mở chỉ để tham chiếu",
+    "Repeated critical violations before numeric cap": "Số vi phạm nghiêm trọng lặp lại trước khi giới hạn điểm",
+    "Save complete assessments to build a process-quality distribution.": "Hãy lưu các đánh giá đầy đủ để tạo phân bố chất lượng quy trình.",
+    "Save framework rules": "Lưu quy tắc khung",
+    "Set funded capital in Settings → Account & risk before saving a Risk policy.": "Hãy đặt vốn ban đầu trong Cài đặt → Tài khoản và rủi ro trước khi lưu Chính sách rủi ro.",
+    "The closed-trade MT5 exporter cannot verify open risk or correlation exposure automatically.": "Tệp xuất MT5 giao dịch đã đóng không thể tự xác minh rủi ro mở hoặc phơi nhiễm tương quan.",
+    "The policy defines reporting 1R and safety limits. It monitors closed MT5 trades only and never controls MT5.": "Chính sách xác định 1R báo cáo và giới hạn an toàn. Nó chỉ theo dõi giao dịch MT5 đã đóng và không bao giờ điều khiển MT5.",
+    "These rules affect new or corrected assessments and alerts only. Their effective result is snapshotted when an assessment is saved; later changes never rewrite history or lock MT5 trading.": "Các quy tắc này chỉ ảnh hưởng đánh giá mới hoặc được sửa và cảnh báo. Kết quả hiệu lực được chụp khi lưu đánh giá; thay đổi sau này không viết lại lịch sử hoặc khóa giao dịch MT5.",
+    "This trend uses selected-account reviewed trades. Score-card scopes remain explicit above.": "Xu hướng này dùng giao dịch đã đánh giá của tài khoản được chọn. Phạm vi thẻ điểm vẫn được nêu rõ phía trên.",
+    "This will apply the selected current membership to the logical trade.": "Thao tác này áp dụng thành viên hiện tại đã chọn cho giao dịch logic.",
+    "This will split the current logical trade into individual position trades.": "Thao tác này tách giao dịch logic hiện tại thành các giao dịch vị thế riêng lẻ.",
+    "Trade label (optional)": "Nhãn giao dịch (không bắt buộc)",
+    "Trading after a hard shutdown is a hard Risk failure": "Giao dịch sau shutdown cứng là lỗi cứng về Rủi ro",
+    "Use MT5 pre-trade balance as advisory no-SL risk evidence": "Dùng số dư MT5 trước giao dịch làm bằng chứng rủi ro tư vấn khi không có SL",
+    "Use completed MT5 trades to assess execution. Alerts are advisory; this journal never sends, blocks, or changes MT5 orders.": "Dùng giao dịch MT5 đã đóng để đánh giá thực hiện. Cảnh báo chỉ mang tính tư vấn; nhật ký này không bao giờ gửi, chặn hoặc thay đổi lệnh MT5.",
+    "What happened and what did you learn?": "Điều gì đã xảy ra và bạn học được gì?",
+    "Daily loss limit": "Giới hạn lỗ ngày",
+    "Weekly loss limit": "Giới hạn lỗ tuần",
+    "Maximum drawdown limit": "Giới hạn sụt giảm tối đa",
+    "Maximum losing-streak limit": "Giới hạn chuỗi lỗ tối đa",
+    "Risk monitor reached: {events}": "Đã chạm ngưỡng theo dõi rủi ro: {events}",
+    "Shutdown review: this entry followed an earlier completed position that reached {events}": "Đánh giá shutdown: lệnh vào này theo sau một vị thế đã đóng trước đó đã chạm {events}",
+    "{details}. This is advisory evidence, not a Process failure by itself.": "{details}. Đây là bằng chứng tư vấn, tự nó không phải lỗi Quy trình.",
+}
+
+
+def language() -> str:
+    return st.session_state.get("display_language", "en")
+
+
+def tr(text: str, /, **values: object) -> str:
+    """Translate a fixed UI phrase without translating journal or MT5 data."""
+    if language() != "vi":
+        return text.format(**values) if values else text
+    translated = VI.get(text)
+    if translated is None:
+        translated = text
+        for source, replacement in sorted(_PHRASES.items(), key=lambda item: len(item[0]), reverse=True):
+            translated = translated.replace(source, replacement)
+    return translated.format(**values) if values else translated
+
+
+def framework_alert_message(code: str, message: str) -> str:
+    """Render framework alert codes without relying on English generated text."""
+    if language() != "vi":
+        return message
+    pillar_labels = {
+        "psychology": tr("Psychology"),
+        "risk": tr("Risk management"),
+        "system": tr("Trading system"),
+    }
+    for pillar, label in pillar_labels.items():
+        if code == f"{pillar}_developing":
+            return f"{label} thấp hơn 70 trong mẫu trượt."
+        if code == f"{pillar}_hard_rule":
+            return f"{label} có vi phạm quy tắc cứng trong mẫu trượt."
+    if code == "weekly_review_due":
+        return "Đánh giá tuần đã đến hạn."
+    if code == "monthly_review_due":
+        return "Đánh giá tháng đã đến hạn."
+    return tr(message)
+
+
+def format_relative_time_localized(value: str) -> str:
+    if language() != "vi":
+        return value
+    if value == "just now":
+        return tr(value)
+    parts = value.split()
+    if len(parts) == 2 and parts[1] == "ago":
+        return f"{parts[0]} trước"
+    if len(parts) == 3 and parts[2] == "ago":
+        units = {"min": "phút", "hr": "giờ", "day": "ngày", "days": "ngày"}
+        return f"{parts[0]} {units.get(parts[1], parts[1])} trước"
+    return value
+
+
+def install_streamlit_translations() -> None:
+    """Apply localization at Streamlit's text boundary, never to journal data."""
+    if getattr(st, "_trading_journal_i18n_installed", False):
+        return
+
+    def translate_value(value: Any) -> Any:
+        if isinstance(value, str):
+            return tr(value)
+        if isinstance(value, list):
+            return [translate_value(item) for item in value]
+        if isinstance(value, tuple):
+            return tuple(translate_value(item) for item in value)
+        return value
+
+    def wrap(name: str, positions: tuple[int, ...] = (0,), keywords: tuple[str, ...] = ("label", "help", "placeholder")) -> None:
+        original = getattr(st, name)
+
+        @wraps(original)
+        def localized(*args: Any, **kwargs: Any) -> Any:
+            updated = list(args)
+            for position in positions:
+                if position < len(updated):
+                    updated[position] = translate_value(updated[position])
+            for key in keywords:
+                if key in kwargs:
+                    kwargs[key] = translate_value(kwargs[key])
+            return original(*updated, **kwargs)
+
+        setattr(st, name, localized)
+
+    for function in ("title", "subheader", "header", "markdown", "caption", "info", "warning", "error", "success", "button", "form_submit_button", "checkbox", "text_area", "text_input", "number_input", "selectbox", "segmented_control", "expander", "metric", "tabs"):
+        wrap(function)
+    st._trading_journal_i18n_installed = True

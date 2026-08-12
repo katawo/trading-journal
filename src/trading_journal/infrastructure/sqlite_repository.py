@@ -83,6 +83,7 @@ class JournalSettings(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     reporting_time_basis: Mapped[str] = mapped_column(String(16), nullable=False, default="server")
+    display_language: Mapped[str] = mapped_column(String(2), nullable=False, default="en")
     default_strategy_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     default_strategy_profile_id: Mapped[int | None] = mapped_column(ForeignKey("strategy_profiles.id"), nullable=True)
 
@@ -141,7 +142,11 @@ class LogicalTrade(Base):
 
 class Trade(Base):
     __tablename__ = "trades"
-    __table_args__ = (UniqueConstraint("mt5_account_id", "mt5_position_id", name="uq_mt5_position"),)
+    __table_args__ = (
+        UniqueConstraint("mt5_account_id", "mt5_position_id", name="uq_mt5_position"),
+        Index("ix_trades_account_exit", "mt5_account_id", "exit_time", "id"),
+        Index("ix_trades_logical_trade", "logical_trade_id"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     source: Mapped[str] = mapped_column(String(10), nullable=False)
@@ -176,11 +181,14 @@ class Trade(Base):
 
 class MT5ImportRun(Base):
     __tablename__ = "mt5_import_runs"
+    __table_args__ = (Index("ix_import_runs_account_path_status_id", "mt5_account_id", "source_file_path", "status", "id"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     mt5_account_id: Mapped[int] = mapped_column(ForeignKey("mt5_accounts.id"), nullable=False)
     source_file_path: Mapped[str] = mapped_column(String(1024), nullable=False)
     source_file_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_file_mtime_ns: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source_file_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     created_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     updated_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -221,6 +229,7 @@ class PostTradeAssessment(Base):
             unique=True,
             sqlite_where=text("superseded_at IS NULL"),
         ),
+        Index("ix_active_assessments_account", "mt5_account_id", sqlite_where=text("superseded_at IS NULL")),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -271,6 +280,7 @@ class AutoReviewApproval(Base):
     __tablename__ = "auto_review_approvals"
     __table_args__ = (
         Index("uq_active_auto_review_approval_logical_trade", "logical_trade_id", unique=True, sqlite_where=text("superseded_at IS NULL")),
+        Index("ix_active_auto_review_approvals_account", "mt5_account_id", sqlite_where=text("superseded_at IS NULL")),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -377,6 +387,7 @@ class TradeListItem:
 @dataclass(frozen=True)
 class JournalSettingsView:
     reporting_time_basis: str
+    display_language: str
     default_strategy_name: str | None
     default_strategy_profile_id: int | None
 
@@ -649,13 +660,35 @@ class SQLiteJournalRepository:
 
         self._sessions = sessionmaker(self._engine, expire_on_commit=False)
 
+    @property
+    def database_path(self) -> Path:
+        return self._database_path
+
     def initialize(self) -> None:
         self._require_clean_framework_schema()
         Base.metadata.create_all(self._engine)
+        with self._engine.begin() as connection:
+            columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(journal_settings)")}
+            if "display_language" not in columns:
+                connection.exec_driver_sql("ALTER TABLE journal_settings ADD COLUMN display_language VARCHAR(2) NOT NULL DEFAULT 'en'")
+            import_columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(mt5_import_runs)")}
+            if "source_file_mtime_ns" not in import_columns:
+                connection.exec_driver_sql("ALTER TABLE mt5_import_runs ADD COLUMN source_file_mtime_ns INTEGER")
+            if "source_file_size" not in import_columns:
+                connection.exec_driver_sql("ALTER TABLE mt5_import_runs ADD COLUMN source_file_size INTEGER")
+            # create_all does not add newly-declared indexes to an existing table.
+            for statement in (
+                "CREATE INDEX IF NOT EXISTS ix_trades_account_exit ON trades (mt5_account_id, exit_time, id)",
+                "CREATE INDEX IF NOT EXISTS ix_trades_logical_trade ON trades (logical_trade_id)",
+                "CREATE INDEX IF NOT EXISTS ix_import_runs_account_path_status_id ON mt5_import_runs (mt5_account_id, source_file_path, status, id)",
+                "CREATE INDEX IF NOT EXISTS ix_active_assessments_account ON post_trade_assessments (mt5_account_id) WHERE superseded_at IS NULL",
+                "CREATE INDEX IF NOT EXISTS ix_active_auto_review_approvals_account ON auto_review_approvals (mt5_account_id) WHERE superseded_at IS NULL",
+            ):
+                connection.exec_driver_sql(statement)
         with self._sessions.begin() as session:
             settings = session.get(JournalSettings, 1)
             if settings is None:
-                settings = JournalSettings(id=1, reporting_time_basis="server")
+                settings = JournalSettings(id=1, reporting_time_basis="server", display_language="en")
                 session.add(settings)
                 session.flush()
             if settings.default_strategy_profile_id is None and session.scalar(select(StrategyProfile.id).limit(1)) is None:
@@ -730,9 +763,12 @@ class SQLiteJournalRepository:
         self,
         *,
         reporting_time_basis: str,
+        display_language: str | None = None,
     ) -> None:
         if reporting_time_basis not in REPORTING_TIME_BASES:
             raise ValueError("Reporting time must be UTC, Server Timezone, or Local Timezone")
+        if display_language is not None and display_language not in {"en", "vi"}:
+            raise ValueError("Display language must be English or Vietnamese")
         with self._sessions.begin() as session:
             settings = session.get(JournalSettings, 1)
             if settings is None:
@@ -740,12 +776,15 @@ class SQLiteJournalRepository:
                     JournalSettings(
                         id=1,
                         reporting_time_basis=reporting_time_basis,
+                        display_language=display_language or "en",
                         default_strategy_name=None,
                         default_strategy_profile_id=None,
                     )
                 )
             else:
                 settings.reporting_time_basis = reporting_time_basis
+                if display_language is not None:
+                    settings.display_language = display_language
 
     def get_journal_settings(self) -> JournalSettingsView:
         with self._sessions() as session:
@@ -759,6 +798,7 @@ class SQLiteJournalRepository:
                     default_strategy_name = profile.name
             return JournalSettingsView(
                 settings.reporting_time_basis,
+                settings.display_language,
                 default_strategy_name,
                 settings.default_strategy_profile_id,
             )
@@ -1405,6 +1445,19 @@ class SQLiteJournalRepository:
                 if assessment.logical_trade_id in logical_trades
             ]
 
+    def list_active_post_trade_assessments(self, account_id: int) -> list[PostTradeAssessmentView]:
+        """Return active assessments without rebuilding the logical-trade read model."""
+        with self._sessions() as session:
+            rows = session.scalars(
+                select(PostTradeAssessment)
+                .where(
+                    PostTradeAssessment.mt5_account_id == account_id,
+                    PostTradeAssessment.superseded_at.is_(None),
+                )
+                .order_by(PostTradeAssessment.updated_at)
+            ).all()
+            return [self._to_post_trade_assessment_view(row) for row in rows]
+
     def save_post_trade_assessment(
         self,
         *,
@@ -1714,6 +1767,31 @@ class SQLiteJournalRepository:
                 .order_by(MT5ImportRun.id.desc())
                 .limit(1)
             )
+
+    def latest_mt5_import_fingerprint(
+        self, *, login: str, broker_server: str, source_file_path: str
+    ) -> tuple[str, int | None, int | None] | None:
+        with self._sessions() as session:
+            account = session.scalar(
+                select(MT5Account).where(MT5Account.login == login, MT5Account.broker_server == broker_server)
+            )
+            if account is None:
+                return None
+            row = session.execute(
+                select(
+                    MT5ImportRun.source_file_hash,
+                    MT5ImportRun.source_file_mtime_ns,
+                    MT5ImportRun.source_file_size,
+                )
+                .where(
+                    MT5ImportRun.mt5_account_id == account.id,
+                    MT5ImportRun.source_file_path == source_file_path,
+                    MT5ImportRun.status == "succeeded",
+                )
+                .order_by(MT5ImportRun.id.desc())
+                .limit(1)
+            ).one_or_none()
+            return None if row is None else (row[0], row[1], row[2])
 
     def save_strategy_profile(
         self,
@@ -2347,6 +2425,8 @@ class SQLiteJournalRepository:
         source_hash: str,
         *,
         live_account_balance: Decimal | None = None,
+        source_file_mtime_ns: int | None = None,
+        source_file_size: int | None = None,
     ) -> ImportResult:
         created = 0
         updated = 0
@@ -2423,7 +2503,19 @@ class SQLiteJournalRepository:
                     if trade.auto_risk_policy_id is None and active_policy is not None:
                         trade.auto_risk_policy_id = active_policy.id
                     updated += 1
-            session.add(MT5ImportRun(mt5_account_id=account_id, source_file_path=source_path, source_file_hash=source_hash, status="succeeded", created_count=created, updated_count=updated, skipped_count=0, error_count=0, created_at=now))
+            session.add(MT5ImportRun(
+                mt5_account_id=account_id,
+                source_file_path=source_path,
+                source_file_hash=source_hash,
+                source_file_mtime_ns=source_file_mtime_ns,
+                source_file_size=source_file_size,
+                status="succeeded",
+                created_count=created,
+                updated_count=updated,
+                skipped_count=0,
+                error_count=0,
+                created_at=now,
+            ))
         return ImportResult(created_count=created, updated_count=updated)
 
     def get_trade_by_mt5_position(self, login: str, broker_server: str, position_id: str) -> ImportedTradeView | None:

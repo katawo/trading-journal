@@ -82,14 +82,14 @@ _ALERT_BUBBLE = st.components.v2.component(
       button.type = 'button'
       button.className = `tj-bubble${data.has_critical ? ' critical' : ''}`
       button.setAttribute('aria-expanded', root.dataset.open === 'true' ? 'true' : 'false')
-      button.title = 'Drag to move. Click to view active alerts.'
+      button.title = data.drag_hint
       button.textContent = `${data.has_critical ? '⨯' : '⚠'}  ${data.label}`
       const panel = document.createElement('section')
       panel.className = 'tj-panel'
       panel.hidden = root.dataset.open !== 'true'
       const title = document.createElement('div')
       title.className = 'tj-panel-title'
-      title.textContent = 'Active alerts'
+      title.textContent = data.panel_title
       panel.appendChild(title)
       for (const alert of data.alerts ?? []) {
         const item = document.createElement('div')
@@ -198,11 +198,24 @@ _ALERT_BUBBLE = st.components.v2.component(
 )
 
 
-def render_global_alert_bubble(*, alerts: Sequence[GlobalAlertItem], label: str, has_critical: bool) -> None:
+def render_global_alert_bubble(
+    *,
+    alerts: Sequence[GlobalAlertItem],
+    label: str,
+    has_critical: bool,
+    panel_title: str = "Active alerts",
+    drag_hint: str = "Drag to move. Click to view active alerts.",
+) -> None:
     """Render the global alert overlay without persisting UI placement to the journal."""
     _ALERT_BUBBLE(
         key="global-framework-alert-bubble",
-        data={"alerts": list(alerts), "label": label, "has_critical": has_critical},
+        data={
+            "alerts": list(alerts),
+            "label": label,
+            "has_critical": has_critical,
+            "panel_title": panel_title,
+            "drag_hint": drag_hint,
+        },
         width="content",
         height="content",
     )

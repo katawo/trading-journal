@@ -110,6 +110,15 @@ def test_global_framework_alert_bubble_combines_and_orders_cross_account_alerts(
     ]
 
 
+def test_framework_alert_codes_render_in_vietnamese_without_parsing_english(monkeypatch):
+    from trading_journal.presentation import i18n
+
+    monkeypatch.setattr(i18n, "language", lambda: "vi")
+
+    assert i18n.framework_alert_message("psychology_developing", "Psychology is below 70 in the rolling sample.") == "Tâm lý thấp hơn 70 trong mẫu trượt."
+    assert i18n.framework_alert_message("system_developing", "Trading system is below 70 in the rolling sample.") == "Hệ thống giao dịch thấp hơn 70 trong mẫu trượt."
+
+
 def test_roadmap_selects_only_the_first_incomplete_item_for_each_pillar():
     evidence = {
         ("psychology", 1, "triggers"): PillarRoadmapEvidenceView("trader", "psychology", 1, "triggers", True, "Written triggers.", "2026-08-12T00:00:00+00:00"),
@@ -173,7 +182,7 @@ def test_guidance_page_explains_the_post_trade_three_pillar_workflow(monkeypatch
     assert "Worked example" in guide
     assert "94.17" in guide
     assert "single source of truth" in guide
-    assert not app.selectbox
+    assert [item.label for item in app.selectbox] == ["Language"]
 
 
 def test_account_can_be_saved_before_its_balance_baseline_is_known(monkeypatch, tmp_path):
@@ -309,9 +318,24 @@ def test_dashboard_uses_its_report_account_for_framework_status(monkeypatch, tmp
 
     app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
 
-    assert [item.label for item in app.selectbox] == ["Report account"]
+    assert [item.label for item in app.selectbox] == ["Report account", "Language"]
     assert all(item.label != "Framework account" for item in app.selectbox)
     assert any("Primary · 123456" in item.value for item in app.caption)
+
+
+def test_language_selection_persists_and_loads_the_vietnamese_guide(monkeypatch, tmp_path):
+    database_path = tmp_path / "journal.db"
+    monkeypatch.setenv("TRADING_JOURNAL_DB", str(database_path))
+
+    app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
+    language = next(item for item in app.selectbox if item.label == "Language")
+    language.set_value("vi").run()
+
+    assert SQLiteJournalRepository(database_path).get_journal_settings().display_language == "vi"
+    assert app.title[0].value == "Nhật ký giao dịch"
+    app.switch_page("app_pages/guidance.py").run()
+    guide = "\n".join(item.value for item in app.markdown)
+    assert "Vận hành nhật ký giao dịch ba trụ cột" in guide
 
 
 def test_framework_renders_a_filtered_review_register(monkeypatch, tmp_path):

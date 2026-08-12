@@ -25,6 +25,7 @@ from trading_journal.infrastructure.sqlite_repository import (
     PillarRoadmapEvidenceView,
     SQLiteJournalRepository,
 )
+from trading_journal.presentation.i18n import tr
 
 
 GRADE_OPTIONS = ("Pass", "Partial", "Fail")
@@ -89,7 +90,7 @@ def _score_text(value: str | None) -> str:
 
 
 def _state_label(snapshot: RiskSnapshot) -> str:
-    return {"clear": "Clear", "caution": "Caution", "stop": "Stop", "unconfigured": "Set up"}[snapshot.state]
+    return tr({"clear": "Clear", "caution": "Caution", "stop": "Stop", "unconfigured": "Set up"}[snapshot.state])
 
 
 def _auto_risk_label(score: TradeProcessScore) -> str:
@@ -99,7 +100,7 @@ def _auto_risk_label(score: TradeProcessScore) -> str:
         "unavailable": "Unavailable",
     }.get(score.risk_policy_state, "Unavailable")
     if score.risk_evidence_source == "reviewed_actual_risk":
-        return f"Reviewed actual risk · {state}"
+        return f"{tr('Reviewed actual risk')} · {tr(state)}"
     evidence = score.auto_risk
     source = {
         "specific_preset_sl": "Preset SL",
@@ -108,26 +109,27 @@ def _auto_risk_label(score: TradeProcessScore) -> str:
         "mixed_sources": "Mixed estimates",
         "unavailable": "No source",
     }.get(evidence.risk_basis, "No source")
-    return f"{source} · {state}"
+    return f"{tr(source)} · {tr(state)}"
 
 
 def _risk_evidence_detail(score: TradeProcessScore) -> str:
     if score.risk_evidence_source != "reviewed_actual_risk":
         return score.auto_risk.detail
     policy = (
-        f"Policy maximum: {score.policy_risk_amount}."
+        tr("Policy maximum: {amount}.", amount=score.policy_risk_amount)
         if score.policy_risk_amount is not None
-        else "No policy maximum is available."
+        else tr("No policy maximum is available.")
     )
     state = {
         "within_policy": "within policy",
         "over_policy": "over policy",
         "unavailable": "not comparable with policy",
     }.get(score.risk_policy_state, "not comparable with policy")
-    return (
-        f"Reviewed Actual risk {score.actual_risk_amount} is {state}. {policy} "
-        "It replaces automatic evidence for this logical-trade policy comparison only; "
-        "daily, weekly, drawdown, and streak monitoring remain based on immutable MT5 positions."
+    return tr(
+        "Reviewed Actual risk {amount} is {state}. {policy} It replaces automatic evidence for this logical-trade policy comparison only; daily, weekly, drawdown, and streak monitoring remain based on immutable MT5 positions.",
+        amount=score.actual_risk_amount,
+        state=tr(state),
+        policy=policy,
     )
 
 
@@ -139,23 +141,26 @@ def _process_failure_detail(score: TradeProcessScore) -> str | None:
         HARD_RULE_LABELS.get(code, code.replace("_", " ").capitalize())
         for code in score.hard_rule_codes
     ]
-    return "Process failed — hard-rule event: " + ", ".join(assessed_hard_rules or ["recorded"])
+    return tr("Process failed — hard-rule event: {events}", events=", ".join(tr(item) for item in (assessed_hard_rules or ["recorded"])))
 
 
 def _automatic_risk_monitoring_detail(score: TradeProcessScore) -> str | None:
     """Describe advisory closed-position evidence and the next review action."""
-    reached = [AUTOMATIC_RISK_EVENT_LABELS[code] for code in score.automatic_risk_event_codes]
-    candidates = [AUTOMATIC_RISK_EVENT_LABELS[code] for code in score.shutdown_candidate_codes]
+    reached = [tr(AUTOMATIC_RISK_EVENT_LABELS[code]) for code in score.automatic_risk_event_codes]
+    candidates = [tr(AUTOMATIC_RISK_EVENT_LABELS[code]) for code in score.shutdown_candidate_codes]
     details: list[str] = []
     if reached:
-        details.append(f"Risk monitor reached: {', '.join(reached)}")
+        details.append(tr("Risk monitor reached: {events}", events=", ".join(reached)))
     if candidates:
         details.append(
-            f"Shutdown review: this entry followed an earlier completed position that reached {', '.join(candidates)}"
+            tr(
+                "Shutdown review: this entry followed an earlier completed position that reached {events}",
+                events=", ".join(candidates),
+            )
         )
     if not details:
         return None
-    return ". ".join(details) + ". This is advisory evidence, not a Process failure by itself."
+    return tr("{details}. This is advisory evidence, not a Process failure by itself.", details=". ".join(details))
 
 
 def _reporting_time(repo: SQLiteJournalRepository, value: str, server_utc_offset_minutes: int) -> str:
@@ -168,7 +173,7 @@ def _render_score_cards(scores: tuple[PillarScore, ...]) -> None:
     with st.container(horizontal=True, gap="small"):
         for score in scores:
             label = "FAIL" if score.hard_block else "Incomplete" if score.score is None else score.status.capitalize()
-            st.metric(PILLAR_NAMES[score.pillar], _score_text(score.score), f"{label} · {score.sample_size} in sample", border=True)
+            st.metric(tr(PILLAR_NAMES[score.pillar]), _score_text(score.score), tr("{label} · {count} in sample", label=tr(label), count=score.sample_size), border=True)
 
 
 def _render_risk_configuration_notice(service: FrameworkService, account_id: int) -> None:
@@ -185,7 +190,7 @@ def render_framework_dashboard(repo: SQLiteJournalRepository, account: AccountLi
     scores = service.pillar_scores(account.id)
     readiness = service.readiness(account.id)
     st.markdown("#### Three-pillar monitor")
-    st.caption(f"Psychology and System are trader-wide. Risk is scoped to {_account_label(account)}.")
+    st.caption(tr("Psychology and System are trader-wide. Risk is scoped to {account}.", account=_account_label(account)))
     _render_risk_configuration_notice(service, account.id)
     with st.container(horizontal=True, gap="small"):
         st.metric("Readiness", _score_text(readiness.score), readiness.status.capitalize(), border=True)
@@ -193,7 +198,7 @@ def render_framework_dashboard(repo: SQLiteJournalRepository, account: AccountLi
         st.metric("Today", "—" if snapshot.daily_r is None else f"{Decimal(snapshot.daily_r):+.2f}R", border=True)
         st.metric("Max drawdown", "—" if snapshot.max_drawdown_percent is None else f"{Decimal(snapshot.max_drawdown_percent):.2f}%", border=True)
     _render_score_cards(scores)
-    st.caption(readiness.detail)
+    st.caption(tr(readiness.detail))
 
 
 def render_framework_page(repo: SQLiteJournalRepository) -> None:
@@ -231,7 +236,7 @@ def _render_post_trade_review(repo: SQLiteJournalRepository, account: AccountLis
         st.warning("Create or select a strategy in Settings → Strategies before saving a full three-pillar review.", icon=":material/info:")
     score_items = service.trade_process_scores(account.id)
     snapshot = service.risk_snapshot(account.id)
-    st.caption(f"Risk state: {_state_label(snapshot)} · {snapshot.message}")
+    st.caption(f"{tr('Risk state:')} {_state_label(snapshot)} · {tr(snapshot.message)}")
     trade_scores = {item.trade_id: item for item in score_items}
     _render_review_register(repo, account, trades, trade_scores, profiles)
 
@@ -326,17 +331,17 @@ def _render_imported_execution(repo: SQLiteJournalRepository, account: AccountLi
         st.metric(f"P&L ({account.account_currency})", f"{Decimal(trade.net_pnl):+.2f}", border=True)
         st.metric("Trade score", _score_text(score.overall_score), border=True)
         st.metric("Risk evidence", _auto_risk_label(score), border=True)
-    st.caption(f"{trade.display_label} · Entry {_reporting_time(repo, trade.entry_time, trade.server_utc_offset_minutes)} · Exit {_reporting_time(repo, trade.exit_time, trade.server_utc_offset_minutes)}. MT5 execution data is read-only.")
-    st.caption(_risk_evidence_detail(score))
+    st.caption(tr("{trade} · Entry {entry} · Exit {exit}. MT5 execution data is read-only.", trade=trade.display_label, entry=_reporting_time(repo, trade.entry_time, trade.server_utc_offset_minutes), exit=_reporting_time(repo, trade.exit_time, trade.server_utc_offset_minutes)))
+    st.caption(tr(_risk_evidence_detail(score)))
     if trade.is_group:
-        with st.expander(f"Member positions ({trade.position_count})"):
+        with st.expander(tr("Member positions ({count})", count=trade.position_count)):
             st.dataframe(
                 pd.DataFrame(
                     [
                         {
-                            "Position": f"#{member.position_id or '—'}",
-                            "Opened": _reporting_time(repo, member.entry_time, member.server_utc_offset_minutes),
-                            "Closed": _reporting_time(repo, member.exit_time, member.server_utc_offset_minutes),
+                            tr("Position"): f"#{member.position_id or '—'}",
+                            tr("Opened"): _reporting_time(repo, member.entry_time, member.server_utc_offset_minutes),
+                            tr("Closed"): _reporting_time(repo, member.exit_time, member.server_utc_offset_minutes),
                             "P&L": Decimal(member.net_pnl),
                         }
                         for member in trade.members
@@ -350,14 +355,14 @@ def _render_imported_execution(repo: SQLiteJournalRepository, account: AccountLi
 
 def _grade_control(label: str, *, existing: str | None, key: str) -> str | None:
     default = existing.capitalize() if existing else None
-    choice = st.segmented_control(label, GRADE_OPTIONS, default=default, key=key, width="stretch")
+    choice = st.segmented_control(label, GRADE_OPTIONS, format_func=tr, default=default, key=key, width="stretch")
     return None if choice is None else choice.casefold()
 
 
 @st.dialog("Post-trade assessment", width="large", on_dismiss=_clear_review_dialog)
 def _render_post_trade_review_dialog(repo: SQLiteJournalRepository, account: AccountListItem, trade, score: TradeProcessScore, profiles) -> None:  # type: ignore[no-untyped-def]
     existing = repo.get_post_trade_assessment_for_trade(trade.id)
-    st.caption(f"{'Correct' if existing else 'Review'} {trade.display_label}")
+    st.caption(tr("Correct {trade}" if existing else "Review {trade}", trade=trade.display_label))
     _render_imported_execution(repo, account, trade, score)
     if monitoring_detail := _automatic_risk_monitoring_detail(score):
         st.warning(
@@ -426,14 +431,14 @@ def _render_post_trade_review_dialog(repo: SQLiteJournalRepository, account: Acc
             "Reason tags",
             options=list(VIOLATION_LABELS),
             default=list(existing.violation_codes) if existing else [],
-            format_func=VIOLATION_LABELS.get,
+            format_func=lambda code: tr(VIOLATION_LABELS[code]),
             help="Tag the cause of a partial or failed assessment so period reviews can identify recurring issues.",
         )
         hard_rules = st.multiselect(
             "Hard-rule events",
             options=available_hard_rules,
             default=list(existing.hard_rule_codes) if existing else [],
-            format_func=HARD_RULE_LABELS.get,
+            format_func=lambda code: tr(HARD_RULE_LABELS[code]),
             help="Enabled events selected on save set Hard-rule status to Fail. That result is snapshotted for this assessment, so later Review rules changes do not rewrite it. Automatic Risk limits are monitoring evidence, not hard failures by themselves.",
         )
         if not available_hard_rules:
@@ -749,7 +754,7 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
             ("Select", "Logical trade", "Trade", "Positions", "P&L", "Review", "Score", "Hard rules", "Actions"),
             strict=True,
         ):
-            column.caption(label)
+            column.caption(tr(label))
         for trade, score in page_items:
             review = {
                 "needs_approval": "Needs approval",
@@ -779,12 +784,12 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
                 trade_column.write(trade.display_label)
                 positions_column.write(", ".join(f"#{position_id}" for position_id in trade.position_ids))
                 pnl_column.write(f"{Decimal(trade.net_pnl):+.2f}")
-                review_column.write(review)
+                review_column.write(tr(review))
                 score_column.markdown(f"**{_score_text(score.overall_score)}**")
                 if score.process_status == "FAIL":
-                    process_column.badge("Fail", icon=":material/error:", color="red")
+                    process_column.badge(tr("Fail"), icon=":material/error:", color="red")
                 elif score.process_status == "PASS":
-                    process_column.badge("Clear", icon=":material/check:", color="green")
+                    process_column.badge(tr("Clear"), icon=":material/check:", color="green")
                 else:
                     process_column.write("—")
                 if actions_column.button(
@@ -820,8 +825,8 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
                     _begin_logical_trade_disband(repo, account, trade.id)
                 summary = (
                     f"{trade.symbol} {trade.direction} · Closed {_reporting_time(repo, trade.exit_time, trade.server_utc_offset_minutes)} "
-                    f"· {_auto_risk_label(score)} · {score.classification or 'Unclassified'} "
-                    f"· Psychology {_score_text(score.psychology_score)} · Risk {_score_text(score.risk_score)} · System {_score_text(score.system_score)}"
+                    f"· {_auto_risk_label(score)} · {tr(score.classification or 'Unclassified')} "
+                    f"· {tr('Psychology')} {_score_text(score.psychology_score)} · {tr('Risk management')} {_score_text(score.risk_score)} · {tr('Trading system')} {_score_text(score.system_score)}"
                 )
                 st.caption(summary)
                 if failure_detail := _process_failure_detail(score):
@@ -863,7 +868,7 @@ def _render_monitor(repo: SQLiteJournalRepository, account: AccountListItem) -> 
     st.caption(readiness.detail)
     _render_score_cards(scores)
     component_rows = [
-        {"Pillar": PILLAR_NAMES[score.pillar], "Metric": name, "Score": _score_text(value), "Scope": score.scope}
+        {tr("Pillar"): tr(PILLAR_NAMES[score.pillar]), tr("Metric"): tr(name), tr("Score"): _score_text(value), tr("Scope"): tr(score.scope)}
         for score in scores for name, value in score.component_scores
     ]
     if component_rows:
@@ -872,7 +877,7 @@ def _render_monitor(repo: SQLiteJournalRepository, account: AccountListItem) -> 
     trend = service.rolling_score_trend(account.id, window=int(window))
     if trend:
         st.markdown("##### Selected-account execution trend")
-        frame = pd.DataFrame(trend, columns=["Closed", "Psychology", "Risk", "System"]).set_index("Closed")
+        frame = pd.DataFrame(trend, columns=[tr("Closed"), tr("Psychology"), tr("Risk management"), tr("Trading system")]).set_index(tr("Closed"))
         st.line_chart(frame, width="stretch")
         st.caption("This trend uses selected-account reviewed trades. Score-card scopes remain explicit above.")
     classifications = Counter(score.classification for score in service.trade_process_scores(account.id) if score.classification is not None)
@@ -881,13 +886,13 @@ def _render_monitor(repo: SQLiteJournalRepository, account: AccountListItem) -> 
     with left:
         st.markdown("##### Process-quality distribution")
         if classifications:
-            st.bar_chart(pd.DataFrame({"Classification": list(classifications), "Trades": list(classifications.values())}).set_index("Classification"), width="stretch")
+            st.bar_chart(pd.DataFrame({tr("Classification"): [tr(item) for item in classifications], tr("Trades"): list(classifications.values())}).set_index(tr("Classification")), width="stretch")
         else:
             st.caption("Save complete assessments to build a process-quality distribution.")
     with right:
         st.markdown("##### Recurring issues")
         if issues:
-            st.dataframe(pd.DataFrame([{"Issue": VIOLATION_LABELS.get(issue, issue), "Count": count} for issue, count in issues]), hide_index=True, width="stretch")
+            st.dataframe(pd.DataFrame([{tr("Issue"): tr(VIOLATION_LABELS.get(issue, issue)), tr("Count"): count} for issue, count in issues]), hide_index=True, width="stretch")
         else:
             st.caption("No tagged recurring issues in this sample.")
     _render_period_reviews(repo, account, service)
@@ -898,11 +903,11 @@ def _render_period_reviews(repo: SQLiteJournalRepository, account: AccountListIt
     statuses = [service.period_review_status(account.id, cadence) for cadence in ("weekly", "monthly")]
     with st.container(horizontal=True, gap="small"):
         for status in statuses:
-            st.metric(f"{status.cadence.capitalize()} review", "Due" if status.due else "Up to date", f"{status.period_start} to {status.period_end}", border=True)
+            st.metric(tr(f"{status.cadence.capitalize()} review"), tr("Due" if status.due else "Up to date"), f"{status.period_start} to {status.period_end}", border=True)
     due = next((status for status in statuses if status.due), None)
     if due is not None:
         with st.form(f"period-review-{account.id}-{due.cadence}"):
-            st.caption(f"Save the {due.cadence} reflection for {due.period_start} to {due.period_end}.")
+            st.caption(tr("Save the {cadence} reflection for {start} to {end}.", cadence=tr(due.cadence), start=due.period_start, end=due.period_end))
             note = st.text_area("Review note", placeholder="What pattern did the data reveal?")
             action = st.text_area("One priority corrective action", placeholder="Choose one focused action for the next period.")
             submitted = st.form_submit_button("Save period review", type="primary")
@@ -918,7 +923,7 @@ def _render_period_reviews(repo: SQLiteJournalRepository, account: AccountListIt
     if reviews:
         latest = reviews[0]
         with st.expander("Latest saved period review"):
-            st.caption(f"{latest.cadence.capitalize()} · {latest.period_start} to {latest.period_end} · readiness {_score_text(latest.readiness_score)}")
+            st.caption(f"{tr(latest.cadence.capitalize())} · {latest.period_start} to {latest.period_end} · {tr('Readiness').casefold()} {_score_text(latest.readiness_score)}")
             st.write(latest.review_note)
             st.markdown(f"**Priority action:** {latest.priority_action}")
 
@@ -946,13 +951,13 @@ def _render_roadmap(repo: SQLiteJournalRepository, account: AccountListItem) -> 
         status = statuses[pillar]
         next_item = _next_roadmap_item(pillar, evidence)
         with st.container(border=True):
-            st.markdown(f"##### {name}")
+            st.markdown(f"##### {tr(name)}")
             st.caption(f"Level {status.current_level} · {status.completed_items}/{status.total_items} evidence complete")
             if next_item is None:
                 st.success("All roadmap evidence is complete. Continue monitoring the current sample.", icon=":material/check_circle:")
                 continue
             level, item_key, label = next_item
-            st.markdown(f"**Next:** {label}")
+            st.markdown(f"**{tr('Next:')}** {tr(label)}")
             if not status.can_complete_current_level:
                 st.info(status.gate, icon=":material/lock:")
                 continue
@@ -981,7 +986,7 @@ def _render_roadmap(repo: SQLiteJournalRepository, account: AccountListItem) -> 
                     except ValueError as error:
                         st.error(str(error))
                     else:
-                        st.success(f"{name} roadmap item completed.")
+                        st.success(tr("{name} roadmap item completed.", name=tr(name)))
                         st.rerun()
     completed = [item for item in evidence.values() if item.completed]
     if completed:
@@ -990,7 +995,7 @@ def _render_roadmap(repo: SQLiteJournalRepository, account: AccountListItem) -> 
                 pillar_items = sorted((item for item in completed if item.pillar == pillar), key=lambda item: (item.level, item.item_key))
                 if not pillar_items:
                     continue
-                st.markdown(f"**{name}**")
+                st.markdown(f"**{tr(name)}**")
                 labels = {
                     (level, item_key): label
                     for level, items in ROADMAP_ITEMS[pillar].items()
@@ -999,7 +1004,7 @@ def _render_roadmap(repo: SQLiteJournalRepository, account: AccountListItem) -> 
                 for item in pillar_items:
                     label = labels[(item.level, item.item_key)]
                     detail = f" — {item.evidence_note}" if item.evidence_note else ""
-                    st.markdown(f"- Level {item.level}: {label}{detail}")
+                    st.markdown(f"- {tr('Level')} {item.level}: {tr(label)}{detail}")
 
 
 def _render_risk_policy(repo: SQLiteJournalRepository, account: AccountListItem) -> None:

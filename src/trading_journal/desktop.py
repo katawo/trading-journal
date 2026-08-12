@@ -516,7 +516,12 @@ def start_desktop_application() -> int:
 
 def self_check() -> int:
     paths = desktop_runtime_paths()
-    required = [application_entrypoint(), application_resource_root() / "app_pages", application_resource_root() / "docs" / "three_pillar_framework_guide.md"]
+    required = [
+        application_entrypoint(),
+        application_resource_root() / "app_pages",
+        application_resource_root() / "docs" / "three_pillar_framework_guide.md",
+        application_resource_root() / "docs" / "three_pillar_framework_guide.vi.md",
+    ]
     missing = [str(path) for path in required if not path.exists()]
     if missing:
         print(json.dumps({"ok": False, "missing": missing}))

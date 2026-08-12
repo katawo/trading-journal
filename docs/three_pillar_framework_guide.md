@@ -66,7 +66,7 @@ For a group, the automatic risk amount sums its per-position **specific preset S
 
 ## 1. Set up the evidence before reviewing
 
-1. Add each MT5 account in **Settings → MT5 Accounts** and set its funded capital when known.
+1. Add each MT5 account in **Settings → Account & risk** and set its funded capital when known.
 2. Save an account **Risk policy** in **Settings → Account & risk**:
    - Standard risk (1R) for normalized reporting;
    - maximum risk per trade for compliance;

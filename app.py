@@ -22,11 +22,19 @@ from trading_journal.presentation.framework import (
     render_framework_page,
 )
 from trading_journal.presentation.global_alert_bubble import GlobalAlertItem, render_global_alert_bubble
+from trading_journal.presentation.i18n import (
+    LANGUAGES,
+    format_relative_time_localized,
+    framework_alert_message,
+    install_streamlit_translations,
+    tr,
+)
 
 
 _CURRENCY_SYMBOLS = {"USD": "$", "EUR": "€", "GBP": "£", "JPY": "¥", "AUD": "A$", "CAD": "C$", "CHF": "CHF", "NZD": "NZ$"}
 _AUTO_SYNC_INTERVAL_SECONDS = 15
-_FRESHNESS_INTERVAL_SECONDS = 1
+_FRESHNESS_INTERVAL_SECONDS = 5
+_ANALYTICS_CACHE_TTL_SECONDS = 15
 _CHART_POSITIVE = "#0e9163"
 _CHART_NEGATIVE = "#c73545"
 
@@ -91,44 +99,104 @@ def apply_application_style() -> None:
         """)
 
 
+@st.cache_data(ttl=_ANALYTICS_CACHE_TTL_SECONDS, max_entries=32, show_spinner=False)
+def _cached_global_framework_alerts(database_path: str, database_mtime_ns: int) -> tuple[tuple[AccountListItem, object], ...]:
+    """Cache cross-account analytics until the local database changes."""
+    del database_mtime_ns
+    repo = SQLiteJournalRepository(database_path)
+    return tuple(
+        (account, alert)
+        for account in repo.list_mt5_accounts()
+        for alert in FrameworkService(repo).framework_alerts(account.id)
+    )
+
+
+def _database_mtime_ns(database_path: Path) -> int:
+    try:
+        return database_path.stat().st_mtime_ns
+    except FileNotFoundError:
+        return 0
+
+
 def render_global_framework_alert_bubble(repo: SQLiteJournalRepository) -> None:
     """Persistent cross-account warning/critical alert entry point."""
     severity_order = {"critical": 0, "warning": 1}
-    service = FrameworkService(repo)
-    alerts = [
-        (account, alert)
-        for account in repo.list_mt5_accounts()
-        for alert in service.framework_alerts(account.id)
-        if alert.severity in severity_order
-    ]
+    database_path = getattr(repo, "database_path", None)
+    source = (
+        _cached_global_framework_alerts(str(database_path), _database_mtime_ns(database_path))
+        if database_path is not None
+        else tuple(
+            (account, alert)
+            for account in repo.list_mt5_accounts()
+            for alert in FrameworkService(repo).framework_alerts(account.id)
+        )
+    )
+    alerts = [(account, alert) for account, alert in source if alert.severity in severity_order]
     if not alerts:
         return
     alerts.sort(key=lambda item: (severity_order[item[1].severity], item[0].display_name, item[1].code))
     critical = sum(alert.severity == "critical" for _, alert in alerts)
     warnings = len(alerts) - critical
     label = (
-        f"{critical} critical · {warnings} warning{'s' if warnings != 1 else ''}"
+        tr("{critical} critical · {warnings} warning{plural}", critical=critical, warnings=warnings, plural="s" if warnings != 1 else "")
         if critical
-        else f"{warnings} warning{'s' if warnings != 1 else ''}"
+        else tr("{warnings} warning{plural}", warnings=warnings, plural="s" if warnings != 1 else "")
     )
     bubble_alerts: list[GlobalAlertItem] = [
         {
             "account_name": account.display_name,
             "code": alert.code,
-            "message": alert.message,
+            "message": framework_alert_message(alert.code, alert.message),
             "severity": alert.severity,
         }
         for account, alert in alerts
     ]
-    render_global_alert_bubble(alerts=bubble_alerts, label=label, has_critical=bool(critical))
+    render_global_alert_bubble(
+        alerts=bubble_alerts,
+        label=label,
+        has_critical=bool(critical),
+        panel_title=tr("Active alerts"),
+        drag_hint=tr("Drag to move. Click to view active alerts."),
+    )
 
 
-def repository() -> SQLiteJournalRepository:
-    database_path = Path(os.environ.get("TRADING_JOURNAL_DB", "data/trading_journal.db"))
-    database_path.parent.mkdir(parents=True, exist_ok=True)
+@st.cache_resource(show_spinner=False)
+def _cached_repository(database_path: str) -> SQLiteJournalRepository:
     repo = SQLiteJournalRepository(database_path)
     repo.initialize()
     return repo
+
+
+def repository() -> SQLiteJournalRepository:
+    database_path = Path(os.environ.get("TRADING_JOURNAL_DB", "data/trading_journal.db")).resolve()
+    database_path.parent.mkdir(parents=True, exist_ok=True)
+    return _cached_repository(str(database_path))
+
+
+@st.cache_data(ttl=_ANALYTICS_CACHE_TTL_SECONDS, max_entries=128, show_spinner=False)
+def _cached_dashboard_report(
+    database_path: str,
+    database_mtime_ns: int,
+    account_id: int,
+    start_date: str,
+    end_date: str,
+):
+    del database_mtime_ns
+    return DashboardService(SQLiteJournalRepository(database_path)).build_report(
+        account_id=account_id,
+        start_date=start_date,
+        end_date=end_date,
+    )
+
+
+def build_dashboard_report(repo: SQLiteJournalRepository, *, account_id: int, start_date: str, end_date: str):
+    return _cached_dashboard_report(
+        str(repo.database_path),
+        _database_mtime_ns(repo.database_path),
+        account_id,
+        start_date,
+        end_date,
+    )
 
 
 def _render_sync_results(results: list[MT5AutoSyncResult], *, notice_key: str | None = None) -> None:
@@ -204,7 +272,7 @@ def render_live_sync_freshness(account_key: tuple[str, str] | None = None, *, in
         last_update = result.export_updated_at if result else None
     else:
         last_update = max((item.export_updated_at for item in results if item.export_updated_at is not None), default=None)
-    message = f"Last update: {format_relative_time(last_update)}" if last_update is not None else "No export checked yet"
+    message = f"Last update: {format_relative_time_localized(format_relative_time(last_update))}" if last_update is not None else "No export checked yet"
     if include_sync_hint:
         message += " · Checks every configured account immediately (read-only)."
     st.caption(message)
@@ -717,7 +785,12 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
     time_label = {"server": "MT5 server time", "utc": "UTC", "local": "local computer time"}[settings.reporting_time_basis]
     st.caption(f"All monetary figures below are for this {currency} account only. No currency conversion is applied. Report dates use {time_label}.")
 
-    report = dashboard_service.build_report(account_id=account.id, start_date=start_date.isoformat(), end_date=end_date.isoformat())
+    report = build_dashboard_report(
+        repo,
+        account_id=account.id,
+        start_date=start_date.isoformat(),
+        end_date=end_date.isoformat(),
+    )
     if report.raw_position_count == 0:
         st.info("No MT5 positions were closed in the selected period.")
         return account
@@ -798,20 +871,20 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
         timeline = cumulative.assign(hover_label=cumulative["date"])
         timeline_x = timeline["date"]
         curve_column = "balance" if report.ending_balance is not None else "cumulative_pnl"
-        curve_title = "Account balance curve" if report.ending_balance is not None else "Account equity curve · P&L"
-        drawdown_title = "Account drawdown from daily peak"
+        curve_title = tr("Account balance curve") if report.ending_balance is not None else tr("Account equity curve · P&L")
+        drawdown_title = tr("Account drawdown from daily peak")
         pnl_data = daily.assign(hover_label=daily["date"])
         pnl_x = pnl_data["date"]
-        pnl_title = "Daily realized P&L"
+        pnl_title = tr("Daily realized P&L")
     else:
         timeline = per_trade
         timeline_x = timeline["exit_time"]
         curve_column = "cumulative_pnl"
-        curve_title = "Cumulative logical-trade P&L"
-        drawdown_title = "Logical-trade drawdown"
+        curve_title = tr("Cumulative logical-trade P&L")
+        drawdown_title = tr("Logical-trade drawdown")
         pnl_data = per_trade
         pnl_x = pnl_data["exit_time"]
-        pnl_title = "Logical-trade P&L"
+        pnl_title = tr("Logical-trade P&L")
     curve_is_balance = chart_view == "Daily" and report.ending_balance is not None
 
     left, right = st.columns(2)
@@ -878,7 +951,7 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
                     hovertemplate=f"%{{x}}<br><b>{currency} %{{y:,.2f}}</b><extra></extra>",
                 )
             )
-            strategy_figure.update_layout(title="Strategy P&L")
+            strategy_figure.update_layout(title=tr("Strategy P&L"))
             st.plotly_chart(style_chart(strategy_figure, yaxis_title=currency), width="stretch", config={"displayModeBar": False})
 
     if chart_view == "Per trade":
@@ -886,14 +959,14 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
             st.markdown("#### Closed-trade detail")
             trade_table = pd.DataFrame(
                 {
-                    "Closed": per_trade["exit_time"],
-                    "Logical trade": [f"LT-{trade_id}" for trade_id in per_trade["logical_trade_id"]],
-                    "Trade": per_trade["display_label"],
-                    "Positions": [", ".join(f"#{position_id}" for position_id in position_ids) for position_ids in per_trade["position_ids"]],
-                    "Symbol": per_trade["symbol"],
+                    tr("Closed"): per_trade["exit_time"],
+                    tr("Logical trade"): [f"LT-{trade_id}" for trade_id in per_trade["logical_trade_id"]],
+                    tr("Trade"): per_trade["display_label"],
+                    tr("Positions"): [", ".join(f"#{position_id}" for position_id in position_ids) for position_ids in per_trade["position_ids"]],
+                    tr("Symbol"): per_trade["symbol"],
                     f"P&L ({currency})": [format_currency(value, currency) for value in per_trade["net_pnl"]],
-                    "Result R": ["—" if value is None else format_signed(value, "R") for value in per_trade["result_r"]],
-                    "Post-close drawdown": [format_currency(-Decimal(value), currency) for value in per_trade["drawdown"]],
+                    tr("Result R"): ["—" if value is None else format_signed(value, "R") for value in per_trade["result_r"]],
+                    tr("Post-close drawdown"): [format_currency(-Decimal(value), currency) for value in per_trade["drawdown"]],
                 }
             )
             st.dataframe(trade_table, hide_index=True, width="stretch")
@@ -903,13 +976,13 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
         st.subheader("Strategy results and backtest context")
         strategy_table = pd.DataFrame(
             {
-                "Strategy": strategies["strategy"],
-                f"Live P&L ({currency})": [format_currency(value, currency) for value in strategies["net_pnl"]],
-                "Live total R": ["—" if value is None else format_signed(value, "R") for value in strategies["total_r"]],
-                "Backtest trades": strategies["backtest_trade_count"].fillna("—"),
-                "Backtest win rate": ["—" if value is None else f"{format_number(value, 1)}%" for value in strategies["backtest_win_rate"]],
-                "Backtest expectancy": ["—" if value is None else format_signed(value, "R") for value in strategies["backtest_expectancy_r"]],
-                "Backtest net R": ["—" if value is None else format_signed(value, "R") for value in strategies["backtest_net_r"]],
+                tr("Strategy"): strategies["strategy"],
+                tr("Live P&L ({currency})", currency=currency): [format_currency(value, currency) for value in strategies["net_pnl"]],
+                tr("Live total R"): ["—" if value is None else format_signed(value, "R") for value in strategies["total_r"]],
+                tr("Backtest trades"): strategies["backtest_trade_count"].fillna("—"),
+                tr("Backtest win rate"): ["—" if value is None else f"{format_number(value, 1)}%" for value in strategies["backtest_win_rate"]],
+                tr("Backtest expectancy"): ["—" if value is None else format_signed(value, "R") for value in strategies["backtest_expectancy_r"]],
+                tr("Backtest net R"): ["—" if value is None else format_signed(value, "R") for value in strategies["backtest_net_r"]],
             }
         )
         st.dataframe(strategy_table, hide_index=True, width="stretch")
@@ -917,23 +990,40 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
 
 
 def main() -> None:
-    st.set_page_config(page_title="Trading Journal", page_icon="📈", layout="wide")
-    apply_application_style()
-    st.title("Trading Journal")
-    st.caption("Local-only journal with read-only MT5 imports.")
     try:
         repo = repository()
     except JournalDatabaseResetRequiredError as error:
         st.error(str(error))
         st.code("make reset-db CONFIRM_RESET=yes", language="bash")
         return
+    settings = repo.get_journal_settings()
+    st.session_state.setdefault("display_language", settings.display_language)
+    install_streamlit_translations()
+    st.set_page_config(page_title=tr("Trading Journal"), page_icon="📈", layout="wide")
+    with st.sidebar:
+        selected_language = st.selectbox(
+            "Language",
+            options=list(LANGUAGES),
+            format_func=LANGUAGES.get,
+            key="display_language",
+            width="stretch",
+        )
+    if selected_language != settings.display_language:
+        repo.configure_journal(
+            reporting_time_basis=settings.reporting_time_basis,
+            display_language=selected_language,
+        )
+        st.rerun()
+    apply_application_style()
+    st.title("Trading Journal")
+    st.caption("Local-only journal with read-only MT5 imports.")
     page = st.navigation(
         {
             "Workspace": [
-                st.Page("app_pages/dashboard.py", title="Dashboard", icon=":material/dashboard:", default=True),
-                st.Page("app_pages/framework.py", title="Framework", icon=":material/fact_check:"),
-                st.Page("app_pages/settings.py", title="Settings", icon=":material/settings:"),
-                st.Page("app_pages/guidance.py", title="Guide", icon=":material/menu_book:"),
+                st.Page("app_pages/dashboard.py", title=tr("Dashboard"), icon=":material/dashboard:", default=True),
+                st.Page("app_pages/framework.py", title=tr("Framework"), icon=":material/fact_check:"),
+                st.Page("app_pages/settings.py", title=tr("Settings"), icon=":material/settings:"),
+                st.Page("app_pages/guidance.py", title=tr("Guide"), icon=":material/menu_book:"),
             ]
         },
         position="sidebar",
