@@ -479,6 +479,9 @@ def run_streamlit_server(port: int) -> None:
         "server_port": port,
         "server_headless": True,
         "browser_gatherUsageStats": False,
+        # Portable bundles never reload source. Disabling the watcher avoids
+        # expensive recursive watches and Linux inotify limits at startup.
+        "server_fileWatcherType": "none",
         "server_runOnSave": False,
     }
     bootstrap.load_config_options(flag_options=flag_options)

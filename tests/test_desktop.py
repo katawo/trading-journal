@@ -117,6 +117,20 @@ def test_desktop_server_port_uses_an_optional_explicit_port() -> None:
         desktop_server_port({"TRADING_JOURNAL_DESKTOP_PORT": "70000"})
 
 
+def test_desktop_server_disables_the_source_file_watcher(monkeypatch) -> None:
+    from streamlit.web import bootstrap
+    from trading_journal import desktop
+
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(desktop, "application_entrypoint", lambda: Path(__file__))
+    monkeypatch.setattr(bootstrap, "load_config_options", lambda *, flag_options: captured.update(flag_options))
+    monkeypatch.setattr(bootstrap, "run", lambda *_args, **_kwargs: None)
+
+    desktop.run_streamlit_server(18501)
+
+    assert captured["server_fileWatcherType"] == "none"
+
+
 def test_desktop_status_preserves_last_import_and_rebuilds_results(tmp_path: Path) -> None:
     store = DesktopSyncStatusStore(tmp_path / "status.json")
     imported = MT5AutoSyncResult("Primary", "123456", "DemoBroker-Live", "positions.csv", "imported", created_count=2, updated_count=1)

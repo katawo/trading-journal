@@ -6,12 +6,31 @@ import argparse
 import os
 from pathlib import Path
 import sqlite3
+import socket
 import subprocess
-import sys
 import tempfile
 import time
 from urllib.error import URLError
 from urllib.request import urlopen
+
+
+_STARTUP_TIMEOUT_SECONDS = 90
+
+
+def _available_loopback_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as handle:
+        handle.bind(("127.0.0.1", 0))
+        return int(handle.getsockname()[1])
+
+
+def _failure_details(process: subprocess.Popen[object], log_path: Path) -> str:
+    log = "<desktop.log was not created>"
+    if log_path.is_file():
+        try:
+            log = log_path.read_text(encoding="utf-8")
+        except OSError as error:
+            log = f"<could not read desktop.log: {error}>"
+    return f"process status: {process.poll()}\ndesktop log:\n{log}"
 
 
 def main() -> int:
@@ -28,7 +47,7 @@ def main() -> int:
         with sqlite3.connect(database) as connection:
             connection.execute("CREATE TABLE journal_settings (id INTEGER PRIMARY KEY, monthly_target VARCHAR NOT NULL)")
 
-        port = "18501"
+        port = str(_available_loopback_port())
         environment = os.environ | {
             "TRADING_JOURNAL_DESKTOP_DATA_DIR": str(data_directory),
             "TRADING_JOURNAL_DB": str(database),
@@ -39,23 +58,28 @@ def main() -> int:
         page_url = f"http://127.0.0.1:{port}/"
         recovery_marker = "Trading Journal reset recovery screen active."
         try:
-            deadline = time.monotonic() + 30
+            deadline = time.monotonic() + _STARTUP_TIMEOUT_SECONDS
             while time.monotonic() < deadline:
                 if process.poll() is not None:
-                    raise RuntimeError(f"Desktop recovery exited early with status {process.returncode}")
+                    raise RuntimeError(f"Desktop recovery exited early\n{_failure_details(process, data_directory / 'desktop.log')}")
                 try:
                     with urlopen(health_url, timeout=1) as response:  # noqa: S310 - loopback smoke test
                         if response.status != 200:
+                            time.sleep(0.2)
                             continue
                     with urlopen(page_url, timeout=1) as response:  # noqa: S310 - loopback smoke test
                         if response.status != 200:
+                            time.sleep(0.2)
                             continue
                     log_path = data_directory / "desktop.log"
                     if log_path.is_file() and recovery_marker in log_path.read_text(encoding="utf-8"):
                         return 0
                 except (URLError, TimeoutError):
                     time.sleep(0.2)
-            raise RuntimeError("Desktop recovery did not start its local server within 30 seconds")
+            raise RuntimeError(
+                f"Desktop recovery did not start its local server within {_STARTUP_TIMEOUT_SECONDS} seconds\n"
+                f"{_failure_details(process, data_directory / 'desktop.log')}"
+            )
         finally:
             (data_directory / "shutdown.request").write_text("smoke test", encoding="utf-8")
             try:
