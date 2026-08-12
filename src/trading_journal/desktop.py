@@ -34,6 +34,7 @@ SYNC_STATUS_ENVIRONMENT_KEY = "TRADING_JOURNAL_SYNC_STATUS"
 SYNC_REQUEST_ENVIRONMENT_KEY = "TRADING_JOURNAL_SYNC_REQUEST"
 SHUTDOWN_REQUEST_ENVIRONMENT_KEY = "TRADING_JOURNAL_SHUTDOWN_REQUEST"
 RESET_REQUEST_ENVIRONMENT_KEY = "TRADING_JOURNAL_RESET_REQUEST"
+DESKTOP_BROWSER_FALLBACK_ENVIRONMENT_KEY = "TRADING_JOURNAL_DESKTOP_BROWSER"
 _DEFAULT_SYNC_INTERVAL_SECONDS = 5.0
 
 
@@ -122,6 +123,18 @@ def application_entrypoint() -> Path:
 def is_desktop_mode(environment: dict[str, str] | None = None) -> bool:
     env = os.environ if environment is None else environment
     return env.get(DESKTOP_MODE_ENVIRONMENT_KEY) == "1"
+
+
+def desktop_window_enabled(
+    *,
+    environment: dict[str, str] | None = None,
+    platform: str | None = None,
+) -> bool:
+    """Use a native, address-bar-free window when the desktop backend supports it."""
+
+    env = os.environ if environment is None else environment
+    resolved_platform = sys.platform if platform is None else platform
+    return resolved_platform.startswith(("win", "linux")) and env.get(DESKTOP_BROWSER_FALLBACK_ENVIRONMENT_KEY) != "1"
 
 
 def desktop_environment(paths: DesktopRuntimePaths) -> dict[str, str]:
@@ -494,6 +507,23 @@ def run_streamlit_server(port: int) -> None:
     )
 
 
+def run_desktop_window(url: str) -> None:
+    """Open the local app in a native window instead of an external browser."""
+
+    import webview
+
+    webview.create_window(
+        APPLICATION_NAME,
+        url,
+        width=1440,
+        height=920,
+        min_size=(1024, 700),
+    )
+    # pywebview owns the GUI loop and only returns after the user closes the
+    # window. It must run in this dedicated child process's main thread.
+    webview.start()
+
+
 def run_sync_worker(
     database_path: Path,
     status_path: Path,
@@ -520,10 +550,11 @@ def start_desktop_application() -> int:
     control.clear_reset_request()
     environment = desktop_environment(paths)
     log_handle = paths.log_path.open("a", encoding="utf-8")
+    window_process: subprocess.Popen[Any] | None = None
     try:
         port = desktop_server_port()
         url = f"http://127.0.0.1:{port}"
-        open_browser = True
+        browser_opened = False
         while True:
             server_process: subprocess.Popen[Any] | None = None
             worker_process: subprocess.Popen[Any] | None = None
@@ -571,10 +602,27 @@ def start_desktop_application() -> int:
                 )
                 if not _wait_for_server(url, server_process):
                     raise RuntimeError(f"Trading Journal could not start. See {paths.log_path}")
-                if open_browser:
+                if desktop_window_enabled() and window_process is None:
+                    window_process = subprocess.Popen(
+                        _child_command("--desktop-window", "--url", url),
+                        env=environment,
+                        cwd=application_resource_root(),
+                        stdout=log_handle,
+                        stderr=subprocess.STDOUT,
+                    )
+                elif not desktop_window_enabled() and not browser_opened:
                     webbrowser.open(url, new=1)
-                    open_browser = False
+                    browser_opened = True
                 while server_process.poll() is None and not control.shutdown_requested() and not control.consume_reset_request():
+                    if window_process is not None and window_process.poll() is not None:
+                        if window_process.returncode == 0:
+                            return 0
+                        log_handle.write("Desktop window could not start; opening the local app in the default browser.\n")
+                        log_handle.flush()
+                        window_process = None
+                        if not browser_opened:
+                            webbrowser.open(url, new=1)
+                            browser_opened = True
                     time.sleep(0.25)
                 if control.shutdown_requested():
                     return 0
@@ -587,6 +635,7 @@ def start_desktop_application() -> int:
             # processes have stopped, then starts a fresh journal at the same URL.
             reset_desktop_database(paths)
     finally:
+        _terminate(window_process)
         log_handle.close()
         lock.release()
 
@@ -611,8 +660,10 @@ def self_check() -> int:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the local Trading Journal desktop application.")
     parser.add_argument("--run-server", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--desktop-window", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--sync-worker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--port", type=int, help=argparse.SUPPRESS)
+    parser.add_argument("--url", help=argparse.SUPPRESS)
     parser.add_argument("--database", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--status", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--request", type=Path, help=argparse.SUPPRESS)
@@ -631,6 +682,11 @@ def main(argv: list[str] | None = None) -> int:
         if arguments.port is None:
             raise SystemExit("--run-server requires --port")
         run_streamlit_server(arguments.port)
+        return 0
+    if arguments.desktop_window:
+        if not arguments.url:
+            raise SystemExit("--desktop-window requires --url")
+        run_desktop_window(arguments.url)
         return 0
     if arguments.sync_worker:
         required = (arguments.database, arguments.status, arguments.request, arguments.shutdown_request)

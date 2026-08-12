@@ -18,7 +18,11 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=9,<10"]
-desktop = ["pyinstaller>=6.10,<7"]
+desktop = [
+  "pyinstaller>=6.10,<7",
+  "pywebview>=5,<7",
+  "pywebview[qt]>=5,<7; sys_platform == 'linux'",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

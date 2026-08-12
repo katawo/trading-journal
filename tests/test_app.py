@@ -776,7 +776,9 @@ def test_dashboard_switches_to_per_trade_view(monkeypatch, tmp_path):
 def test_settings_strategies_tab_renders_optional_backtest_fields(monkeypatch, tmp_path):
     monkeypatch.setenv("TRADING_JOURNAL_DB", str(tmp_path / "journal.db"))
 
-    app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
+    # Cold Streamlit startup on the Windows CI runner can exceed AppTest's
+    # three-second default before the settings page is exercised.
+    app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run(timeout=10)
     app.switch_page("app_pages/settings.py").run()
 
     assert not app.exception

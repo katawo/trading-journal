@@ -1,13 +1,13 @@
 # Desktop application
 
-The desktop release keeps the Trading Journal on the same computer as MT5. It is not a hosted PWA: the packaged application starts a loopback-only Streamlit service, runs the MT5 sync worker locally, and opens the existing journal UI in your default browser.
+The desktop release keeps the Trading Journal on the same computer as MT5. It is not a hosted PWA: the packaged application starts a loopback-only Streamlit service, runs the MT5 sync worker locally, and shows the journal in its own native window without a browser address bar.
 
 ## Install and start
 
 1. Download the portable archive for your operating system from the GitHub release page.
 2. Extract it to a permanent folder; do not run it from inside the archive.
 3. Start `TradingJournal` on Linux or `TradingJournal.exe` on Windows.
-4. The journal opens at a local `http://127.0.0.1:<port>` address. Keep the desktop application running while you want automatic MT5 imports.
+4. The journal opens in its own desktop window. Keep the desktop application running while you want automatic MT5 imports. If the native window cannot start, it safely falls back to the default browser at a local `http://127.0.0.1:<port>` address.
 
 No Python, web server, Cloud account, MT5 password, or broker password is required by the portable bundle.
 

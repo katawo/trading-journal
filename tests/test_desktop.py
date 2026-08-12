@@ -3,6 +3,8 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 import subprocess
+import sys
+from types import SimpleNamespace
 
 import pytest
 from streamlit.testing.v1 import AppTest
@@ -14,8 +16,10 @@ from trading_journal.desktop import (
     DesktopSyncWorker,
     desktop_data_directory,
     desktop_server_port,
+    desktop_window_enabled,
     desktop_runtime_paths,
     reset_desktop_database,
+    run_desktop_window,
     self_check,
     _terminate,
 )
@@ -131,6 +135,28 @@ def test_desktop_server_disables_the_source_file_watcher(monkeypatch) -> None:
     desktop.run_streamlit_server(18501)
 
     assert captured["server_fileWatcherType"] == "none"
+
+
+def test_desktop_window_is_enabled_for_supported_desktop_platforms_unless_browser_fallback_is_requested() -> None:
+    assert desktop_window_enabled(environment={}, platform="win32") is True
+    assert desktop_window_enabled(environment={}, platform="linux") is True
+    assert desktop_window_enabled(environment={"TRADING_JOURNAL_DESKTOP_BROWSER": "1"}, platform="win32") is False
+    assert desktop_window_enabled(environment={}, platform="darwin") is False
+
+
+def test_desktop_window_opens_the_local_server_in_a_native_webview(monkeypatch) -> None:
+    calls: dict[str, object] = {}
+    webview = SimpleNamespace(
+        create_window=lambda *args, **kwargs: calls.update(args=args, kwargs=kwargs),
+        start=lambda: calls.update(started=True),
+    )
+    monkeypatch.setitem(sys.modules, "webview", webview)
+
+    run_desktop_window("http://127.0.0.1:18501")
+
+    assert calls["args"] == ("TradingJournal", "http://127.0.0.1:18501")
+    assert calls["kwargs"] == {"width": 1440, "height": 920, "min_size": (1024, 700)}
+    assert calls["started"] is True
 
 
 def test_desktop_termination_reaps_a_forcibly_killed_child() -> None:

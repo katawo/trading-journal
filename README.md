@@ -17,7 +17,7 @@ For the normal local desktop experience, run:
 make desktop
 ```
 
-It starts the loopback-only journal, a background MT5 sync worker, and opens the interface in your default browser. Build a portable bundle for the current operating system with `make bundle`. See [the desktop guide](docs/desktop_app.md) for installation, backups, and release details.
+It starts the loopback-only journal, a background MT5 sync worker, and opens the interface in a native desktop window without a browser address bar on Windows and Linux. If the native webview cannot start, it safely falls back to the default browser. Build a portable bundle for the current operating system with `make bundle`. See [the desktop guide](docs/desktop_app.md) for installation, backups, and release details.
 
 Set `TRADING_JOURNAL_DB` to choose a database location during source development; it defaults to `data/trading_journal.db`. The desktop bundle stores its database in the operating system's user-data directory so application updates cannot overwrite it.
 To intentionally erase all local accounts, imports, settings, strategies, and framework evidence in source development, run `make reset-db CONFIRM_RESET=yes`. Restart the app afterwards to create a clean database. In the desktop application, use **Settings → Reset local database**, type `RESET`, and the desktop supervisor will restart a clean journal while preserving MT5 export files and logs. The three-pillar framework is greenfield: databases from an earlier schema must be reset before they can be opened; the app does not migrate or reinterpret old reviews.
