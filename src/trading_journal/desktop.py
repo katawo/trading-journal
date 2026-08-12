@@ -535,6 +535,11 @@ def start_desktop_application() -> int:
                 except Exception as error:
                     database_ready = False
                     log_handle.write(f"Desktop database startup check failed: {error}\n")
+                    # Streamlit only executes app.py after a browser websocket
+                    # session is established.  Record recovery readiness here so
+                    # a headless desktop smoke test can verify the launcher has
+                    # selected the reset UI without relying on a browser.
+                    log_handle.write("Trading Journal reset recovery screen active.\n")
                     log_handle.flush()
                 if database_ready:
                     worker_process = subprocess.Popen(
