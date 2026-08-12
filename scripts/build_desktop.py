@@ -48,8 +48,6 @@ def main() -> int:
         "streamlit",
         "--collect-all",
         "plotly",
-        "--collect-all",
-        "webview",
         "--add-data",
         _data_argument(PROJECT_ROOT / "app.py", "."),
         "--add-data",
@@ -62,20 +60,7 @@ def main() -> int:
         _data_argument(PROJECT_ROOT / "mql5", "mql5"),
     ]
     if system == "windows":
-        command.append("--windowed")
-    elif system == "linux":
-        # pywebview discovers its Qt backend at runtime, so PyInstaller cannot
-        # infer these modules from the launcher import graph.
-        command.extend(
-            [
-                "--collect-all",
-                "qtpy",
-                "--collect-all",
-                "PyQt6",
-                "--collect-all",
-                "PyQt6.QtWebEngineWidgets",
-            ]
-        )
+        command.extend(["--windowed", "--collect-all", "webview"])
     command.append(str(PROJECT_ROOT / "desktop_launcher.py"))
     subprocess.run(command, cwd=PROJECT_ROOT, check=True)
 

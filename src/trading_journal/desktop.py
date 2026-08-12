@@ -131,13 +131,13 @@ def desktop_window_enabled(
     environment: dict[str, str] | None = None,
     platform: str | None = None,
 ) -> bool:
-    """Use a native, address-bar-free window when the desktop backend supports it."""
+    """Use the native, address-bar-free window on Windows."""
 
     env = os.environ if environment is None else environment
     resolved_platform = sys.platform if platform is None else platform
     return (
         env.get(DESKTOP_HEADLESS_ENVIRONMENT_KEY) != "1"
-        and resolved_platform.startswith(("win", "linux"))
+        and resolved_platform.startswith("win")
         and env.get(DESKTOP_BROWSER_FALLBACK_ENVIRONMENT_KEY) != "1"
     )
 

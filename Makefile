@@ -22,7 +22,7 @@ setup: venv ## Install the application and development dependencies.
 run: venv ## Start Streamlit with automatic reruns when source files are saved.
 	$(STREAMLIT) run $(APP) --server.runOnSave true
 
-desktop: venv ## Start the local desktop launcher, MT5 sync worker, and native window.
+desktop: venv ## Start the local desktop launcher, MT5 sync worker, and desktop UI.
 	$(VENV_PYTHON) -m pip install -e '.[desktop]'
 	$(VENV_PYTHON) -m trading_journal.desktop
 

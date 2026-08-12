@@ -139,9 +139,9 @@ def test_desktop_server_disables_the_source_file_watcher(monkeypatch) -> None:
     assert captured["server_fileWatcherType"] == "none"
 
 
-def test_desktop_window_is_enabled_for_supported_desktop_platforms_unless_browser_fallback_is_requested() -> None:
+def test_desktop_window_is_enabled_for_windows_unless_browser_fallback_is_requested() -> None:
     assert desktop_window_enabled(environment={}, platform="win32") is True
-    assert desktop_window_enabled(environment={}, platform="linux") is True
+    assert desktop_window_enabled(environment={}, platform="linux") is False
     assert desktop_window_enabled(environment={"TRADING_JOURNAL_DESKTOP_BROWSER": "1"}, platform="win32") is False
     assert desktop_window_enabled(environment={"TRADING_JOURNAL_DESKTOP_HEADLESS": "1"}, platform="win32") is False
     assert desktop_window_enabled(environment={}, platform="darwin") is False

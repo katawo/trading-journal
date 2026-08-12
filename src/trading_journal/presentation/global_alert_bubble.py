@@ -43,8 +43,14 @@ _ALERT_BUBBLE = st.components.v2.component(
     }
     #tj-global-framework-alert-bubble .tj-panel[hidden] { display: none; }
     #tj-global-framework-alert-bubble .tj-panel-title { font-size: 0.95rem; font-weight: 700; margin: 0 0 0.45rem; }
-    #tj-global-framework-alert-bubble .tj-alert-item { border-left: 4px solid var(--st-orange-color, #d97706); margin-top: 0.4rem; padding: 0.45rem 0.55rem; }
-    #tj-global-framework-alert-bubble .tj-alert-item.critical { border-left-color: var(--st-red-color, #c73545); }
+    #tj-global-framework-alert-bubble .tj-alert-item {
+      background: var(--st-orange-background-color, #fff0d8); border-left: 5px solid var(--st-orange-color, #a65f00);
+      border-radius: 0 0.32rem 0.32rem 0; margin-top: 0.4rem; padding: 0.5rem 0.6rem;
+    }
+    #tj-global-framework-alert-bubble .tj-alert-item.critical {
+      background: var(--st-red-background-color, #f8e4e5); border-left-color: var(--st-red-color, #c73545);
+      box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--st-red-color, #c73545) 20%, transparent);
+    }
     #tj-global-framework-alert-bubble .tj-alert-account { display: block; font-size: 0.83rem; font-weight: 700; margin-bottom: 0.12rem; }
     #tj-global-framework-alert-bubble .tj-alert-message { font-size: 0.88rem; line-height: 1.35; }
     @keyframes tj-alert-pulse { 50% { box-shadow: 0 10px 34px color-mix(in srgb, var(--st-red-color) 52%, transparent); transform: translateY(-2px); } }
