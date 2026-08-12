@@ -664,6 +664,11 @@ class SQLiteJournalRepository:
     def database_path(self) -> Path:
         return self._database_path
 
+    def close(self) -> None:
+        """Release pooled SQLite connections held by this repository."""
+
+        self._engine.dispose()
+
     def initialize(self) -> None:
         self._require_clean_framework_schema()
         Base.metadata.create_all(self._engine)

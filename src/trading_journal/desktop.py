@@ -35,6 +35,7 @@ SYNC_REQUEST_ENVIRONMENT_KEY = "TRADING_JOURNAL_SYNC_REQUEST"
 SHUTDOWN_REQUEST_ENVIRONMENT_KEY = "TRADING_JOURNAL_SHUTDOWN_REQUEST"
 RESET_REQUEST_ENVIRONMENT_KEY = "TRADING_JOURNAL_RESET_REQUEST"
 DESKTOP_BROWSER_FALLBACK_ENVIRONMENT_KEY = "TRADING_JOURNAL_DESKTOP_BROWSER"
+DESKTOP_HEADLESS_ENVIRONMENT_KEY = "TRADING_JOURNAL_DESKTOP_HEADLESS"
 _DEFAULT_SYNC_INTERVAL_SECONDS = 5.0
 
 
@@ -134,7 +135,31 @@ def desktop_window_enabled(
 
     env = os.environ if environment is None else environment
     resolved_platform = sys.platform if platform is None else platform
-    return resolved_platform.startswith(("win", "linux")) and env.get(DESKTOP_BROWSER_FALLBACK_ENVIRONMENT_KEY) != "1"
+    return (
+        env.get(DESKTOP_HEADLESS_ENVIRONMENT_KEY) != "1"
+        and resolved_platform.startswith(("win", "linux"))
+        and env.get(DESKTOP_BROWSER_FALLBACK_ENVIRONMENT_KEY) != "1"
+    )
+
+
+def desktop_headless(environment: dict[str, str] | None = None) -> bool:
+    """Return whether this launch must not open a desktop UI."""
+
+    env = os.environ if environment is None else environment
+    return env.get(DESKTOP_HEADLESS_ENVIRONMENT_KEY) == "1"
+
+
+def _database_is_ready(database_path: Path) -> tuple[bool, Exception | None]:
+    """Check the database schema without retaining a SQLite file handle."""
+
+    repository = SQLiteJournalRepository(database_path)
+    try:
+        repository.initialize()
+    except Exception as error:
+        return False, error
+    finally:
+        repository.close()
+    return True, None
 
 
 def desktop_environment(paths: DesktopRuntimePaths) -> dict[str, str]:
@@ -561,12 +586,9 @@ def start_desktop_application() -> int:
             try:
                 # An incompatible database still gets a local recovery UI, but
                 # never starts a worker that could touch the legacy schema.
-                database_ready = True
-                try:
-                    SQLiteJournalRepository(paths.database_path).initialize()
-                except Exception as error:
-                    database_ready = False
-                    log_handle.write(f"Desktop database startup check failed: {error}\n")
+                database_ready, database_error = _database_is_ready(paths.database_path)
+                if database_error is not None:
+                    log_handle.write(f"Desktop database startup check failed: {database_error}\n")
                     # Streamlit only executes app.py after a browser websocket
                     # session is established.  Record recovery readiness here so
                     # a headless desktop smoke test can verify the launcher has
@@ -610,7 +632,7 @@ def start_desktop_application() -> int:
                         stdout=log_handle,
                         stderr=subprocess.STDOUT,
                     )
-                elif not desktop_window_enabled() and not browser_opened:
+                elif not desktop_headless() and not browser_opened:
                     webbrowser.open(url, new=1)
                     browser_opened = True
                 while server_process.poll() is None and not control.shutdown_requested() and not control.consume_reset_request():

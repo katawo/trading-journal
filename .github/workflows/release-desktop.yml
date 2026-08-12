@@ -18,8 +18,10 @@ jobs:
         include:
           - name: Windows
             runner: windows-latest
+            executable: .\dist\TradingJournal\TradingJournal.exe
           - name: Linux
             runner: ubuntu-latest
+            executable: ./dist/TradingJournal/TradingJournal
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -32,24 +34,8 @@ jobs:
           python -m pytest -q
       - name: Build portable bundle
         run: python scripts/build_desktop.py
-      - name: Smoke-test portable bundle (Linux)
-        if: runner.os == 'Linux'
-        env:
-          TRADING_JOURNAL_DESKTOP_DATA_DIR: ${{ runner.temp }}/trading-journal-desktop-smoke
-        run: ./dist/TradingJournal/TradingJournal --self-check
-      - name: Smoke-test recovery UI (Linux)
-        if: runner.os == 'Linux'
-        run: python scripts/smoke_desktop_recovery.py ./dist/TradingJournal/TradingJournal
-      - name: Smoke-test portable bundle (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        env:
-          TRADING_JOURNAL_DESKTOP_DATA_DIR: ${{ runner.temp }}\trading-journal-desktop-smoke
-        run: .\dist\TradingJournal\TradingJournal.exe --self-check
-      - name: Smoke-test recovery UI (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: python scripts/smoke_desktop_recovery.py .\dist\TradingJournal\TradingJournal.exe
+      - name: Smoke-test portable bundle
+        run: python scripts/smoke_desktop_bundle.py ${{ matrix.executable }}
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-${{ matrix.name }}

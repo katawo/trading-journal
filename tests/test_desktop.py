@@ -15,12 +15,14 @@ from trading_journal.desktop import (
     DesktopSyncStatusStore,
     DesktopSyncWorker,
     desktop_data_directory,
+    desktop_headless,
     desktop_server_port,
     desktop_window_enabled,
     desktop_runtime_paths,
     reset_desktop_database,
     run_desktop_window,
     self_check,
+    _database_is_ready,
     _terminate,
 )
 from trading_journal.infrastructure.sqlite_repository import SQLiteJournalRepository
@@ -141,7 +143,31 @@ def test_desktop_window_is_enabled_for_supported_desktop_platforms_unless_browse
     assert desktop_window_enabled(environment={}, platform="win32") is True
     assert desktop_window_enabled(environment={}, platform="linux") is True
     assert desktop_window_enabled(environment={"TRADING_JOURNAL_DESKTOP_BROWSER": "1"}, platform="win32") is False
+    assert desktop_window_enabled(environment={"TRADING_JOURNAL_DESKTOP_HEADLESS": "1"}, platform="win32") is False
     assert desktop_window_enabled(environment={}, platform="darwin") is False
+    assert desktop_headless({"TRADING_JOURNAL_DESKTOP_HEADLESS": "1"}) is True
+    assert desktop_headless({}) is False
+
+
+def test_desktop_database_probe_releases_its_engine(monkeypatch, tmp_path: Path) -> None:
+    from trading_journal import desktop
+
+    calls: list[str] = []
+
+    class Repository:
+        def __init__(self, _path: Path) -> None:
+            pass
+
+        def initialize(self) -> None:
+            calls.append("initialize")
+
+        def close(self) -> None:
+            calls.append("close")
+
+    monkeypatch.setattr(desktop, "SQLiteJournalRepository", Repository)
+
+    assert _database_is_ready(tmp_path / "journal.db") == (True, None)
+    assert calls == ["initialize", "close"]
 
 
 def test_desktop_window_opens_the_local_server_in_a_native_webview(monkeypatch) -> None:
