@@ -1,8 +1,8 @@
 # Operating the three-pillar journal
 
-> **This is the single source of truth for how the Trading Journal applies the Psychology, Risk Management, and Trading System framework.**
+> **This is the single source of truth for how the Trading Journal applies the Psychology, Risk management, and Trading system framework.**
 >
-> The app renders this file on the **Guide** page. If an older design note or screen label differs from this guide, this guide wins.
+> The app renders this file on the **Guide** page. It is maintained with the current app labels and workflow.
 
 The journal measures the *quality of a completed trade*, not only its P&L. It is deliberately post-trade and advisory: it never approves, blocks, changes, or sends an MT5 order.
 
@@ -11,8 +11,8 @@ The journal measures the *quality of a completed trade*, not only its P&L. It is
 | Pillar | Question | Scope in monitoring |
 |---|---|---|
 | Psychology | Did I execute myself correctly? | Trader-wide across active accounts |
-| Risk Management | Did I protect capital and follow the account policy? | Selected MT5 account |
-| Trading System | Did I execute a valid, documented setup? | Trader-wide across active accounts |
+| Risk management | Did I protect capital and follow the account policy? | Selected MT5 account |
+| Trading system | Did I execute a valid, documented setup? | Trader-wide across active accounts |
 
 A profitable trade can be a **Bad Win** when its process failed. A compliant losing trade can be a **Good Loss**. P&L and process quality are intentionally separate.
 
@@ -38,21 +38,21 @@ The journal starts at the completed trade. It does not claim to reconstruct ever
 
 ## Logical trades and scaled positions
 
-MT5 exports one completed **position** per row. The journal automatically maps each imported position to its own **logical trade**. A trading idea may use several scaled entries or exits, so **Framework → Review trades** can later regroup compatible positions into one logical trade.
+MT5 exports one completed **position** per row. The journal automatically maps each imported position to its own **logical trade**. A trading idea may use several scaled entries or exits, so **Framework → Review** can later regroup compatible positions into one logical trade.
 
 | Layer | What remains true |
 |---|---|
 | Imported position | Immutable MT5 execution fact: its position ID, timestamps, prices, volume, and P&L are never changed. |
 | Logical trade | One position by default, or a user-created group of two or more positions. It receives one assessment and one process score. |
-| Account Risk monitoring | Continues to use the original chronological positions, so a group cannot hide a daily/weekly loss, drawdown, or loss-streak event. |
+| Account risk monitoring | Continues to use the original chronological positions, so a group cannot hide a daily/weekly loss, drawdown, or loss-streak event. |
 
 ### Create and regroup a logical trade
 
-1. In **Framework → Review trades**, select two or more compatible single-position logical trades.
+1. In **Framework → Review**, select two or more compatible single-position logical trades.
 2. Select **Create logical trade** and optionally add a label, such as `London breakout scale-in`.
 3. Save the group, then open the resulting logical trade and complete its one post-trade assessment.
 
-Positions can be grouped only when they share the same MT5 account, symbol, direction, and imported Risk-policy version. The generated label is based on symbol, direction, and first entry when no custom label is supplied. A group becomes one reviewable logical trade, and appears in the dashboard's **Per trade** analysis, when its **last** member position closes.
+Positions can be grouped only when they share the same MT5 account, symbol, direction, and imported risk-policy version. The generated label is based on symbol, direction, and first entry when no custom label is supplied. A group becomes one reviewable logical trade, and appears in the dashboard's **Per trade** analysis when its **last** member position closes.
 
 Logical-trade membership and labels are mutable. Use **Manage positions** from any review to add, remove, split, merge, or disband positions. A membership change never alters an MT5 row. Instead, it supersedes each affected saved assessment, removes it from active pillar scores and roadmap evidence, and requires a new review. The superseded review keeps its original member-position snapshot and remains available in assessment history. A label-only change does not supersede an assessment.
 
@@ -62,7 +62,7 @@ A logical trade counts once in dashboard logical-trade count, win rate, expectan
 
 Account balance, daily realized P&L, and account drawdown always use the immutable chronological MT5 positions. Regrouping therefore cannot rewrite account history or Risk-limit monitoring.
 
-For a group, the automatic Risk amount sums its per-position **specific preset SL** and **real-loss** estimates. An enabled **pre-trade-balance** fallback uses only the actual balance captured by MT5 immediately before the earliest entry and applies once to the logical trade, never once per member position. It is advisory and conservative; it never changes a missing MT5 SL. If MT5 could not establish the pre-entry balance, policy compliance is unavailable until the reviewer supplies a verified **Actual risk amount**.
+For a group, the automatic risk amount sums its per-position **specific preset SL** and **real-loss** estimates. An enabled **pre-trade-balance** fallback uses only the actual balance captured by MT5 immediately before the earliest entry and applies once to the logical trade, never once per member position. It is advisory and conservative; it never changes a missing MT5 SL. If MT5 could not establish the pre-entry balance, policy compliance is unavailable until the reviewer supplies a verified **Actual risk amount**.
 
 ## 1. Set up the evidence before reviewing
 
@@ -79,13 +79,13 @@ Risk policies are versioned. A completed assessment retains the policy and strat
 
 ## 2. What is and is not scored automatically
 
-| State shown in Review trades | What it means | Three-pillar score? | What to do |
+| Review status | What it means | Three-pillar score? | What to do |
 |---|---|---:|---|
-| Needs approval | Automatic Risk evidence is over policy or unavailable. | No | Approve its evidence or complete a post-trade assessment. |
-| Auto-review | Automatic Risk evidence is within policy. | Yes | It uses neutral Psychology/System defaults and counts toward readiness. |
-| Reviewed | A full 13-criterion assessment was saved. | Yes | It replaces any approval and contributes to the rolling scores and roadmap. |
+| Needs approval | Automatic risk evidence is over policy or unavailable. | No | Approve its evidence or complete a post-trade assessment. |
+| Auto-reviewed | Automatic risk evidence is within policy, or was approved after review. | Yes | It uses neutral Psychology and Trading system defaults and counts toward readiness. |
+| Manually reviewed | A full 13-criterion assessment was saved. | Yes | It replaces any approval and contributes to rolling scores and the readiness roadmap. |
 
-An Auto-review uses `Partial` (neutral) for Psychology and System. For Risk, policy adherence is `Pass` only when the automatic amount is within policy; the remaining criteria are neutral. One-click approval records the same defaults, with policy adherence `Fail` for an over-policy amount. A full assessment remains the only way to record violations or hard-rule events.
+The **Auto-reviewed** filter includes both **Auto-review** and **Approved auto-review** entries. An Auto-review uses `Partial` (neutral) for Psychology and Trading system. For Risk management, policy adherence is `Pass` only when the automatic amount is within policy; the remaining criteria are neutral. One-click approval records the same defaults, with policy adherence `Fail` for an over-policy amount. A full assessment remains the only way to record violations or hard-rule events.
 
 ### Automatic risk evidence
 
@@ -105,7 +105,7 @@ For a later position whose entry timestamp is after an earlier completed positio
 
 ## 3. Complete one post-trade assessment
 
-Open **Framework → Review trades**, choose a logical trade from **Needs approval**, **Auto-review**, or **Reviewed**. Approval-needed evidence can be accepted in one click, or you can rate all 13 criteria in a full assessment. A grouped logical trade contributes one review to the rolling sample, not one review per member position.
+Open **Framework → Review** and choose a logical trade from **Needs approval**, **Auto-reviewed**, or **Manually reviewed**. Approval-needed evidence can be accepted in one click, or you can rate all 13 criteria in a full assessment. A grouped logical trade contributes one review to the rolling sample, not one review per member position.
 
 | Rating | Numeric value | Use it when |
 |---|---:|---|
@@ -124,7 +124,7 @@ The review must include a short post-trade note. Add at least one reason tag whe
 | Emotional control | 20% | Did fear, greed, frustration, or FOMO change the decision? |
 | Patience and discipline | 20% | Did I wait for the valid opportunity and execute it without improvising? |
 
-### Risk Management criteria — 35% / 20% / 25% / 20%
+### Risk management criteria — 35% / 20% / 25% / 20%
 
 | Criterion | Weight | Review question |
 |---|---:|---|
@@ -135,7 +135,7 @@ The review must include a short post-trade note. Add at least one reason tag whe
 
 Open-risk and correlation controls are self-assessed because the closed-trade MT5 bridge cannot prove them automatically.
 
-### Trading System criteria — 30% / 20% / 20% / 15% / 15%
+### Trading system criteria — 30% / 20% / 20% / 15% / 15%
 
 | Criterion | Weight | Review question |
 |---|---:|---|
@@ -151,7 +151,7 @@ Each pillar is the weighted sum of its criterion values. The raw **Process score
 
 ```text
 Pillar score  = Σ(criterion value × criterion weight)
-Process score = (Psychology + Risk Management + Trading System) / 3
+Process score = (Psychology + Risk management + Trading system) / 3
 ```
 
 The journal deliberately shows two separate results:
@@ -173,8 +173,8 @@ Psychology = (50 × 35%) + (100 × 25%) + (100 × 20%) + (100 × 20%)
            = 17.5 + 25 + 20 + 20
            = 82.5
 
-Risk Management = 100
-Trading System  = 100
+Risk management = 100
+Trading system  = 100
 
 Raw Process score = (82.5 + 100 + 100) / 3
                   = 94.17
@@ -201,10 +201,10 @@ The following events can be enabled as hard failures in **Settings → Review ru
 
 | Event | Affected pillar(s) when enabled | Meaning |
 |---|---|---|
-| Oversized revenge trade | Psychology and Risk Management | Emotional size increase or revenge behaviour. |
-| Mandatory setup absent | Trading System | Trade was taken without a required setup. |
-| Deliberately widened stop | Risk Management | Risk was increased by moving the stop farther away. |
-| Trading after hard shutdown | Risk Management | Trade was taken after a configured stop condition. |
+| Oversized revenge trade | Psychology and Risk management | Emotional size increase or revenge behaviour. |
+| Mandatory setup absent | Trading system | Trade was taken without a required setup. |
+| Deliberately widened stop | Risk management | Risk was increased by moving the stop farther away. |
+| Trading after hard shutdown | Risk management | Trade was taken after a configured stop condition. |
 
 Hard rules do three things:
 
@@ -216,7 +216,7 @@ Reason tags also make recurring patterns visible. Psychology critical tags inclu
 
 ## 6. How rolling monitoring is calculated
 
-In **Framework → Monitor**, choose a 20-, 30-, or 50-trade window. **Auto-reviews**, approved Auto-reviews, and full Reviews enter the window. Needs-approval imports remain outside it until approved or fully assessed.
+In **Framework → Monitor**, choose a 20-, 30-, or 50-trade window. Auto-reviews, approved auto-reviews, and manually reviewed trades enter the window. Needs-approval imports remain outside it until approved or fully assessed.
 
 The Monitor computes a second set of period components from the reviewed window. These are not a simple average of the visible per-trade pillar scores; they are designed to reveal repeated behaviour and evidence quality.
 
@@ -229,7 +229,7 @@ The Monitor computes a second set of period components from the reviewed window.
 | Emotional control | 20% | Average reviewed Emotional control grade. |
 | Post-loss discipline | 20% | The next reviewed trade after a loss across all active accounts: its Impulse control grade, or 0 when tagged `post_loss_reset`. It is 100 when the sample has no eligible post-loss sequence. |
 
-### Risk Management monitoring score
+### Risk management monitoring score
 
 | Component | Weight | How it is measured |
 |---|---:|---|
@@ -238,7 +238,7 @@ The Monitor computes a second set of period components from the reviewed window.
 | Limit compliance | 25% | 100 for a reviewed trade with no historical daily/weekly/drawdown/streak event; 0 when an event occurred. This affects the Risk monitoring component only; it does not automatically set the trade's Hard-rule status to `FAIL`. |
 | Exposure control | 15% | Average reviewed Exposure-limit compliance grade. |
 
-### Trading System monitoring score
+### Trading system monitoring score
 
 | Component | Weight | How it is measured |
 |---|---:|---|
@@ -276,7 +276,7 @@ Use the diagnosis rather than recent P&L to choose the action:
 
 Do not change a strategy solely because of a small recent P&L sample. Make one hypothesis, collect evidence, then keep or reject the change.
 
-## 8. Roadmap gates
+## 8. Improvement roadmap and gates
 
 The three pillars progress in parallel:
 
@@ -288,7 +288,7 @@ The three pillars progress in parallel:
 | Measure | 30 full reviews, a saved weekly or monthly review for the latest completed period, a 30-review score of at least 80, and no active hard failure. |
 | Optimize | A hypothesis, baseline, result, and keep/reject decision are recorded. |
 
-**Psychology** roadmap evidence is behaviour-focused; **Risk** evidence is account-specific policy and sizing evidence; **System** evidence is strategy rules, examples, and backtest evidence. Complete the evidence in **Framework → Roadmap** only when it can be explained and revisited.
+The readiness roadmap progresses in parallel across the three pillars. **Psychology** evidence is behaviour-focused; **Risk management** evidence is account-specific policy and sizing evidence; **Trading system** evidence is strategy rules, examples, and backtest evidence. Complete the evidence in **Framework → Improve** only when it can be explained and revisited.
 
 ## 9. Data limits
 

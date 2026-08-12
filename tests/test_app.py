@@ -168,7 +168,7 @@ def test_guidance_page_explains_the_post_trade_three_pillar_workflow(monkeypatch
     assert not app.exception
     guide = "\n".join(item.value for item in app.markdown)
     assert "Operating the three-pillar journal" in guide
-    assert "Psychology, Risk Management, and Trading System" in guide
+    assert "Psychology, Risk management, and Trading system" in guide
     assert "post-trade and advisory" in guide
     assert "Worked example" in guide
     assert "94.17" in guide
