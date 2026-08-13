@@ -14,7 +14,7 @@ Nhật ký đo lường *chất lượng của một giao dịch đã đóng*, k
 | Quản lý rủi ro | Tôi có bảo vệ vốn và tuân thủ chính sách tài khoản không? | Tài khoản MT5 được chọn |
 | Hệ thống giao dịch | Tôi có thực hiện một setup hợp lệ, đã được ghi chép không? | Toàn bộ tài khoản đang hoạt động của trader |
 
-Một giao dịch có lãi vẫn có thể là **Lãi xấu** khi quy trình thất bại. Một giao dịch lỗ nhưng tuân thủ có thể là **Lỗ tốt**. P&L và chất lượng quy trình được tách riêng một cách có chủ đích.
+Một giao dịch có lãi vẫn có thể là **Lệnh thắng xấu** khi quy trình thất bại. Một giao dịch lỗ nhưng tuân thủ có thể là **Lệnh thua tốt**. P&L và chất lượng quy trình được tách riêng một cách có chủ đích.
 
 ## Vòng lặp vận hành
 
@@ -66,12 +66,12 @@ Với một nhóm, số tiền rủi ro tự động cộng các ước tính **
 
 ## 1. Thiết lập bằng chứng trước khi đánh giá
 
-1. Thêm từng tài khoản MT5 trong **Cài đặt → Tài khoản và rủi ro** và nhập vốn ban đầu khi biết.
+1. Thêm từng tài khoản MT5 trong **Cài đặt → Tài khoản và rủi ro** và nhập Funded capital khi biết.
 2. Lưu **Chính sách rủi ro** tài khoản trong **Cài đặt → Tài khoản và rủi ro**:
    - Rủi ro chuẩn (1R) để báo cáo chuẩn hóa;
    - rủi ro tối đa mỗi giao dịch để kiểm tra tuân thủ;
    - giới hạn lỗ ngày/tuần, drawdown tối đa, chuỗi lỗ tối đa và R:R tối thiểu.
-   - có thể bật **Dùng số dư MT5 trước giao dịch làm bằng chứng rủi ro tư vấn khi không có SL**. Tùy chọn này mặc định tắt và không bao giờ dùng vốn ban đầu hoặc số dư hiện tại thay thế.
+   - có thể bật **Dùng số dư MT5 trước giao dịch làm bằng chứng rủi ro tư vấn khi không có SL**. Tùy chọn này mặc định tắt và không bao giờ dùng Funded capital hoặc số dư hiện tại thay thế.
 3. Tạo một hoặc nhiều **Chiến lược** trong **Cài đặt → Chiến lược**. Ghi quy tắc và bằng chứng backtest hiện có. Đánh giá đầy đủ cần một chiến lược được chọn để điểm Hệ thống có bằng chứng đánh giá.
 4. Trong **Cài đặt → Quy tắc đánh giá**, chọn sự kiện nghiêm trọng nào là lỗi cứng cho đánh giá mới hoặc được sửa. Các cài đặt chỉ ảnh hưởng điểm và cảnh báo của nhật ký; không điều khiển MT5.
 
@@ -129,9 +129,9 @@ Mở **Framework → Đánh giá** và chọn một giao dịch logic từ **C�
 | Tiêu chí | Trọng số | Câu hỏi đánh giá |
 |---|---:|---|
 | Tuân thủ chính sách | 35% | Giao dịch có phù hợp Chính sách rủi ro tài khoản không? |
-| Độ chính xác khối lượng | 20% | Khối lượng có phù hợp rủi ro dự kiến không? |
-| Kỷ luật stop | 25% | Stop/vô hiệu hóa có được tôn trọng thay vì nới rộng hoặc bỏ qua không? |
-| Tuân thủ giới hạn phơi nhiễm | 20% | Các kiểm soát phơi nhiễm áp dụng có được tôn trọng không? |
+| Độ chính xác khối lượng lệnh | 20% | Khối lượng có phù hợp rủi ro dự kiến không? |
+| Kỷ luật Stop Loss | 25% | Stop/vô hiệu hóa có được tôn trọng thay vì nới rộng hoặc bỏ qua không? |
+| Tuân thủ exposure và giới hạn rủi ro | 20% | Các kiểm soát phơi nhiễm áp dụng có được tôn trọng không? |
 
 Rủi ro mở và kiểm soát tương quan được tự đánh giá vì cầu nối MT5 của giao dịch đóng không thể chứng minh tự động.
 
@@ -139,11 +139,11 @@ Rủi ro mở và kiểm soát tương quan được tự đánh giá vì cầu 
 
 | Tiêu chí | Trọng số | Câu hỏi đánh giá |
 |---|---:|---|
-| Tính hợp lệ setup | 30% | Setup chiến lược được chọn có thực sự hiện diện không? |
+| Tính hợp lệ của setup | 30% | Setup chiến lược được chọn có thực sự hiện diện không? |
 | Phù hợp bối cảnh | 20% | Thị trường, phiên, khung thời gian và regime có đáp ứng quy tắc chiến lược không? |
-| Độ chính xác điểm vào | 20% | Điểm vào có theo trigger đã ghi chép không? |
-| Độ chính xác vô hiệu hóa | 15% | Logic vô hiệu hóa/stop có được áp dụng như đã ghi chép không? |
-| Độ chính xác quản lý và thoát lệnh | 15% | Quản lý giao dịch và thoát lệnh có nhất quán với chiến lược không? |
+| Tuân thủ điểm vào lệnh | 20% | Điểm vào có theo trigger đã ghi chép không? |
+| Tuân thủ điều kiện invalidation / Stop Loss | 15% | Logic vô hiệu hóa/stop có được áp dụng như đã ghi chép không? |
+| Tuân thủ kế hoạch quản lý / thoát lệnh | 15% | Quản lý giao dịch và thoát lệnh có nhất quán với chiến lược không? |
 
 ## 4. Cách chấm một giao dịch
 
@@ -160,7 +160,7 @@ Nhật ký chủ đích hiển thị hai kết quả riêng:
 |---|---|
 | **Chất lượng giao dịch** | `Tốt` từ 70 trở lên; `Cần cải thiện` dưới 70. |
 | **Trạng thái quy tắc cứng** | `Rõ ràng` trừ khi người đánh giá ghi sự kiện quy tắc cứng đã bật; `Không đạt` khi có. Sự kiện hiệu lực được chụp lúc lưu. |
-| **Phân loại** | Lãi/Lỗ/Hòa vốn tốt hoặc cần cải thiện/xấu. Bất kỳ lỗi quy tắc cứng nào cũng là `Xấu`, bất kể điểm thô. |
+| **Phân loại** | Lệnh thắng/Lệnh thua/Lệnh hòa vốn tốt hoặc cần cải thiện/xấu. Bất kỳ lỗi quy tắc cứng nào cũng là `Xấu`, bất kể điểm thô. |
 
 Điều này ngăn điểm thô rất thấp được trình bày là giao dịch tốt chỉ vì không chọn quy tắc cứng.
 
@@ -180,7 +180,7 @@ Hệ thống giao dịch = 100
                     = 94.17
 ```
 
-Giao dịch này có chất lượng **Tốt** và trạng thái quy tắc cứng **Rõ ràng** nếu không có sự kiện quy tắc cứng. P&L sau đó quyết định nó là Lãi tốt, Lỗ tốt hay Hòa vốn tốt. Điểm 94.17 không có nghĩa bỏ qua mức Một phần: hành động cải thiện và thẻ vẫn có để phân tích mẫu hình.
+Giao dịch này có chất lượng **Tốt** và trạng thái quy tắc cứng **Rõ ràng** nếu không có sự kiện quy tắc cứng. P&L sau đó quyết định nó là Lệnh thắng tốt, Lệnh thua tốt hay Lệnh hòa vốn tốt. Điểm 94.17 không có nghĩa bỏ qua mức Một phần: hành động cải thiện và thẻ vẫn có để phân tích mẫu hình.
 
 ### Ví dụ: tại sao trung bình cao không thể che vi phạm nghiêm trọng
 
@@ -189,11 +189,11 @@ Giả sử vẫn điểm thô 94.17 nhưng trader ghi sự kiện quy tắc cứ
 ```text
 Điểm quy trình thô = 94.17     (giữ làm bằng chứng)
 Trạng thái quy tắc cứng = KHÔNG ĐẠT (quy tắc cứng ghi đè phân loại)
-Phân loại = Lãi xấu / Lỗ xấu / Hòa vốn xấu
+Phân loại = Lệnh thắng xấu / Lệnh thua xấu / Lệnh hòa vốn xấu
 Trụ cột Rủi ro = bị chặn cứng trong mẫu trượt
 ```
 
-Nếu giao dịch có lãi, đó là **Lãi xấu**. Nếu lỗ, đó là **Lỗ xấu**. Điểm thô vẫn hiển thị để đánh giá có thể kiểm toán; nó không hủy lỗi cứng.
+Nếu giao dịch có lãi, đó là **Lệnh thắng xấu**. Nếu lỗ, đó là **Lệnh thua xấu**. Điểm thô vẫn hiển thị để đánh giá có thể kiểm toán; nó không hủy lỗi cứng.
 
 ## 5. Quy tắc cứng và vi phạm nghiêm trọng
 
@@ -234,16 +234,16 @@ Theo dõi tính một bộ thành phần giai đoạn thứ hai từ cửa sổ 
 | Thành phần | Trọng số | Cách đo |
 |---|---:|---|
 | Tuân thủ chính sách | 35% | Trung bình mức Tuân thủ chính sách đã đánh giá. |
-| Kỷ luật stop | 25% | Trung bình mức Kỷ luật stop đã đánh giá. |
+| Kỷ luật Stop Loss | 25% | Trung bình mức Kỷ luật Stop Loss đã đánh giá. |
 | Tuân thủ giới hạn | 25% | 100 cho giao dịch đã đánh giá không có sự kiện ngày/tuần/drawdown/chuỗi lỗ lịch sử; 0 khi có sự kiện. Chỉ ảnh hưởng thành phần theo dõi Rủi ro; không tự đặt trạng thái quy tắc cứng `KHÔNG ĐẠT`. |
-| Kiểm soát phơi nhiễm | 15% | Trung bình mức Tuân thủ giới hạn phơi nhiễm đã đánh giá. |
+| Kiểm soát phơi nhiễm | 15% | Trung bình mức Tuân thủ exposure và giới hạn rủi ro đã đánh giá. |
 
 ### Điểm theo dõi Hệ thống giao dịch
 
 | Thành phần | Trọng số | Cách đo |
 |---|---:|---|
-| Tính hợp lệ setup | 20% | Trung bình mức Tính hợp lệ setup đã đánh giá. |
-| Độ chính xác thực hiện | 20% | Trung bình mức Điểm vào, Vô hiệu hóa và Quản lý/thoát lệnh. |
+| Tính hợp lệ của setup | 20% | Trung bình mức Tính hợp lệ của setup đã đánh giá. |
+| Tuân thủ kế hoạch execution | 20% | Trung bình mức Điểm vào, Vô hiệu hóa và Quản lý/thoát lệnh. |
 | Phù hợp bối cảnh | 15% | Trung bình mức Phù hợp bối cảnh đã đánh giá. |
 | Chất lượng bằng chứng | 20% | 100 khi chiến lược gắn có mô tả, ngày backtest và ít nhất 100 giao dịch backtest; 50 khi đã ghi chép nhưng dưới 100; nếu không là 0. |
 | Bằng chứng edge | 25% | 100 cho ít nhất 100 giao dịch backtest có expectancy dương sau chi phí; 50 cho ít nhất 50 giao dịch expectancy dương; nếu không là 0. |

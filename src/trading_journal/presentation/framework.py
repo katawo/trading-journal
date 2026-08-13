@@ -7,6 +7,7 @@ from collections.abc import MutableMapping, Sequence
 from decimal import Decimal
 
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 
 from trading_journal.application.framework import (
@@ -172,6 +173,22 @@ def _render_score_cards(scores: tuple[PillarScore, ...]) -> None:
             st.metric(tr(PILLAR_NAMES[score.pillar]), _score_text(score.score), tr("{label} · {count} in sample", label=tr(label), count=score.sample_size), border=True)
 
 
+def _render_pillar_radar(scores: tuple[PillarScore, ...]) -> None:
+    labels = [tr(PILLAR_NAMES[score.pillar]) for score in scores]
+    values = [float(Decimal(score.score)) if score.score is not None else 0.0 for score in scores]
+    figure = go.Figure(go.Scatterpolar(r=values + values[:1], theta=labels + labels[:1], fill="toself"))
+    figure.update_layout(
+        height=260,
+        margin=dict(l=24, r=24, t=24, b=24),
+        showlegend=False,
+        paper_bgcolor="rgba(0,0,0,0)",
+        polar=dict(radialaxis=dict(range=[0, 100], showticklabels=True, ticksuffix="%"), bgcolor="rgba(0,0,0,0)"),
+    )
+    st.plotly_chart(figure, width="stretch", config={"displayModeBar": False})
+    if any(score.score is None for score in scores):
+        st.caption("Pillars without a scored sample yet show as 0 on this chart.")
+
+
 def _render_risk_configuration_notice(service: FrameworkService, account_id: int) -> None:
     """Keep the setup-only risk notice visible without duplicating global alerts."""
     notice = next((alert for alert in service.framework_alerts(account_id) if alert.code == "risk_unconfigured"), None)
@@ -194,6 +211,7 @@ def render_framework_dashboard(repo: SQLiteJournalRepository, account: AccountLi
         st.metric("Today", "—" if snapshot.daily_r is None else f"{Decimal(snapshot.daily_r):+.2f}R", border=True)
         st.metric("Max drawdown", "—" if snapshot.max_drawdown_percent is None else f"{Decimal(snapshot.max_drawdown_percent):.2f}%", border=True)
     _render_score_cards(scores)
+    _render_pillar_radar(scores)
     st.caption(tr(readiness.detail))
 
 
@@ -980,12 +998,13 @@ def _render_monitor(repo: SQLiteJournalRepository, account: AccountListItem) -> 
     service = FrameworkService(repo)
     st.markdown("#### Monitoring")
     _render_risk_configuration_notice(service, account.id)
-    window = st.segmented_control("Rolling sample", [20, 30, 50], default=20, required=True, width="content", key=f"framework-window-{account.id}")
+    window = st.slider(tr("Rolling sample"), min_value=10, max_value=100, value=20, step=5, key=f"framework-window-{account.id}")
     scores = service.pillar_scores(account.id, window=int(window))
     readiness = service.readiness(account.id, window=int(window))
     st.metric("Overall readiness", _score_text(readiness.score), readiness.status.capitalize(), border=True)
     st.caption(readiness.detail)
     _render_score_cards(scores)
+    _render_pillar_radar(scores)
     component_rows = [
         {tr("Pillar"): tr(PILLAR_NAMES[score.pillar]), tr("Metric"): tr(name), tr("Score"): _score_text(value), tr("Scope"): tr(score.scope)}
         for score in scores for name, value in score.component_scores
