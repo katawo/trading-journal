@@ -254,6 +254,7 @@ def test_account_can_be_saved_before_its_balance_baseline_is_known(monkeypatch, 
 
     app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
     app.switch_page("app_pages/settings.py").run()
+    next(item for item in app.text_input if item.label == "Account name").set_value("Primary account")
     next(item for item in app.text_input if item.label == "MT5 account ID").set_value("123456")
     next(item for item in app.text_input if item.label == "Broker server").set_value("DemoBroker-Live")
     next(item for item in app.button if item.label == "Add account").click().run()
@@ -340,6 +341,60 @@ def test_settings_can_deactivate_an_imported_mt5_account(monkeypatch, tmp_path):
     assert any("MT5 account deactivated." in item.value for item in app.success)
 
 
+def test_settings_can_delete_an_unused_mt5_account(monkeypatch, tmp_path):
+    database_path = tmp_path / "journal.db"
+    repository = SQLiteJournalRepository(database_path)
+    repository.initialize()
+    repository.register_mt5_account(
+        display_name="Unused account",
+        login="123456",
+        broker_server="DemoBroker-Live",
+        account_currency="USD",
+        export_file_path="",
+    )
+    monkeypatch.setenv("TRADING_JOURNAL_DB", str(database_path))
+
+    app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
+    app.switch_page("app_pages/settings.py").run()
+    next(item for item in app.checkbox if item.label == "I understand this permanently deletes this unused account").check().run()
+    next(item for item in app.button if item.label == "Delete account").click().run()
+
+    assert not app.exception
+    assert SQLiteJournalRepository(database_path).list_mt5_accounts() == []
+    assert any("MT5 account deleted." in item.value for item in app.success)
+
+
+def test_settings_can_switch_the_active_mt5_account(monkeypatch, tmp_path):
+    database_path = tmp_path / "journal.db"
+    repository = SQLiteJournalRepository(database_path)
+    repository.initialize()
+    repository.register_mt5_account(
+        display_name="Primary",
+        login="123456",
+        broker_server="DemoBroker-Live",
+        account_currency="USD",
+        export_file_path="",
+    )
+    monkeypatch.setenv("TRADING_JOURNAL_DB", str(database_path))
+
+    app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
+    app.switch_page("app_pages/settings.py").run()
+    assert not any(item.label == "Set as active account" for item in app.button)
+
+    next(item for item in app.button if item.label == "New account").click().run()
+    next(item for item in app.text_input if item.label == "Account name").set_value("Secondary")
+    next(item for item in app.text_input if item.label == "MT5 account ID").set_value("654321")
+    next(item for item in app.text_input if item.label == "Broker server").set_value("DemoBroker-Live")
+    next(item for item in app.button if item.label == "Add account").click().run()
+
+    assert any(item.label == "Set as active account" for item in app.button)
+    next(item for item in app.button if item.label == "Set as active account").click().run()
+
+    assert not app.exception
+    assert repository.get_active_mt5_account().display_name == "Secondary"
+    assert any("Secondary is now the active account." in item.value for item in app.success)
+
+
 def test_framework_workspace_renders_account_scoped_post_trade_journal(monkeypatch, tmp_path):
     database_path = tmp_path / "journal.db"
     repository = SQLiteJournalRepository(database_path)
@@ -364,7 +419,7 @@ def test_framework_workspace_renders_account_scoped_post_trade_journal(monkeypat
     assert not any(item.label == "Roadmap pillar" for item in app.segmented_control)
 
 
-def test_dashboard_uses_its_report_account_for_framework_status(monkeypatch, tmp_path):
+def test_dashboard_uses_the_active_account_for_framework_status(monkeypatch, tmp_path):
     database_path = tmp_path / "journal.db"
     repository = SQLiteJournalRepository(database_path)
     repository.initialize()
@@ -381,8 +436,8 @@ def test_dashboard_uses_its_report_account_for_framework_status(monkeypatch, tmp
 
     app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
 
-    assert [item.label for item in app.selectbox] == ["Report account", "Language"]
-    assert all(item.label != "Framework account" for item in app.selectbox)
+    assert [item.label for item in app.selectbox] == ["Language"]
+    assert repository.get_active_mt5_account().display_name == "Primary"
     assert any("Primary · 123456" in item.value for item in app.caption)
 
 
@@ -474,18 +529,18 @@ def test_framework_renders_a_filtered_review_register(monkeypatch, tmp_path):
     assert [tab.label for tab in app.tabs] == ["Review", "Monitor", "Improve"]
     review_filter = next(item for item in app.segmented_control if item.label == "Review status")
     assert review_filter.value == "needs_approval"
-    assert review_filter.options == ["Needs approval (1)", "Auto-reviewed (0)", "Manually reviewed (0)", "All (1)"]
+    assert review_filter.options == ["Requires review (1)", "Auto-reviewed (0)", "Reviewed (0)", "All (1)"]
     assert any(item.label == "Show failed only" for item in app.checkbox)
     assert any(item.label.startswith("Select LT-") for item in app.checkbox)
     assert any(item.label == "Review" for item in app.button)
     assert not any(item.label == "Ungroup" for item in app.button)
-    assert any("automatic evidence is counted as an Auto-review" in item.value for item in app.caption)
+    assert any("Automatic risk evidence only counts toward scores once approved" in item.value for item in app.caption)
     assert not any(item.label == "Closed MT5 position" for item in app.selectbox)
     assert not any(item.label == "Save review" for item in app.button)
 
     review_filter.set_value("manual_reviewed").run()
 
-    assert any("No manually reviewed trades" in item.value for item in app.info)
+    assert any("No reviewed trades" in item.value for item in app.info)
 
     trade = repository.list_closed_trades_for_review(account.id)[0]
     policy = repository.get_active_risk_policy(account.id)
@@ -515,7 +570,167 @@ def test_framework_renders_a_filtered_review_register(monkeypatch, tmp_path):
 
     next(item for item in app.checkbox if item.label == "Show failed only").set_value(True).run()
 
-    assert any("No manually reviewed failed trades" in item.value for item in app.info)
+    assert any("No reviewed failed trades" in item.value for item in app.info)
+
+
+def test_approving_within_policy_evidence_moves_the_trade_from_auto_reviewed_to_reviewed(monkeypatch, tmp_path):
+    database_path = tmp_path / "journal.db"
+    repository = SQLiteJournalRepository(database_path)
+    repository.initialize()
+    repository.configure_journal(reporting_time_basis="utc")
+    repository.register_mt5_account(
+        display_name="Primary",
+        login="123456",
+        broker_server="DemoBroker-Live",
+        account_currency="USD",
+        export_file_path="",
+    )
+    account = repository.find_active_mt5_account("123456", "DemoBroker-Live")
+    assert account is not None
+    repository.save_account_risk_policy(
+        account_id=account.id,
+        standard_risk_per_trade_percent="1",
+        maximum_risk_per_trade_percent="1",
+        daily_loss_limit_r="2",
+        weekly_loss_limit_r="4",
+        max_drawdown_percent="10",
+        max_open_risk_r="1",
+        max_consecutive_losses=3,
+        minimum_rr="1.5",
+        correlation_policy=None,
+        starting_balance="1000",
+    )
+    repository.upsert_mt5_positions(
+        account.id,
+        [
+            MT5PositionExport(
+                schema_version=5,
+                account_login="123456",
+                broker_server="DemoBroker-Live",
+                account_currency="USD",
+                position_id="9010",
+                symbol="XAUUSD",
+                direction="long",
+                entry_time="2026-08-10T08:00:00+00:00",
+                exit_time="2026-08-10T09:00:00+00:00",
+                entry_price="3300",
+                exit_price="3320",
+                volume="0.1",
+                gross_pnl="20",
+                commission="0",
+                swap="0",
+                fees="0",
+                net_pnl="20",
+                initial_risk_amount="5",
+                entry_stop_price="3280",
+            )
+        ],
+        "positions.csv",
+        "auto-review-reclassify-test",
+    )
+    monkeypatch.setenv("TRADING_JOURNAL_DB", str(database_path))
+
+    app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
+    app.switch_page("app_pages/framework.py").run()
+    next(item for item in app.segmented_control if item.label == "Review status").set_value("all").run()
+
+    review_filter = next(item for item in app.segmented_control if item.label == "Review status")
+    assert review_filter.options == ["Requires review (0)", "Auto-reviewed (1)", "Reviewed (0)", "All (1)"]
+
+    next(item for item in app.button if item.label == "Approve").click().run()
+
+    review_filter = next(item for item in app.segmented_control if item.label == "Review status")
+    assert review_filter.options == ["Requires review (0)", "Auto-reviewed (0)", "Reviewed (1)", "All (1)"]
+    active = repository.list_active_post_trade_assessments(account.id)[0]
+    assert active.method == "auto"
+    assert active.risk_policy_state == "within_policy"
+
+
+def test_reopening_review_after_upgrading_an_auto_review_does_not_crash(monkeypatch, tmp_path):
+    database_path = tmp_path / "journal.db"
+    repository = SQLiteJournalRepository(database_path)
+    repository.initialize()
+    repository.configure_journal(reporting_time_basis="utc")
+    repository.register_mt5_account(
+        display_name="Primary",
+        login="123456",
+        broker_server="DemoBroker-Live",
+        account_currency="USD",
+        export_file_path="",
+    )
+    account = repository.find_active_mt5_account("123456", "DemoBroker-Live")
+    assert account is not None
+    repository.save_account_risk_policy(
+        account_id=account.id,
+        standard_risk_per_trade_percent="1",
+        maximum_risk_per_trade_percent="1",
+        daily_loss_limit_r="2",
+        weekly_loss_limit_r="4",
+        max_drawdown_percent="10",
+        max_open_risk_r="1",
+        max_consecutive_losses=3,
+        minimum_rr="1.5",
+        correlation_policy=None,
+        starting_balance="1000",
+    )
+    repository.save_strategy_profile(
+        name="Trend continuation",
+        description=None,
+        backtest_start_date=None,
+        backtest_end_date=None,
+        backtest_trade_count=None,
+        backtest_win_rate=None,
+        backtest_expectancy_r=None,
+        backtest_net_r=None,
+        backtest_notes=None,
+    )
+    repository.upsert_mt5_positions(
+        account.id,
+        [
+            MT5PositionExport(
+                schema_version=5,
+                account_login="123456",
+                broker_server="DemoBroker-Live",
+                account_currency="USD",
+                position_id="9010",
+                symbol="XAUUSD",
+                direction="long",
+                entry_time="2026-08-10T08:00:00+00:00",
+                exit_time="2026-08-10T09:00:00+00:00",
+                entry_price="3300",
+                exit_price="3320",
+                volume="0.1",
+                gross_pnl="20",
+                commission="0",
+                swap="0",
+                fees="0",
+                net_pnl="20",
+                initial_risk_amount="5",
+                entry_stop_price="3280",
+            )
+        ],
+        "positions.csv",
+        "reopen-after-upgrade-test",
+    )
+    monkeypatch.setenv("TRADING_JOURNAL_DB", str(database_path))
+
+    app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
+    app.switch_page("app_pages/framework.py").run()
+    next(item for item in app.segmented_control if item.label == "Review status").set_value("all").run()
+    next(item for item in app.button if item.label == "Approve").click().run()
+
+    next(item for item in app.button if item.label == "Review").click().run()
+    assert not app.exception
+    next(item for item in app.button if item.label == "Mark all criteria as Pass").click().run()
+    note = next(item for item in app.text_area if item.label == "What happened and what did you learn? *")
+    note.set_value("Upgraded from an auto review.").run()
+    next(item for item in app.button if item.label == "Save assessment").click().run()
+    assert not app.exception
+
+    next(item for item in app.button if item.label == "Review").click().run()
+
+    assert not app.exception
+    assert any("Assessment history" in item.label for item in app.expander)
 
 
 def test_framework_groups_positions_through_a_confirmation_step(monkeypatch, tmp_path):

@@ -1,0 +1,63 @@
+@startuml
+title Post-trade review — redesigned state machine (target design, migration ignored)
+
+skinparam shadowing false
+skinparam defaultFontName Arial
+
+state "Pending" as Pending {
+  state "risk_evidence: over_policy | unavailable" as PendingUrgent
+  state "risk_evidence: within_policy" as PendingRoutine
+}
+
+state "Reviewed" as Reviewed {
+  state "method: auto\n(one-click, evidence-driven)" as Auto
+  state "method: manual\n(full 13-criterion assessment)" as Manual
+}
+
+state "Reclassified" as Reclassified <<choice>>
+
+[*] --> PendingUrgent : import position\nrisk evidence over_policy / unavailable
+[*] --> PendingRoutine : import position\nrisk evidence within_policy
+
+PendingUrgent --> Auto : Approve (one click)
+PendingRoutine --> Auto : Approve (one click)
+PendingUrgent --> Manual : Full assessment
+PendingRoutine --> Manual : Full assessment
+Auto --> Manual : Full assessment\n(upgrades / replaces the auto review)
+
+Auto --> PendingUrgent : Retract**\n(back to evidence-driven pending)
+Auto --> PendingRoutine : Retract**
+
+Manual --> Manual : Correct\n(new revision, prior superseded,\nhard-rule re-snapshotted)
+
+Pending --> Reclassified : membership change
+Reviewed --> Reclassified : membership change\n(review superseded)
+Reclassified --> [*] : new logical_trade_id,\nre-enters at [*] fresh
+
+note bottom of Reviewed
+  Both Auto and Manual count toward
+  pillar scores / readiness roadmap.
+  Only Manual can record violation tags
+  or hard-rule events.
+end note
+
+note right of PendingUrgent
+  "Requires review" tab
+end note
+note right of PendingRoutine
+  "Auto-reviewed" (pending) tab
+end note
+note left of Auto
+  Tagged "Auto" under the "Reviewed" tab
+end note
+note left of Manual
+  Tagged "Manual" under the "Reviewed" tab
+end note
+
+legend right
+  ** Retract is a NEW capability proposed by
+  this redesign — not present in the current
+  implementation. Confirm before implementing.
+endlegend
+
+@enduml

@@ -81,11 +81,11 @@ Risk policies are versioned. A completed assessment retains the policy and strat
 
 | Review status | What it means | Three-pillar score? | What to do |
 |---|---|---:|---|
-| Needs approval | Automatic risk evidence is over policy or unavailable. | No | Approve its evidence or complete a post-trade assessment. |
-| Auto-reviewed | Automatic risk evidence is within policy, or was approved after review. | Yes | It uses neutral Psychology and Trading system defaults and counts toward readiness. |
-| Manually reviewed | A full 13-criterion assessment was saved. | Yes | It replaces any approval and contributes to rolling scores and the readiness roadmap. |
+| Requires review | Automatic risk evidence is over policy or unavailable, and has not been approved yet. | No | Quick review to approve it in one click, or complete a full post-trade assessment. |
+| Auto-reviewed | Automatic risk evidence is within policy and still awaiting your approval. | No | Approve it in one click, or complete a full assessment instead. |
+| Reviewed | Automatic evidence you have approved (tagged **Auto**), or a full 13-criterion assessment (tagged **Manual**). | Yes | Nothing further for an Auto entry; correct a Manual entry by saving a new assessment. |
 
-The **Auto-reviewed** filter includes both **Auto-review** and **Approved auto-review** entries. An Auto-review uses `Partial` (neutral) for Psychology and Trading system. For Risk management, policy adherence is `Pass` only when the automatic amount is within policy; the remaining criteria are neutral. One-click approval records the same defaults, with policy adherence `Fail` for an over-policy amount. A full assessment remains the only way to record violations or hard-rule events.
+No automatic risk evidence counts toward pillar scores or the readiness roadmap on its own — not even when it is within policy. It must be explicitly approved in one click (Quick review or Approve), or replaced by a full assessment, first. Once approved, an **Auto** entry uses `Partial` (neutral) for Psychology and Trading system. For Risk management, policy adherence is `Pass` only when the automatic amount is within policy; the remaining criteria are neutral. Approving over-policy evidence records policy adherence as `Fail`. A full assessment (**Manual**) remains the only way to record violations or hard-rule events, and it always replaces an existing approval.
 
 ### Automatic risk evidence
 
@@ -105,7 +105,7 @@ For a later position whose entry timestamp is after an earlier completed positio
 
 ## 3. Complete one post-trade assessment
 
-Open **Framework → Review** and choose a logical trade from **Needs approval**, **Auto-reviewed**, or **Manually reviewed**. Approval-needed evidence can be accepted in one click, or you can rate all 13 criteria in a full assessment. A grouped logical trade contributes one review to the rolling sample, not one review per member position.
+Open **Framework → Review** and choose a logical trade from **Requires review**, **Auto-reviewed**, or **Reviewed**. Any automatic risk evidence can be accepted in one click, or you can rate all 13 criteria in a full assessment. A grouped logical trade contributes one review to the rolling sample, not one review per member position.
 
 | Rating | Numeric value | Use it when |
 |---|---:|---|

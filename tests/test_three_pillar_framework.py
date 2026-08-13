@@ -6,6 +6,8 @@ import sqlite3
 
 import pytest
 
+import streamlit as st
+
 from trading_journal.application.framework import FrameworkService, ROADMAP_ITEMS
 from trading_journal.application.dashboard import DashboardService
 from trading_journal.domain.models import MT5PositionExport
@@ -15,14 +17,68 @@ from trading_journal.infrastructure.sqlite_repository import (
     SQLiteJournalRepository,
 )
 from trading_journal.presentation.framework import (
+    _advance_review_queue,
     _auto_risk_label,
     _automatic_risk_monitoring_detail,
+    _clear_review_dialog,
+    _default_policy_adherence_grade,
     _process_failure_detail,
     _risk_evidence_detail,
+    _set_pillar_grades_to_pass,
 )
 
 
 ALL_PASS = {criterion: "pass" for criterion in ASSESSMENT_CRITERIA}
+
+
+def test_marking_a_pillar_as_pass_changes_only_its_criteria() -> None:
+    state = {"assessment-42-rule_adherence": "Fail", "assessment-42-policy_adherence": "Partial"}
+
+    _set_pillar_grades_to_pass(42, ("rule_adherence", "impulse_control"), state)
+
+    assert state == {
+        "assessment-42-rule_adherence": "Pass",
+        "assessment-42-impulse_control": "Pass",
+        "assessment-42-policy_adherence": "Partial",
+    }
+
+
+def test_marking_all_criteria_as_pass_sets_every_criterion() -> None:
+    state = {"assessment-42-rule_adherence": "Fail", "assessment-42-policy_adherence": "Partial"}
+
+    _set_pillar_grades_to_pass(42, ASSESSMENT_CRITERIA, state)
+
+    assert state == {f"assessment-42-{criterion}": "Pass" for criterion in ASSESSMENT_CRITERIA}
+
+
+def test_default_policy_adherence_grade_matches_within_policy_state() -> None:
+    assert _default_policy_adherence_grade("within_policy") == "pass"
+
+
+def test_default_policy_adherence_grade_matches_over_policy_state() -> None:
+    assert _default_policy_adherence_grade("over_policy") == "fail"
+
+
+def test_default_policy_adherence_grade_is_blank_when_unavailable() -> None:
+    assert _default_policy_adherence_grade("unavailable") is None
+
+
+def test_advance_review_queue_returns_next_id_and_remainder() -> None:
+    assert _advance_review_queue((7, 9, 11)) == (7, (9, 11))
+
+
+def test_advance_review_queue_on_empty_queue_returns_none() -> None:
+    assert _advance_review_queue(()) == (None, ())
+
+
+def test_clear_review_dialog_also_clears_the_queue() -> None:
+    st.session_state["post-trade-review-trade-id"] = 42
+    st.session_state["post-trade-review-queue"] = (7, 9)
+
+    _clear_review_dialog()
+
+    assert "post-trade-review-trade-id" not in st.session_state
+    assert "post-trade-review-queue" not in st.session_state
 
 
 def _repository(tmp_path):
@@ -270,22 +326,37 @@ def test_low_raw_score_is_not_classified_as_a_good_trade_without_a_hard_rule(tmp
     assert score.classification == "Needs improvement Win"
 
 
-def test_within_policy_automatic_risk_is_a_neutral_auto_review(tmp_path) -> None:
+def test_within_policy_automatic_risk_awaits_approval_before_it_is_scored(tmp_path) -> None:
     repository, account_id = _repository(tmp_path)
-    _policy(repository, account_id)
+    policy = _policy(repository, account_id)
     trade_id = _import_position(repository, account_id, initial_risk_amount="8", initial_reward_amount="16", entry_stop_price="3290")
 
     service = FrameworkService(repository)
-    score = next(item for item in service.trade_process_scores(account_id) if item.trade_id == trade_id)
-    pillars = service.pillar_scores(account_id)
+    pending = next(item for item in service.trade_process_scores(account_id) if item.trade_id == trade_id)
+    pending_pillars = service.pillar_scores(account_id)
 
-    assert score.assessment_state == "reviewed"
-    assert score.review_kind == "auto_review"
-    assert score.auto_risk.state == "within_policy"
-    assert score.psychology_score == "50"
-    assert score.risk_score == "67.5"
-    assert score.system_score == "50"
-    assert all(item.reviewed_total == 1 for item in pillars)
+    assert pending.assessment_state == "not_scored"
+    assert pending.review_kind == "auto_review"
+    assert pending.auto_risk.state == "within_policy"
+    assert pending.psychology_score is None
+    assert all(item.reviewed_total == 0 for item in pending_pillars)
+
+    repository.approve_auto_review(
+        account_id=account_id, trade_id=trade_id, risk_policy_id=policy.id,
+        risk_evidence_source=pending.risk_evidence_source, risk_policy_state=pending.risk_policy_state,
+        actual_risk_amount=pending.actual_risk_amount,
+        criterion_grades=FrameworkService._automatic_review_grades(pending.risk_policy_state),
+    )
+    after_approval = FrameworkService(repository)
+    approved = next(item for item in after_approval.trade_process_scores(account_id) if item.trade_id == trade_id)
+    approved_pillars = after_approval.pillar_scores(account_id)
+
+    assert approved.assessment_state == "reviewed"
+    assert approved.review_kind == "approved_auto_review"
+    assert approved.psychology_score == "50"
+    assert approved.risk_score == "67.5"
+    assert approved.system_score == "50"
+    assert all(item.reviewed_total == 1 for item in approved_pillars)
 
 
 def test_risk_snapshot_clears_an_expired_daily_limit_breach(tmp_path) -> None:
@@ -412,6 +483,96 @@ def test_approval_needed_auto_review_can_be_approved_and_then_replaced_by_full_r
     assert approved.risk_score == "32.5"
     _review(repository, account_id, trade_id, policy, strategy)
     assert FrameworkService(repository).trade_process_scores(account_id)[0].review_kind == "manual_review"
+
+
+def test_upgrading_an_auto_review_to_manual_archives_it_as_a_revision(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    trade_id = _import_position(repository, account_id, initial_risk_amount="20", entry_stop_price="3290")
+    before = FrameworkService(repository).trade_process_scores(account_id)[0]
+    repository.approve_auto_review(
+        account_id=account_id, trade_id=trade_id, risk_policy_id=policy.id,
+        risk_evidence_source=before.risk_evidence_source, risk_policy_state=before.risk_policy_state,
+        actual_risk_amount=before.actual_risk_amount,
+        criterion_grades=FrameworkService._automatic_review_grades(before.risk_policy_state),
+    )
+
+    upgraded = _review(repository, account_id, trade_id, policy, strategy, actual_risk=None)
+
+    assert upgraded.version == 2
+    revisions = repository.list_post_trade_assessment_revisions(trade_id)
+    assert len(revisions) == 1
+    assert revisions[0].version == 1
+    assert revisions[0].method == "auto"
+
+
+def test_upgrading_an_auto_review_requires_hard_rules_to_be_currently_enabled(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    trade_id = _import_position(repository, account_id, initial_risk_amount="20", entry_stop_price="3290")
+    before = FrameworkService(repository).trade_process_scores(account_id)[0]
+    repository.approve_auto_review(
+        account_id=account_id, trade_id=trade_id, risk_policy_id=policy.id,
+        risk_evidence_source=before.risk_evidence_source, risk_policy_state=before.risk_policy_state,
+        actual_risk_amount=before.actual_risk_amount,
+        criterion_grades=FrameworkService._automatic_review_grades(before.risk_policy_state),
+    )
+    repository.save_framework_rule_settings(
+        oversized_revenge_hard=True,
+        mandatory_setup_hard=False,
+        stop_widened_hard=True,
+        shutdown_breach_hard=True,
+        repeated_critical_threshold=2,
+    )
+
+    with pytest.raises(ValueError, match="Enable a hard-rule event"):
+        _review(
+            repository, account_id, trade_id, policy, strategy,
+            hard_rules=("mandatory_setup_absent",), actual_risk=None,
+            action="Confirm the setup criteria before entry.",
+        )
+
+
+def test_upgrading_an_auto_review_does_not_inherit_reviewed_actual_risk(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    trade_id = _import_position(repository, account_id, initial_risk_amount="20", entry_stop_price="3290")
+    before = FrameworkService(repository).trade_process_scores(account_id)[0]
+    repository.approve_auto_review(
+        account_id=account_id, trade_id=trade_id, risk_policy_id=policy.id,
+        risk_evidence_source=before.risk_evidence_source, risk_policy_state=before.risk_policy_state,
+        actual_risk_amount=before.actual_risk_amount,
+        criterion_grades=FrameworkService._automatic_review_grades(before.risk_policy_state),
+    )
+
+    _review(repository, account_id, trade_id, policy, strategy, actual_risk=None)
+
+    after = FrameworkService(repository).trade_process_scores(account_id)[0]
+    assert after.risk_evidence_source == "specific_preset_sl"
+    assert after.risk_evidence_source != "reviewed_actual_risk"
+
+
+def test_approve_auto_review_is_idempotent(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy = _policy(repository, account_id)
+    trade_id = _import_position(repository, account_id, initial_risk_amount="20", entry_stop_price="3290")
+    before = FrameworkService(repository).trade_process_scores(account_id)[0]
+
+    first = repository.approve_auto_review(
+        account_id=account_id, trade_id=trade_id, risk_policy_id=policy.id,
+        risk_evidence_source=before.risk_evidence_source, risk_policy_state=before.risk_policy_state,
+        actual_risk_amount=before.actual_risk_amount,
+        criterion_grades=FrameworkService._automatic_review_grades(before.risk_policy_state),
+    )
+    second = repository.approve_auto_review(
+        account_id=account_id, trade_id=trade_id, risk_policy_id=policy.id,
+        risk_evidence_source=before.risk_evidence_source, risk_policy_state=before.risk_policy_state,
+        actual_risk_amount=before.actual_risk_amount,
+        criterion_grades=FrameworkService._automatic_review_grades(before.risk_policy_state),
+    )
+
+    assert first.id == second.id
+    assert len(repository.list_active_post_trade_assessments(account_id)) == 1
 
 
 def test_reviewed_actual_risk_replaces_automatic_policy_comparison_only(tmp_path) -> None:

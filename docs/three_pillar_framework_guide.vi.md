@@ -81,11 +81,11 @@ Chính sách rủi ro có phiên bản. Một đánh giá đã hoàn tất giữ
 
 | Trạng thái đánh giá | Ý nghĩa | Điểm ba trụ cột? | Việc cần làm |
 |---|---|---:|---|
-| Cần phê duyệt | Bằng chứng rủi ro tự động vượt chính sách hoặc chưa khả dụng. | Không | Phê duyệt bằng chứng hoặc hoàn tất đánh giá sau giao dịch. |
-| Đã đánh giá tự động | Bằng chứng rủi ro tự động trong chính sách, hoặc được phê duyệt sau khi xem xét. | Có | Dùng mặc định trung lập cho Tâm lý và Hệ thống giao dịch; được tính vào mức sẵn sàng. |
-| Đã đánh giá thủ công | Đã lưu đánh giá đầy đủ 13 tiêu chí. | Có | Thay thế mọi phê duyệt và đóng góp vào điểm trượt, lộ trình sẵn sàng. |
+| Cần xem xét | Bằng chứng rủi ro tự động vượt chính sách hoặc chưa khả dụng, và chưa được phê duyệt. | Không | Xem xét nhanh để phê duyệt bằng một nhấp chuột, hoặc hoàn tất đánh giá đầy đủ sau giao dịch. |
+| Đã đánh giá tự động | Bằng chứng rủi ro tự động trong chính sách và vẫn đang chờ phê duyệt. | Không | Phê duyệt bằng một nhấp chuột, hoặc hoàn tất đánh giá đầy đủ. |
+| Đã đánh giá | Bằng chứng tự động bạn đã phê duyệt (đánh dấu **Tự động**), hoặc đánh giá đầy đủ 13 tiêu chí (đánh dấu **Thủ công**). | Có | Không cần thêm gì với mục Tự động; sửa mục Thủ công bằng cách lưu đánh giá mới. |
 
-Bộ lọc **Đã đánh giá tự động** bao gồm cả mục **Đánh giá tự động** và **Đánh giá tự động đã phê duyệt**. Đánh giá tự động dùng `Một phần` (trung lập) cho Tâm lý và Hệ thống. Với Quản lý rủi ro, tuân thủ chính sách là `Đạt` khi số tiền tự động trong chính sách; các tiêu chí còn lại là trung lập. Phê duyệt một lần ghi mặc định tương tự, nhưng tuân thủ chính sách là `Không đạt` với số tiền vượt chính sách. Đánh giá đầy đủ vẫn là cách duy nhất để ghi vi phạm hoặc sự kiện quy tắc cứng.
+Không bằng chứng rủi ro tự động nào tự nó được tính vào điểm số các trụ cột hay lộ trình sẵn sàng — kể cả khi nó trong chính sách. Nó phải được phê duyệt rõ ràng bằng một nhấp chuột (Xem xét nhanh hoặc Phê duyệt), hoặc được thay bằng đánh giá đầy đủ, trước đã. Sau khi phê duyệt, mục **Tự động** dùng `Một phần` (trung lập) cho Tâm lý và Hệ thống. Với Quản lý rủi ro, tuân thủ chính sách là `Đạt` khi số tiền tự động trong chính sách; các tiêu chí còn lại là trung lập. Phê duyệt bằng chứng vượt chính sách ghi tuân thủ chính sách là `Không đạt`. Đánh giá đầy đủ (**Thủ công**) vẫn là cách duy nhất để ghi vi phạm hoặc sự kiện quy tắc cứng, và luôn thay thế một phê duyệt hiện có.
 
 ### Bằng chứng rủi ro tự động
 
@@ -105,7 +105,7 @@ Với vị thế vào sau thời điểm một vị thế hoàn tất trước �
 
 ## 3. Hoàn tất một đánh giá sau giao dịch
 
-Mở **Framework → Đánh giá** và chọn một giao dịch logic từ **Cần phê duyệt**, **Đã đánh giá tự động** hoặc **Đã đánh giá thủ công**. Bằng chứng cần phê duyệt có thể được chấp nhận bằng một nhấp chuột, hoặc bạn có thể chấm đủ 13 tiêu chí. Một giao dịch logic đã gộp chỉ đóng góp một đánh giá vào mẫu trượt, không phải một đánh giá cho mỗi vị thế thành viên.
+Mở **Framework → Đánh giá** và chọn một giao dịch logic từ **Cần xem xét**, **Đã đánh giá tự động** hoặc **Đã đánh giá**. Bất kỳ bằng chứng rủi ro tự động nào cũng có thể được chấp nhận bằng một nhấp chuột, hoặc bạn có thể chấm đủ 13 tiêu chí. Một giao dịch logic đã gộp chỉ đóng góp một đánh giá vào mẫu trượt, không phải một đánh giá cho mỗi vị thế thành viên.
 
 | Đánh giá | Giá trị số | Dùng khi |
 |---|---:|---|

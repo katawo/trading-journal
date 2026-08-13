@@ -162,6 +162,76 @@ def test_unimported_mt5_account_can_be_deleted_with_account_only_setup(repositor
     assert repository.list_mt5_accounts() == []
 
 
+def test_get_active_mt5_account_falls_back_deterministically_and_persists(repository: SQLiteJournalRepository) -> None:
+    repository.register_mt5_account(
+        display_name="Secondary",
+        login="654321",
+        broker_server="DemoBroker-Live",
+        account_currency="USD",
+        export_file_path="",
+    )
+    primary = next(item for item in repository.list_mt5_accounts() if item.display_name == "Primary")
+
+    active = repository.get_active_mt5_account()
+
+    assert active is not None
+    assert active.id == primary.id
+
+
+def test_active_mt5_account_choice_persists_across_repository_restarts(repository: SQLiteJournalRepository) -> None:
+    repository.register_mt5_account(
+        display_name="Secondary",
+        login="654321",
+        broker_server="DemoBroker-Live",
+        account_currency="USD",
+        export_file_path="",
+    )
+    secondary = next(item for item in repository.list_mt5_accounts() if item.display_name == "Secondary")
+    repository.set_active_mt5_account(secondary.id)
+
+    reopened = SQLiteJournalRepository(repository.database_path)
+    reopened.initialize()
+
+    assert reopened.get_active_mt5_account().id == secondary.id
+
+
+def test_deactivating_the_active_mt5_account_falls_back_to_another(repository: SQLiteJournalRepository) -> None:
+    repository.register_mt5_account(
+        display_name="Secondary",
+        login="654321",
+        broker_server="DemoBroker-Live",
+        account_currency="USD",
+        export_file_path="",
+    )
+    primary = next(item for item in repository.list_mt5_accounts() if item.display_name == "Primary")
+    repository.set_active_mt5_account(primary.id)
+
+    repository.deactivate_mt5_account(primary.id)
+
+    assert repository.get_active_mt5_account().display_name == "Secondary"
+
+
+def test_deleting_the_active_unimported_mt5_account_does_not_violate_the_foreign_key(repository: SQLiteJournalRepository) -> None:
+    repository.register_mt5_account(
+        display_name="Secondary",
+        login="654321",
+        broker_server="DemoBroker-Live",
+        account_currency="USD",
+        export_file_path="",
+    )
+    secondary = next(item for item in repository.list_mt5_accounts() if item.display_name == "Secondary")
+    repository.set_active_mt5_account(secondary.id)
+
+    repository.delete_mt5_account(secondary.id)
+
+    assert repository.get_active_mt5_account().display_name == "Primary"
+
+
+def test_set_active_mt5_account_rejects_an_unknown_id(repository: SQLiteJournalRepository) -> None:
+    with pytest.raises(ValueError):
+        repository.set_active_mt5_account(999999)
+
+
 def test_account_identity_cannot_change_after_mt5_trades_are_imported(repository: SQLiteJournalRepository, tmp_path: Path) -> None:
     export_path = tmp_path / "positions.csv"
     write_export(export_path)

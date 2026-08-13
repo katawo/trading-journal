@@ -290,8 +290,10 @@ def render_manual_sync_button(repo: SQLiteJournalRepository, *, key: str) -> Non
             DesktopSyncControl(paths.sync_request_path, paths.shutdown_request_path).request_sync()
             st.info("Desktop sync requested. The local worker will check every configured export within one second.")
         else:
-            results = MT5AutoSyncService(repo).sync_configured_exports()
+            with st.spinner(tr("Syncing MT5 now…")):
+                results = MT5AutoSyncService(repo).sync_configured_exports()
             st.session_state["auto_sync_results"] = results
+            st.toast(tr("MT5 sync complete."))
     with actions:
         render_live_sync_freshness(include_sync_hint=True)
     if not sync_requested or is_desktop_mode():
@@ -329,19 +331,22 @@ def render_journal_reporting_settings(repo: SQLiteJournalRepository) -> None:
         submitted = st.form_submit_button("Save calendar", type="primary", icon=":material/save:")
     if submitted:
         try:
-            repo.configure_journal(reporting_time_basis=next(key for key, label in labels.items() if label == selected))
+            with st.spinner(tr("Saving…")):
+                repo.configure_journal(reporting_time_basis=next(key for key, label in labels.items() if label == selected))
         except ValueError as error:
             st.error(str(error))
         else:
+            st.toast(tr("Journal settings saved."))
             st.success("Journal settings saved.")
 
 
 def render_mt5_account_settings(repo: SQLiteJournalRepository) -> AccountListItem | None:
     st.markdown("#### Approved MT5 accounts")
-    st.caption("Each account has a unique MT5 account ID. Its broker server confirms the export source. Funded capital can be updated later; it recalculates historical growth, drawdown, and Risk limits without changing MT5 trades.")
+    st.caption("Each account has a unique MT5 account ID. Its broker server confirms the export source. Funded capital can be updated later; it recalculates historical growth, drawdown, and Risk limits without changing MT5 trades. Dashboard and Framework always show the single active account below.")
     common_files_location = find_mt5_common_files()
     accounts = repo.list_mt5_accounts()
     accounts_by_id = {str(account.id): account for account in accounts}
+    active_account = repo.get_active_mt5_account()
     selected_id = st.session_state.get("mt5-account-selected-id")
     if selected_id not in accounts_by_id and selected_id != "new":
         selected_id = str(accounts[0].id) if accounts else "new"
@@ -358,30 +363,38 @@ def render_mt5_account_settings(repo: SQLiteJournalRepository) -> AccountListIte
             return
         st.session_state["mt5-account-selected-id"] = str(accounts[click["row"]].id)
 
-    master, detail = st.columns([1, 2], gap="large")
+    master, detail = st.columns([2, 3], gap="large")
     with master:
         st.markdown("##### Accounts")
         st.button("New account", icon=":material/add:", width="stretch", key="new-mt5-account", on_click=begin_new_account)
         if accounts:
+
+            def status_label(account: AccountListItem) -> str:
+                is_active = active_account is not None and account.id == active_account.id
+                is_editing = selected_id == str(account.id)
+                labels = [tr(label) for label, flag in (("Active", is_active), ("Editing", is_editing)) if flag]
+                return " · ".join(labels)
+
             st.dataframe(
                 pd.DataFrame(
                     [
                         {
                             "Account": account.display_name,
                             "Connection": f"{account.login} · {account.broker_server}",
-                            "Editing": "Current" if selected_id == str(account.id) else "",
+                            "Status": status_label(account),
                             "Open": ":material/edit:",
                         }
                         for account in accounts
                     ]
                 ),
                 column_config={
-                    "Account": st.column_config.TextColumn("Account", pinned=True),
-                    "Connection": st.column_config.TextColumn("MT5 connection"),
-                    "Editing": st.column_config.TextColumn(""),
+                    "Account": st.column_config.TextColumn("Account", width="medium", pinned=True),
+                    "Connection": st.column_config.TextColumn("MT5 connection", width="medium"),
+                    "Status": st.column_config.TextColumn("", width="small"),
                     "Open": st.column_config.ButtonColumn(
                         "",
                         type="tertiary",
+                        width="small",
                         help="Open this account",
                         on_click=select_account_from_list,
                         key="mt5-account-list",
@@ -400,7 +413,7 @@ def render_mt5_account_settings(repo: SQLiteJournalRepository) -> AccountListIte
         return f"mt5-account-{form_scope}-{name}"
 
     defaults = {
-        "display-name": selected.display_name if selected else "Primary account",
+        "display-name": selected.display_name if selected else "",
         "currency": selected.account_currency if selected else "USD",
         "funded-capital": (selected.funded_capital or "") if selected else "",
         "login": selected.login if selected else "",
@@ -421,7 +434,7 @@ def render_mt5_account_settings(repo: SQLiteJournalRepository) -> AccountListIte
         for name in defaults:
             st.session_state.pop(field_key(name), None)
 
-    def save_account() -> None:
+    def save_account() -> bool:
         display_name = st.session_state[field_key("display-name")].strip()
         account_currency = st.session_state[field_key("currency")].upper()
         funded_capital = st.session_state[field_key("funded-capital")]
@@ -429,53 +442,77 @@ def render_mt5_account_settings(repo: SQLiteJournalRepository) -> AccountListIte
         broker_server = st.session_state[field_key("broker-server")].strip()
         export_file_path = st.session_state[field_key("export-path")]
         if not display_name or not login.isdecimal() or not broker_server:
-            st.session_state["mt5-account-save-error"] = "A numeric MT5 login and broker server are required."
-            return
+            st.session_state["mt5-account-save-error"] = "An account name, a numeric MT5 login, and broker server are required."
+            return False
         if selected is None and any(account.login == login for account in accounts):
             st.session_state["mt5-account-save-error"] = "This MT5 account ID is already registered. Select it from the accounts list to update its settings."
-            return
+            return False
 
         resolved_export_path = export_file_path.strip() or default_mt5_export_path(login)
         try:
-            if selected is None:
-                repo.register_mt5_account(
-                    display_name=display_name,
-                    login=login,
-                    broker_server=broker_server,
-                    account_currency=account_currency,
-                    export_file_path=resolved_export_path,
-                    opening_balance=funded_capital or None,
-                )
-                clear_account_form()
-                registered = next(
-                    item for item in repo.list_mt5_accounts() if item.login == login and item.broker_server == broker_server
-                )
-                st.session_state["mt5-account-selected-id"] = str(registered.id)
-                message = "MT5 account added."
-            else:
-                repo.update_mt5_account(
-                    account_id=selected.id,
-                    display_name=display_name,
-                    login=login,
-                    broker_server=broker_server,
-                    account_currency=account_currency,
-                    export_file_path=resolved_export_path,
-                    opening_balance=funded_capital or None,
-                )
-                message = "MT5 account updated."
+            with st.spinner(tr("Saving…")):
+                if selected is None:
+                    repo.register_mt5_account(
+                        display_name=display_name,
+                        login=login,
+                        broker_server=broker_server,
+                        account_currency=account_currency,
+                        export_file_path=resolved_export_path,
+                        opening_balance=funded_capital or None,
+                    )
+                else:
+                    repo.update_mt5_account(
+                        account_id=selected.id,
+                        display_name=display_name,
+                        login=login,
+                        broker_server=broker_server,
+                        account_currency=account_currency,
+                        export_file_path=resolved_export_path,
+                        opening_balance=funded_capital or None,
+                    )
         except ValueError as error:
             st.session_state["mt5-account-save-error"] = str(error)
+            return False
+        if selected is None:
+            clear_account_form()
+            registered = next(
+                item for item in repo.list_mt5_accounts() if item.login == login and item.broker_server == broker_server
+            )
+            st.session_state["mt5-account-selected-id"] = str(registered.id)
+            st.session_state["mt5-account-notice"] = "MT5 account added."
         else:
-            st.session_state["mt5-account-notice"] = message
+            st.session_state["mt5-account-notice"] = "MT5 account updated."
+        st.toast(tr(st.session_state["mt5-account-notice"]))
+        return True
 
     with detail:
         account_editor = st.container(border=True)
-        account_editor.markdown(f"##### {'New account' if selected is None else selected.display_name}")
+        header_name, header_status = account_editor.columns([3, 2], vertical_alignment="center")
+        header_name.markdown(f"##### {'New account' if selected is None else selected.display_name}")
+        if selected is not None:
+            if active_account is not None and selected.id == active_account.id:
+                header_status.badge(tr("Active"), color="green", icon=":material/check_circle:")
+            else:
+                activate_clicked = header_status.button(
+                    "Set as active account",
+                    icon=":material/toggle_on:",
+                    key=f"set-active-mt5-account-{selected.id}",
+                )
+                if activate_clicked:
+                    with st.spinner(tr("Saving…")):
+                        repo.set_active_mt5_account(selected.id)
+                    st.session_state["mt5-account-notice"] = tr("{account} is now the active account.", account=selected.display_name)
+                    st.toast(st.session_state["mt5-account-notice"])
+                    st.rerun()
         if identity_locked:
             account_editor.caption("MT5 account ID, broker server, and currency are locked because this account already has imported trades. Its name, funded capital, and export location remain editable.")
         with account_editor.form("mt5-account-editor-form", border=False):
             identity, currency, baseline = st.columns([3, 1, 2])
-            display_name = identity.text_input("Account name", key=field_key("display-name"))
+            display_name = identity.text_input(
+                "Account name",
+                placeholder="e.g. Live account, Prop firm eval",
+                key=field_key("display-name"),
+            )
             account_currency = currency.text_input("Currency", max_chars=3, key=field_key("currency"), disabled=identity_locked).upper()
             funded_capital = baseline.text_input(
                 "Funded capital (optional)",
@@ -500,12 +537,13 @@ def render_mt5_account_settings(repo: SQLiteJournalRepository) -> AccountListIte
                     key=field_key("export-path"),
                 )
                 st.caption("Default: `trading_journal/<MT5-login>_positions.csv` under MT5 Common Files.")
-            st.form_submit_button(
+            account_submitted = st.form_submit_button(
                 "Update account" if selected else "Add account",
                 type="primary",
                 icon=":material/save:",
-                on_click=save_account,
             )
+        if account_submitted and save_account():
+            st.rerun()
 
         save_error = st.session_state.pop("mt5-account-save-error", None)
         if save_error:
@@ -516,13 +554,15 @@ def render_mt5_account_settings(repo: SQLiteJournalRepository) -> AccountListIte
                 if has_imported_trades:
                     st.caption("This account has imported trades or reviews. Deactivate it to remove it from imports and reports while retaining its local history. Adding the same MT5 account ID later reactivates it.")
 
-                    def deactivate_account() -> None:
-                        repo.deactivate_mt5_account(selected.id)
+                    deactivate_clicked = st.button("Deactivate account", key=f"deactivate-mt5-account-{selected.id}")
+                    if deactivate_clicked:
+                        with st.spinner(tr("Deactivating account…")):
+                            repo.deactivate_mt5_account(selected.id)
                         clear_account_form()
                         st.session_state["mt5-account-selected-id"] = "new"
                         st.session_state["mt5-account-notice"] = "MT5 account deactivated."
-
-                    st.button("Deactivate account", key=f"deactivate-mt5-account-{selected.id}", on_click=deactivate_account)
+                        st.toast(tr("MT5 account deactivated."))
+                        st.rerun()
                 else:
                     st.caption("This account has no imported trades. Deleting it permanently removes its account settings, import log, and risk-policy setup.")
                     delete_confirmation_key = f"delete-mt5-account-confirm-{selected.id}"
@@ -531,22 +571,23 @@ def render_mt5_account_settings(repo: SQLiteJournalRepository) -> AccountListIte
                         key=delete_confirmation_key,
                     )
 
-                    def delete_account() -> None:
-                        if not st.session_state.get(delete_confirmation_key, False):
-                            st.session_state["mt5-account-save-error"] = "Confirm deletion before deleting the account."
-                            return
-                        repo.delete_mt5_account(selected.id)
-                        clear_account_form()
-                        st.session_state["mt5-account-selected-id"] = "new"
-                        st.session_state["mt5-account-notice"] = "MT5 account deleted."
-
-                    st.button(
+                    delete_clicked = st.button(
                         "Delete account",
                         type="primary",
                         key=f"delete-mt5-account-{selected.id}",
                         disabled=not delete_confirmed,
-                        on_click=delete_account,
                     )
+                    if delete_clicked:
+                        if not st.session_state.get(delete_confirmation_key, False):
+                            st.session_state["mt5-account-save-error"] = "Confirm deletion before deleting the account."
+                        else:
+                            with st.spinner(tr("Deleting account…")):
+                                repo.delete_mt5_account(selected.id)
+                            clear_account_form()
+                            st.session_state["mt5-account-selected-id"] = "new"
+                            st.session_state["mt5-account-notice"] = "MT5 account deleted."
+                            st.toast(tr("MT5 account deleted."))
+                            st.rerun()
 
         notice = st.session_state.pop("mt5-account-notice", None)
         if notice:
@@ -763,27 +804,29 @@ def render_strategy_settings(repo: SQLiteJournalRepository) -> None:
         if submitted:
             try:
                 repository_trade_count = int(backtest_trade_count) if backtest_trade_count.strip() else None
-                profile = repo.save_strategy_profile(
-                    name=name,
-                    description=description or None,
-                    backtest_start_date=backtest_start_date or None,
-                    backtest_end_date=backtest_end_date or None,
-                    backtest_trade_count=repository_trade_count,
-                    backtest_win_rate=backtest_win_rate or None,
-                    backtest_expectancy_r=backtest_expectancy_r or None,
-                    backtest_net_r=backtest_net_r or None,
-                    backtest_notes=backtest_notes or None,
-                    magic_numbers=magic_numbers or None,
-                    strategy_id=selected.id if selected else None,
-                )
-                if use_as_default:
-                    repo.set_default_strategy(profile.id)
-                elif selected and selected.id == default_strategy_id:
-                    repo.set_default_strategy(None)
+                with st.spinner(tr("Saving…")):
+                    profile = repo.save_strategy_profile(
+                        name=name,
+                        description=description or None,
+                        backtest_start_date=backtest_start_date or None,
+                        backtest_end_date=backtest_end_date or None,
+                        backtest_trade_count=repository_trade_count,
+                        backtest_win_rate=backtest_win_rate or None,
+                        backtest_expectancy_r=backtest_expectancy_r or None,
+                        backtest_net_r=backtest_net_r or None,
+                        backtest_notes=backtest_notes or None,
+                        magic_numbers=magic_numbers or None,
+                        strategy_id=selected.id if selected else None,
+                    )
+                    if use_as_default:
+                        repo.set_default_strategy(profile.id)
+                    elif selected and selected.id == default_strategy_id:
+                        repo.set_default_strategy(None)
             except ValueError as error:
                 st.error(str(error))
             else:
                 st.session_state["strategy-selected-id"] = profile.id
+                st.toast(tr("Strategy profile saved."))
                 st.success("Strategy profile saved.")
 
 
@@ -796,19 +839,14 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
         st.info("Configure journal settings before viewing reports.")
         return
 
-    accounts = repo.list_mt5_accounts()
-    if not accounts:
+    account = repo.get_active_mt5_account()
+    if account is None:
         st.info("Add an approved MT5 account in Settings before viewing reports.")
         return
     render_manual_sync_button(repo, key="dashboard-manual-sync")
     with st.container(border=True):
         st.markdown("**Report scope**")
-        account = st.selectbox(
-            "Report account",
-            accounts,
-            format_func=lambda item: f"{item.display_name} · {item.login} · {item.broker_server}",
-            key="dashboard-report-account",
-        )
+        st.caption(tr("Reporting on {account}. Change the active account in Settings → Approved MT5 accounts.", account=format_account_label(account)))
         dashboard_service = DashboardService(repo)
         today = dashboard_service.current_report_date(account.id)
         period = st.segmented_control(

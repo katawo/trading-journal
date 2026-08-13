@@ -86,6 +86,7 @@ class JournalSettings(Base):
     display_language: Mapped[str] = mapped_column(String(2), nullable=False, default="en")
     default_strategy_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     default_strategy_profile_id: Mapped[int | None] = mapped_column(ForeignKey("strategy_profiles.id"), nullable=True)
+    active_mt5_account_id: Mapped[int | None] = mapped_column(ForeignKey("mt5_accounts.id"), nullable=True)
 
 
 class MT5Account(Base):
@@ -219,7 +220,12 @@ class AccountRiskPolicy(Base):
 
 
 class PostTradeAssessment(Base):
-    """One complete, post-trade assessment of a logical trade."""
+    """The single active review of a logical trade — either a one-click auto review or a full manual assessment.
+
+    `method` distinguishes the two: "auto" rows are evidence-driven (neutral Psychology/
+    Trading-system defaults; no strategy, note, violations, or hard-rules), "manual" rows
+    are a full 13-criterion assessment. Both count toward pillar scores identically once active.
+    """
 
     __tablename__ = "post_trade_assessments"
     __table_args__ = (
@@ -235,14 +241,17 @@ class PostTradeAssessment(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     mt5_account_id: Mapped[int] = mapped_column(ForeignKey("mt5_accounts.id"), nullable=False)
     logical_trade_id: Mapped[int] = mapped_column(ForeignKey("logical_trades.id"), nullable=False)
+    method: Mapped[str] = mapped_column(String(16), nullable=False)
     risk_policy_id: Mapped[int | None] = mapped_column(ForeignKey("account_risk_policies.id"), nullable=True)
-    strategy_profile_id: Mapped[int] = mapped_column(ForeignKey("strategy_profiles.id"), nullable=False)
-    strategy_snapshot: Mapped[str] = mapped_column(Text, nullable=False)
+    risk_evidence_source: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    risk_policy_state: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    strategy_profile_id: Mapped[int | None] = mapped_column(ForeignKey("strategy_profiles.id"), nullable=True)
+    strategy_snapshot: Mapped[str | None] = mapped_column(Text, nullable=True)
     criterion_grades: Mapped[str] = mapped_column(Text, nullable=False)
     violation_codes: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     hard_rule_codes: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     declared_actual_risk_amount: Mapped[str | None] = mapped_column(String, nullable=True)
-    post_review_note: Mapped[str] = mapped_column(Text, nullable=False)
+    post_review_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     corrective_action: Mapped[str | None] = mapped_column(Text, nullable=True)
     assessed_position_ids: Mapped[str] = mapped_column(Text, nullable=False)
     assessed_trade_label: Mapped[str] = mapped_column(String(160), nullable=False)
@@ -254,7 +263,7 @@ class PostTradeAssessment(Base):
 
 
 class PostTradeAssessmentRevision(Base):
-    """Immutable copy of a completed review before it is corrected."""
+    """Immutable copy of a post-trade assessment before it was corrected, upgraded, or superseded."""
 
     __tablename__ = "post_trade_assessment_revisions"
     __table_args__ = (UniqueConstraint("post_trade_assessment_id", "version", name="uq_post_trade_assessment_revision"),)
@@ -262,38 +271,19 @@ class PostTradeAssessmentRevision(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     post_trade_assessment_id: Mapped[int] = mapped_column(ForeignKey("post_trade_assessments.id"), nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False)
+    method: Mapped[str] = mapped_column(String(16), nullable=False)
     risk_policy_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    strategy_profile_id: Mapped[int] = mapped_column(Integer, nullable=False)
-    strategy_snapshot: Mapped[str] = mapped_column(Text, nullable=False)
+    risk_evidence_source: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    risk_policy_state: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    strategy_profile_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    strategy_snapshot: Mapped[str | None] = mapped_column(Text, nullable=True)
     criterion_grades: Mapped[str] = mapped_column(Text, nullable=False)
     violation_codes: Mapped[str] = mapped_column(Text, nullable=False)
     hard_rule_codes: Mapped[str] = mapped_column(Text, nullable=False)
     declared_actual_risk_amount: Mapped[str | None] = mapped_column(String, nullable=True)
-    post_review_note: Mapped[str] = mapped_column(Text, nullable=False)
+    post_review_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     corrective_action: Mapped[str | None] = mapped_column(Text, nullable=True)
     archived_at: Mapped[str] = mapped_column(String(64), nullable=False)
-
-
-class AutoReviewApproval(Base):
-    """A lightweight human approval of immutable automatic risk evidence."""
-
-    __tablename__ = "auto_review_approvals"
-    __table_args__ = (
-        Index("uq_active_auto_review_approval_logical_trade", "logical_trade_id", unique=True, sqlite_where=text("superseded_at IS NULL")),
-        Index("ix_active_auto_review_approvals_account", "mt5_account_id", sqlite_where=text("superseded_at IS NULL")),
-    )
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    mt5_account_id: Mapped[int] = mapped_column(ForeignKey("mt5_accounts.id"), nullable=False)
-    logical_trade_id: Mapped[int] = mapped_column(ForeignKey("logical_trades.id"), nullable=False)
-    risk_policy_id: Mapped[int | None] = mapped_column(ForeignKey("account_risk_policies.id"), nullable=True)
-    risk_evidence_source: Mapped[str] = mapped_column(String(64), nullable=False)
-    risk_policy_state: Mapped[str] = mapped_column(String(32), nullable=False)
-    actual_risk_amount: Mapped[str | None] = mapped_column(String, nullable=True)
-    criterion_grades: Mapped[str] = mapped_column(Text, nullable=False)
-    superseded_at: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    superseded_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    created_at: Mapped[str] = mapped_column(String(64), nullable=False)
 
 
 class FrameworkRuleSettings(Base):
@@ -541,14 +531,17 @@ class PostTradeAssessmentView:
     id: int
     account_id: int
     trade_id: int
+    method: str
     risk_policy_id: int | None
-    strategy_profile_id: int
-    strategy_snapshot: "StrategyEvidenceSnapshot"
+    risk_evidence_source: str | None
+    risk_policy_state: str | None
+    strategy_profile_id: int | None
+    strategy_snapshot: "StrategyEvidenceSnapshot | None"
     criterion_grades: dict[str, str]
     violation_codes: tuple[str, ...]
     hard_rule_codes: tuple[str, ...]
     declared_actual_risk_amount: str | None
-    post_review_note: str
+    post_review_note: str | None
     corrective_action: str | None
     assessed_position_ids: tuple[str, ...]
     assessed_trade_label: str
@@ -562,14 +555,17 @@ class PostTradeAssessmentView:
 @dataclass(frozen=True)
 class PostTradeAssessmentRevisionView:
     version: int
+    method: str
     risk_policy_id: int | None
-    strategy_profile_id: int
-    strategy_snapshot: "StrategyEvidenceSnapshot"
+    risk_evidence_source: str | None
+    risk_policy_state: str | None
+    strategy_profile_id: int | None
+    strategy_snapshot: "StrategyEvidenceSnapshot | None"
     criterion_grades: dict[str, str]
     violation_codes: tuple[str, ...]
     hard_rule_codes: tuple[str, ...]
     declared_actual_risk_amount: str | None
-    post_review_note: str
+    post_review_note: str | None
     corrective_action: str | None
     archived_at: str
 
@@ -578,21 +574,6 @@ class PostTradeAssessmentRevisionView:
 class PostTradeAssessmentOutcome:
     assessment: PostTradeAssessmentView
     trade: ClosedTradeReviewItem
-
-
-@dataclass(frozen=True)
-class AutoReviewApprovalView:
-    id: int
-    account_id: int
-    trade_id: int
-    risk_policy_id: int | None
-    risk_evidence_source: str
-    risk_policy_state: str
-    actual_risk_amount: str | None
-    criterion_grades: dict[str, str]
-    superseded_at: str | None
-    superseded_reason: str | None
-    created_at: str
 
 
 @dataclass(frozen=True)
@@ -676,6 +657,8 @@ class SQLiteJournalRepository:
             columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(journal_settings)")}
             if "display_language" not in columns:
                 connection.exec_driver_sql("ALTER TABLE journal_settings ADD COLUMN display_language VARCHAR(2) NOT NULL DEFAULT 'en'")
+            if "active_mt5_account_id" not in columns:
+                connection.exec_driver_sql("ALTER TABLE journal_settings ADD COLUMN active_mt5_account_id INTEGER REFERENCES mt5_accounts(id)")
             import_columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(mt5_import_runs)")}
             if "source_file_mtime_ns" not in import_columns:
                 connection.exec_driver_sql("ALTER TABLE mt5_import_runs ADD COLUMN source_file_mtime_ns INTEGER")
@@ -687,7 +670,6 @@ class SQLiteJournalRepository:
                 "CREATE INDEX IF NOT EXISTS ix_trades_logical_trade ON trades (logical_trade_id)",
                 "CREATE INDEX IF NOT EXISTS ix_import_runs_account_path_status_id ON mt5_import_runs (mt5_account_id, source_file_path, status, id)",
                 "CREATE INDEX IF NOT EXISTS ix_active_assessments_account ON post_trade_assessments (mt5_account_id) WHERE superseded_at IS NULL",
-                "CREATE INDEX IF NOT EXISTS ix_active_auto_review_approvals_account ON auto_review_approvals (mt5_account_id) WHERE superseded_at IS NULL",
             ):
                 connection.exec_driver_sql(statement)
         with self._sessions.begin() as session:
@@ -721,6 +703,7 @@ class SQLiteJournalRepository:
             "logical_trades": {"mt5_account_id", "created_at"},
             "post_trade_assessments": {
                 "logical_trade_id",
+                "method",
                 "criterion_grades",
                 "violation_codes",
                 "hard_rule_codes",
@@ -729,15 +712,12 @@ class SQLiteJournalRepository:
                 "superseded_at",
                 "superseded_reason",
             },
-            "post_trade_assessment_revisions": {"criterion_grades", "violation_codes", "hard_rule_codes"},
-            "auto_review_approvals": {"logical_trade_id", "criterion_grades", "risk_policy_state", "superseded_at"},
+            "post_trade_assessment_revisions": {"method", "criterion_grades", "violation_codes", "hard_rule_codes"},
         }
         with self._engine.connect() as connection:
             tables = {row[0] for row in connection.exec_driver_sql("SELECT name FROM sqlite_master WHERE type = 'table'")}
             existing_journal_tables = {"journal_settings", "mt5_accounts", "trades", "account_risk_policies", "post_trade_assessments"}
-            if tables.intersection(existing_journal_tables) and (
-                "framework_rule_settings" not in tables or "auto_review_approvals" not in tables
-            ):
+            if tables.intersection(existing_journal_tables) and "framework_rule_settings" not in tables:
                 raise JournalDatabaseResetRequiredError(
                     "This database predates the greenfield three-pillar framework. "
                     "Reset it before starting the app: make reset-db CONFIRM_RESET=yes"
@@ -902,6 +882,9 @@ class SQLiteJournalRepository:
             if account is None:
                 raise ValueError("The selected MT5 account no longer exists")
             account.active = False
+            settings = session.get(JournalSettings, 1)
+            if settings is not None and settings.active_mt5_account_id == account_id:
+                settings.active_mt5_account_id = None
 
     def delete_mt5_account(self, account_id: int) -> None:
         """Permanently delete an unimported account and its account-only setup."""
@@ -913,6 +896,10 @@ class SQLiteJournalRepository:
                 raise ValueError("An account with imported trades cannot be deleted. Deactivate it to retain its history instead")
             session.execute(delete(MT5ImportRun).where(MT5ImportRun.mt5_account_id == account_id))
             session.execute(delete(AccountRiskPolicy).where(AccountRiskPolicy.mt5_account_id == account_id))
+            settings = session.get(JournalSettings, 1)
+            if settings is not None and settings.active_mt5_account_id == account_id:
+                settings.active_mt5_account_id = None
+                session.flush()
             session.delete(account)
 
     def find_active_mt5_account(self, login: str, broker_server: str) -> MT5AccountView | None:
@@ -920,23 +907,50 @@ class SQLiteJournalRepository:
             account = session.scalar(select(MT5Account).where(MT5Account.login == login, MT5Account.broker_server == broker_server, MT5Account.active.is_(True)))
             return None if account is None else MT5AccountView(id=account.id, account_currency=account.account_currency)
 
+    @staticmethod
+    def _to_account_list_item(account: MT5Account) -> AccountListItem:
+        return AccountListItem(
+            account.id,
+            account.display_name,
+            account.login,
+            account.broker_server,
+            account.account_currency,
+            account.export_file_path,
+            account.opening_balance,
+            account.latest_mt5_balance,
+            account.latest_server_utc_offset_minutes,
+        )
+
     def list_mt5_accounts(self) -> list[AccountListItem]:
         with self._sessions() as session:
             accounts = session.scalars(select(MT5Account).where(MT5Account.active.is_(True)).order_by(MT5Account.display_name)).all()
-            return [
-                AccountListItem(
-                    account.id,
-                    account.display_name,
-                    account.login,
-                    account.broker_server,
-                    account.account_currency,
-                    account.export_file_path,
-                    account.opening_balance,
-                    account.latest_mt5_balance,
-                    account.latest_server_utc_offset_minutes,
-                )
-                for account in accounts
-            ]
+            return [self._to_account_list_item(account) for account in accounts]
+
+    def get_active_mt5_account(self) -> AccountListItem | None:
+        """Return the single account used app-wide, self-healing to a deterministic fallback if unset or stale."""
+        with self._sessions.begin() as session:
+            accounts = session.scalars(select(MT5Account).where(MT5Account.active.is_(True)).order_by(MT5Account.display_name)).all()
+            if not accounts:
+                return None
+            settings = session.get(JournalSettings, 1)
+            active_id = settings.active_mt5_account_id if settings is not None else None
+            account = next((item for item in accounts if item.id == active_id), None)
+            if account is None:
+                account = accounts[0]
+                if settings is not None:
+                    settings.active_mt5_account_id = account.id
+            return self._to_account_list_item(account)
+
+    def set_active_mt5_account(self, account_id: int) -> None:
+        """Switch the account used app-wide across Dashboard and Framework pages."""
+        with self._sessions.begin() as session:
+            account = session.get(MT5Account, account_id)
+            if account is None or not account.active:
+                raise ValueError("The selected MT5 account is not available")
+            settings = session.get(JournalSettings, 1)
+            if settings is None:
+                raise RuntimeError("Journal settings have not been configured")
+            settings.active_mt5_account_id = account_id
 
     def get_account_opening_balance(self, account_id: int) -> str | None:
         with self._sessions() as session:
@@ -1327,14 +1341,7 @@ class SQLiteJournalRepository:
         for assessment in assessments:
             assessment.superseded_at = superseded_at
             assessment.superseded_reason = reason
-        approvals = session.scalars(select(AutoReviewApproval).where(
-            AutoReviewApproval.logical_trade_id.in_(logical_trade_ids),
-            AutoReviewApproval.superseded_at.is_(None),
-        )).all() if logical_trade_ids else []
-        for approval in approvals:
-            approval.superseded_at = superseded_at
-            approval.superseded_reason = reason
-        return len(assessments) + len(approvals)
+        return len(assessments)
 
     @staticmethod
     def _retire_empty_logical_trades(session, logical_trade_ids: set[int]) -> None:  # type: ignore[no-untyped-def]
@@ -1346,15 +1353,12 @@ class SQLiteJournalRepository:
                 select(PostTradeAssessment.id).where(PostTradeAssessment.logical_trade_id == logical_trade_id).limit(1)
             ) is not None:
                 continue
-            if session.scalar(
-                select(AutoReviewApproval.id).where(AutoReviewApproval.logical_trade_id == logical_trade_id).limit(1)
-            ) is not None:
-                continue
             logical_trade = session.get(LogicalTrade, logical_trade_id)
             if logical_trade is not None:
                 session.delete(logical_trade)
 
     def get_post_trade_assessment_for_trade(self, trade_id: int) -> PostTradeAssessmentView | None:
+        """Return the trade's single active review, whichever method it was recorded by."""
         with self._sessions() as session:
             row = session.scalar(
                 select(PostTradeAssessment).where(
@@ -1364,36 +1368,47 @@ class SQLiteJournalRepository:
             )
             return None if row is None else self._to_post_trade_assessment_view(row)
 
-    def list_active_auto_review_approvals(self, account_id: int) -> list[AutoReviewApprovalView]:
-        with self._sessions() as session:
-            rows = session.scalars(select(AutoReviewApproval).where(
-                AutoReviewApproval.mt5_account_id == account_id,
-                AutoReviewApproval.superseded_at.is_(None),
-            )).all()
-            return [self._to_auto_review_approval_view(row) for row in rows]
-
     def approve_auto_review(self, *, account_id: int, trade_id: int, risk_policy_id: int | None,
                             risk_evidence_source: str, risk_policy_state: str,
-                            actual_risk_amount: str | None, criterion_grades: Mapping[str, str]) -> AutoReviewApprovalView:
+                            actual_risk_amount: str | None, criterion_grades: Mapping[str, str]) -> PostTradeAssessmentView:
         grades = self._normalize_criterion_grades(criterion_grades)
-        if risk_policy_state not in {"over_policy", "unavailable"}:
-            raise ValueError("Only approval-needed automatic risk evidence can be approved")
+        if risk_policy_state not in {"within_policy", "over_policy", "unavailable"}:
+            raise ValueError("Unrecognized automatic risk-policy state")
         now = datetime.now(timezone.utc).isoformat()
         with self._sessions.begin() as session:
             trade = session.get(LogicalTrade, trade_id)
             if trade is None or trade.mt5_account_id != account_id:
                 raise ValueError("Logical trade was not found for this account")
-            if session.scalar(select(PostTradeAssessment.id).where(PostTradeAssessment.logical_trade_id == trade_id, PostTradeAssessment.superseded_at.is_(None))) is not None:
+            row = session.scalar(
+                select(PostTradeAssessment).where(
+                    PostTradeAssessment.logical_trade_id == trade_id,
+                    PostTradeAssessment.superseded_at.is_(None),
+                )
+            )
+            if row is not None and row.method == "manual":
                 raise ValueError("This trade already has a full assessment")
-            row = session.scalar(select(AutoReviewApproval).where(AutoReviewApproval.logical_trade_id == trade_id, AutoReviewApproval.superseded_at.is_(None)))
             if row is None:
-                row = AutoReviewApproval(mt5_account_id=account_id, logical_trade_id=trade_id, risk_policy_id=risk_policy_id,
-                    risk_evidence_source=risk_evidence_source, risk_policy_state=risk_policy_state,
-                    actual_risk_amount=actual_risk_amount, criterion_grades=json.dumps(grades, sort_keys=True),
-                    superseded_at=None, superseded_reason=None, created_at=now)
+                assessed_position_ids, assessed_trade_label = self._assessment_trade_snapshot(session, trade)
+                row = PostTradeAssessment(
+                    mt5_account_id=account_id,
+                    logical_trade_id=trade_id,
+                    method="auto",
+                    risk_policy_id=risk_policy_id,
+                    risk_evidence_source=risk_evidence_source,
+                    risk_policy_state=risk_policy_state,
+                    declared_actual_risk_amount=actual_risk_amount,
+                    criterion_grades=json.dumps(grades, sort_keys=True),
+                    assessed_position_ids=assessed_position_ids,
+                    assessed_trade_label=assessed_trade_label,
+                    superseded_at=None,
+                    superseded_reason=None,
+                    created_at=now,
+                    updated_at=now,
+                    version=1,
+                )
                 session.add(row)
                 session.flush()
-            return self._to_auto_review_approval_view(row)
+            return self._to_post_trade_assessment_view(row)
 
     def list_post_trade_assessment_revisions(self, trade_id: int) -> list[PostTradeAssessmentRevisionView]:
         """Return the immutable prior versions of a review, newest first."""
@@ -1438,8 +1453,13 @@ class SQLiteJournalRepository:
             ]
 
     def list_post_trade_assessment_outcomes(self, account_id: int | None = None) -> list[PostTradeAssessmentOutcome]:
+        """Full manual assessments only — a one-click approval does not satisfy the period-review gate."""
         with self._sessions() as session:
-            statement = select(PostTradeAssessment).where(PostTradeAssessment.superseded_at.is_(None)).order_by(PostTradeAssessment.updated_at)
+            statement = (
+                select(PostTradeAssessment)
+                .where(PostTradeAssessment.superseded_at.is_(None), PostTradeAssessment.method == "manual")
+                .order_by(PostTradeAssessment.updated_at)
+            )
             if account_id is not None:
                 statement = statement.where(PostTradeAssessment.mt5_account_id == account_id)
             rows = session.scalars(statement).all()
@@ -1504,12 +1524,6 @@ class SQLiteJournalRepository:
                 raise ValueError("Strategy profile was not found")
             if policy is not None and policy.mt5_account_id != account_id:
                 raise ValueError("Risk policy does not belong to this account")
-            for approval in session.scalars(select(AutoReviewApproval).where(
-                AutoReviewApproval.logical_trade_id == trade_id,
-                AutoReviewApproval.superseded_at.is_(None),
-            )).all():
-                approval.superseded_at = now
-                approval.superseded_reason = "Replaced by full post-trade assessment"
             row = session.scalar(
                 select(PostTradeAssessment).where(
                     PostTradeAssessment.logical_trade_id == trade_id,
@@ -1534,6 +1548,7 @@ class SQLiteJournalRepository:
                 row = PostTradeAssessment(
                     mt5_account_id=account_id,
                     logical_trade_id=trade_id,
+                    method="manual",
                     risk_policy_id=risk_policy_id,
                     strategy_profile_id=strategy_profile_id,
                     strategy_snapshot=self._strategy_snapshot_json(strategy),
@@ -1553,11 +1568,16 @@ class SQLiteJournalRepository:
                 )
                 session.add(row)
             else:
+                # A prior "auto" row is upgraded in place rather than superseded-and-recreated,
+                # so its automatic-evidence snapshot is preserved in revision history too.
                 session.add(
                     PostTradeAssessmentRevision(
                         post_trade_assessment_id=row.id,
                         version=row.version,
+                        method=row.method,
                         risk_policy_id=row.risk_policy_id,
+                        risk_evidence_source=row.risk_evidence_source,
+                        risk_policy_state=row.risk_policy_state,
                         strategy_profile_id=row.strategy_profile_id,
                         strategy_snapshot=row.strategy_snapshot,
                         criterion_grades=row.criterion_grades,
@@ -1569,6 +1589,9 @@ class SQLiteJournalRepository:
                         archived_at=now,
                     )
                 )
+                row.method = "manual"
+                row.risk_evidence_source = None
+                row.risk_policy_state = None
                 row.risk_policy_id = risk_policy_id
                 row.strategy_profile_id = strategy_profile_id
                 row.strategy_snapshot = self._strategy_snapshot_json(strategy)
@@ -2154,9 +2177,12 @@ class SQLiteJournalRepository:
             id=row.id,
             account_id=row.mt5_account_id,
             trade_id=row.logical_trade_id,
+            method=row.method,
             risk_policy_id=row.risk_policy_id,
+            risk_evidence_source=row.risk_evidence_source,
+            risk_policy_state=row.risk_policy_state,
             strategy_profile_id=row.strategy_profile_id,
-            strategy_snapshot=SQLiteJournalRepository._strategy_snapshot_from_json(row.strategy_snapshot),
+            strategy_snapshot=None if row.strategy_snapshot is None else SQLiteJournalRepository._strategy_snapshot_from_json(row.strategy_snapshot),
             criterion_grades=dict(json.loads(row.criterion_grades)),
             violation_codes=tuple(json.loads(row.violation_codes)),
             hard_rule_codes=tuple(json.loads(row.hard_rule_codes)),
@@ -2176,9 +2202,12 @@ class SQLiteJournalRepository:
     def _to_post_trade_assessment_revision_view(row: PostTradeAssessmentRevision) -> PostTradeAssessmentRevisionView:
         return PostTradeAssessmentRevisionView(
             version=row.version,
+            method=row.method,
             risk_policy_id=row.risk_policy_id,
+            risk_evidence_source=row.risk_evidence_source,
+            risk_policy_state=row.risk_policy_state,
             strategy_profile_id=row.strategy_profile_id,
-            strategy_snapshot=SQLiteJournalRepository._strategy_snapshot_from_json(row.strategy_snapshot),
+            strategy_snapshot=None if row.strategy_snapshot is None else SQLiteJournalRepository._strategy_snapshot_from_json(row.strategy_snapshot),
             criterion_grades=dict(json.loads(row.criterion_grades)),
             violation_codes=tuple(json.loads(row.violation_codes)),
             hard_rule_codes=tuple(json.loads(row.hard_rule_codes)),
@@ -2186,16 +2215,6 @@ class SQLiteJournalRepository:
             post_review_note=row.post_review_note,
             corrective_action=row.corrective_action,
             archived_at=row.archived_at,
-        )
-
-    @staticmethod
-    def _to_auto_review_approval_view(row: AutoReviewApproval) -> AutoReviewApprovalView:
-        return AutoReviewApprovalView(
-            id=row.id, account_id=row.mt5_account_id, trade_id=row.logical_trade_id,
-            risk_policy_id=row.risk_policy_id, risk_evidence_source=row.risk_evidence_source,
-            risk_policy_state=row.risk_policy_state, actual_risk_amount=row.actual_risk_amount,
-            criterion_grades=dict(json.loads(row.criterion_grades)), superseded_at=row.superseded_at,
-            superseded_reason=row.superseded_reason, created_at=row.created_at,
         )
 
     @staticmethod
@@ -2351,7 +2370,7 @@ class SQLiteJournalRepository:
             assessments = {
                 row.logical_trade_id: row
                 for row in session.scalars(
-                    select(PostTradeAssessment).where(PostTradeAssessment.superseded_at.is_(None))
+                    select(PostTradeAssessment).where(PostTradeAssessment.superseded_at.is_(None), PostTradeAssessment.method == "manual")
                 ).all()
                 if account_id is None or row.mt5_account_id == account_id
             }

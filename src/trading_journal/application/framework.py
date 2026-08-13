@@ -14,7 +14,6 @@ from trading_journal.infrastructure.sqlite_repository import (
     RISK_CRITERIA,
     SYSTEM_CRITERIA,
     AccountRiskPolicyView,
-    AutoReviewApprovalView,
     ClosedTradeReviewItem,
     PostTradeAssessmentView,
     SQLiteJournalRepository,
@@ -444,7 +443,6 @@ class FrameworkService:
             return self._account_score_cache[account_id]
         trades = sorted(self._repository.list_closed_trades_for_review(account_id), key=lambda item: (item.exit_time, item.id))
         assessments = {item.trade_id: item for item in self._repository.list_active_post_trade_assessments(account_id)}
-        approvals = {item.trade_id: item for item in self._repository.list_active_auto_review_approvals(account_id)}
         raw_positions = self._repository.list_imported_positions_for_risk(account_id)
         policies = self._policies_for(raw_positions, assessments, account_id)
         active_policy = self._repository.get_active_risk_policy(account_id)
@@ -460,7 +458,6 @@ class FrameworkService:
                 account_id,
                 trade,
                 assessments.get(trade.id),
-                approvals.get(trade.id),
                 policies,
                 strategies,
                 funded,
@@ -600,7 +597,6 @@ class FrameworkService:
         account_id: int,
         trade: ClosedTradeReviewItem,
         assessment: PostTradeAssessmentView | None,
-        approval: AutoReviewApprovalView | None,
         policies: dict[int, AccountRiskPolicyView],
         strategies_by_magic: dict[str, StrategyProfileView],
         funded: str | None,
@@ -611,15 +607,18 @@ class FrameworkService:
         auto_risk = self._auto_risk_evidence(trade, policies, funded, active_policy)
         policy = self._risk_policy_for_trade(assessment, trade, policies, active_policy)
         policy_risk = _decimal_text(self._maximum_risk_amount(funded, policy)) if funded is not None and policy is not None else None
-        actual_risk = assessment.declared_actual_risk_amount if assessment and assessment.declared_actual_risk_amount else auto_risk.source_amount
-        risk_evidence_source = "reviewed_actual_risk" if assessment and assessment.declared_actual_risk_amount else auto_risk.risk_basis
+        # Only a manual assessment's declared risk is a human-reviewed override — an "auto" row's
+        # declared_actual_risk_amount is just an approval-time audit snapshot, not evidence to display.
+        manual_declared_risk = assessment.declared_actual_risk_amount if assessment is not None and assessment.method == "manual" else None
+        actual_risk = manual_declared_risk if manual_declared_risk else auto_risk.source_amount
+        risk_evidence_source = "reviewed_actual_risk" if manual_declared_risk else auto_risk.risk_basis
         risk_policy_state = self._risk_policy_state(actual_risk, policy_risk)
         mapped = strategies_by_magic.get(trade.entry_magic_number or "")
-        if assessment is None:
-            if approval is not None:
-                state, kind, grades = "reviewed", "approved_auto_review", approval.criterion_grades
+        if assessment is None or assessment.method == "auto":
+            if assessment is not None:
+                state, kind, grades = "reviewed", "approved_auto_review", assessment.criterion_grades
             elif auto_risk.state == "within_policy":
-                state, kind, grades = "reviewed", "auto_review", self._automatic_review_grades("within_policy")
+                state, kind, grades = "not_scored", "auto_review", None
             else:
                 state, kind, grades = "not_scored", "needs_approval", None
             if grades is not None:
@@ -876,7 +875,7 @@ class FrameworkService:
 
     @staticmethod
     def _risk_amount(assessment, trade, fallback: Decimal, policy: AccountRiskPolicyView | None) -> Decimal:  # type: ignore[no-untyped-def]
-        if assessment is not None and assessment.declared_actual_risk_amount is not None:
+        if assessment is not None and assessment.method == "manual" and assessment.declared_actual_risk_amount is not None:
             return Decimal(assessment.declared_actual_risk_amount)
         if (value := FrameworkService._specific_preset_sl_amount(trade)) is not None:
             return Decimal(value)

@@ -141,14 +141,17 @@ entity "post_trade_assessments" as post_trade_assessments {
   --
   + mt5_account_id : INTEGER
   + logical_trade_id : INTEGER
+  method : VARCHAR(16)
   + risk_policy_id : INTEGER?
-  + strategy_profile_id : INTEGER
-  strategy_snapshot : TEXT
+  risk_evidence_source : VARCHAR(64)?
+  risk_policy_state : VARCHAR(32)?
+  + strategy_profile_id : INTEGER?
+  strategy_snapshot : TEXT?
   criterion_grades : TEXT
   violation_codes : TEXT
   hard_rule_codes : TEXT
   declared_actual_risk_amount : VARCHAR?
-  post_review_note : TEXT
+  post_review_note : TEXT?
   corrective_action : TEXT?
   assessed_position_ids : TEXT
   assessed_trade_label : VARCHAR(160)
@@ -166,35 +169,21 @@ entity "post_trade_assessment_revisions" as post_trade_assessment_revisions {
   --
   + post_trade_assessment_id : INTEGER
   version : INTEGER
+  method : VARCHAR(16)
   risk_policy_id : INTEGER?
-  strategy_profile_id : INTEGER
-  strategy_snapshot : TEXT
+  risk_evidence_source : VARCHAR(64)?
+  risk_policy_state : VARCHAR(32)?
+  strategy_profile_id : INTEGER?
+  strategy_snapshot : TEXT?
   criterion_grades : TEXT
   violation_codes : TEXT
   hard_rule_codes : TEXT
   declared_actual_risk_amount : VARCHAR?
-  post_review_note : TEXT
+  post_review_note : TEXT?
   corrective_action : TEXT?
   archived_at : VARCHAR(64)
   --
   UQ(post_trade_assessment_id, version)
-}
-
-entity "auto_review_approvals" as auto_review_approvals {
-  * id : INTEGER
-  --
-  + mt5_account_id : INTEGER
-  + logical_trade_id : INTEGER
-  + risk_policy_id : INTEGER?
-  risk_evidence_source : VARCHAR(64)
-  risk_policy_state : VARCHAR(32)
-  actual_risk_amount : VARCHAR?
-  criterion_grades : TEXT
-  superseded_at : VARCHAR(64)?
-  superseded_reason : VARCHAR(255)?
-  created_at : VARCHAR(64)
-  --
-  UQ(logical_trade_id) WHERE superseded_at IS NULL
 }
 
 entity "framework_rule_settings" as framework_rule_settings {
@@ -259,6 +248,16 @@ mt5_accounts ||--o{ framework_period_reviews : summarizes
 note bottom of post_trade_assessment_revisions
   risk_policy_id and strategy_profile_id are historical
   snapshot values, not database foreign keys.
+end note
+
+note top of post_trade_assessments
+  method = "auto" | "manual". One active row per logical_trade_id
+  regardless of method. "auto" rows (one-click approvals) leave
+  strategy_profile_id/strategy_snapshot/post_review_note null and
+  carry risk_evidence_source/risk_policy_state as an approval-time
+  snapshot; "manual" rows (full 13-criterion assessments) populate
+  everything and leave those two risk fields null. Both count toward
+  pillar scores identically once active.
 end note
 
 note bottom of pillar_roadmap_evidence
