@@ -22,7 +22,7 @@ _RESET_RESTART_BRIDGE = st.components.v2.component(
         return
       }
 
-      const state = { unavailable: false, message: 'Restarting Trading Journal…' }
+      const state = { unavailable: false, message: 'Restarting Trade Compass…' }
       window[bridgeKey] = state
       status.textContent = state.message
       const startedAt = Date.now()

@@ -16,7 +16,7 @@ from urllib.request import urlopen
 
 _STARTUP_TIMEOUT_SECONDS = 45
 _SHUTDOWN_TIMEOUT_SECONDS = 15
-_RECOVERY_MARKER = "Trading Journal reset recovery screen active."
+_RECOVERY_MARKER = "Trade Compass reset recovery screen active."
 
 
 def _available_loopback_port() -> int:

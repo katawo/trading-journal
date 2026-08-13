@@ -1,6 +1,6 @@
 # Desktop application
 
-The desktop release keeps the Trading Journal on the same computer as MT5. It is not a hosted PWA: the packaged application starts a loopback-only Streamlit service and runs the MT5 sync worker locally. Windows shows the journal in its own native window without a browser address bar; Linux uses the default browser for faster startup and a lighter bundle.
+The desktop release keeps Trade Compass on the same computer as MT5. It is not a hosted PWA: the packaged application starts a loopback-only Streamlit service and runs the MT5 sync worker locally. Windows shows the journal in its own native window without a browser address bar; Linux uses the default browser for faster startup and a lighter bundle.
 
 ## Install and start
 

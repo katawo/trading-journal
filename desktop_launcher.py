@@ -1,4 +1,4 @@
-"""PyInstaller entry point for the portable Trading Journal desktop bundle."""
+"""PyInstaller entry point for the portable Trade Compass desktop bundle."""
 
 from trading_journal.desktop import main
 

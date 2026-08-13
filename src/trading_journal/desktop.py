@@ -1,4 +1,4 @@
-"""Portable desktop runtime for the local-first Trading Journal.
+"""Portable desktop runtime for the local-first Trade Compass.
 
 The Streamlit UI stays unchanged as a browser-rendered interface, but this
 module makes it a desktop application: it owns a local-only server, a
@@ -27,6 +27,10 @@ from trading_journal.infrastructure.sqlite_repository import SQLiteJournalReposi
 
 
 APPLICATION_NAME = "TradingJournal"
+"""Stable data-directory key. Never rename this — it determines where an existing
+desktop install's local database lives (see desktop_data_directory()). The
+user-visible app name is DISPLAY_NAME below and can change freely."""
+DISPLAY_NAME = "Trade Compass"
 DESKTOP_MODE_ENVIRONMENT_KEY = "TRADING_JOURNAL_DESKTOP_MODE"
 DESKTOP_DATA_DIRECTORY_ENVIRONMENT_KEY = "TRADING_JOURNAL_DESKTOP_DATA_DIR"
 DESKTOP_PORT_ENVIRONMENT_KEY = "TRADING_JOURNAL_DESKTOP_PORT"
@@ -389,12 +393,12 @@ class DesktopInstanceLock:
             except FileExistsError:
                 if self._clear_stale_lock():
                     continue
-                raise RuntimeError("Trading Journal desktop is already running")
+                raise RuntimeError("Trade Compass desktop is already running")
             with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
                 handle.write(str(os.getpid()))
             self._owned = True
             return
-        raise RuntimeError("Trading Journal desktop is already running")
+        raise RuntimeError("Trade Compass desktop is already running")
 
     def release(self) -> None:
         if not self._owned:
@@ -538,7 +542,7 @@ def run_desktop_window(url: str) -> None:
     import webview
 
     webview.create_window(
-        APPLICATION_NAME,
+        DISPLAY_NAME,
         url,
         width=1440,
         height=920,
@@ -593,7 +597,7 @@ def start_desktop_application() -> int:
                     # session is established.  Record recovery readiness here so
                     # a headless desktop smoke test can verify the launcher has
                     # selected the reset UI without relying on a browser.
-                    log_handle.write("Trading Journal reset recovery screen active.\n")
+                    log_handle.write("Trade Compass reset recovery screen active.\n")
                     log_handle.flush()
                 if database_ready:
                     worker_process = subprocess.Popen(
@@ -623,7 +627,7 @@ def start_desktop_application() -> int:
                     stderr=subprocess.STDOUT,
                 )
                 if not _wait_for_server(url, server_process):
-                    raise RuntimeError(f"Trading Journal could not start. See {paths.log_path}")
+                    raise RuntimeError(f"Trade Compass could not start. See {paths.log_path}")
                 if desktop_window_enabled() and window_process is None:
                     window_process = subprocess.Popen(
                         _child_command("--desktop-window", "--url", url),
@@ -680,7 +684,7 @@ def self_check() -> int:
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run the local Trading Journal desktop application.")
+    parser = argparse.ArgumentParser(description="Run the local Trade Compass desktop application.")
     parser.add_argument("--run-server", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--desktop-window", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--sync-worker", action="store_true", help=argparse.SUPPRESS)

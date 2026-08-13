@@ -619,7 +619,7 @@ def render_settings(repo: SQLiteJournalRepository) -> None:
             if st.button("Quit desktop journal", icon=":material/power_settings_new:", type="primary"):
                 paths = desktop_runtime_paths()
                 DesktopSyncControl(paths.sync_request_path, paths.shutdown_request_path, paths.reset_request_path).request_shutdown()
-                st.success("Closing the local Trading Journal…")
+                st.success("Closing the local Trade Compass…")
         render_desktop_database_reset()
 
 
@@ -628,7 +628,7 @@ def render_desktop_database_reset() -> None:
 
     pending_reset_id = st.session_state.get("desktop-database-reset-pending")
     if pending_reset_id:
-        st.info("Restarting Trading Journal. This page will reload automatically when the clean journal is ready.")
+        st.info("Restarting Trade Compass. This page will reload automatically when the clean journal is ready.")
         ready_reset_id = render_desktop_reset_restart_bridge(pending_reset_id)
         if ready_reset_id == pending_reset_id and st.session_state.get("desktop-database-reset-dispatched") != pending_reset_id:
             request_desktop_database_reset()
@@ -661,12 +661,12 @@ def request_desktop_database_reset() -> None:
 def render_desktop_database_diagnostic(error: Exception) -> None:
     """Keep unexpected local database failures in the browser, without resetting data."""
 
-    st.set_page_config(page_title="Trading Journal recovery", page_icon="📈", layout="wide")
-    st.title("Trading Journal recovery")
-    st.error("Trading Journal could not open its local database.")
-    st.caption("No data was changed. Inspect desktop.log in the Trading Journal data directory before taking further action.")
+    st.set_page_config(page_title="Trade Compass recovery", page_icon="📈", layout="wide")
+    st.title("Trade Compass recovery")
+    st.error("Trade Compass could not open its local database.")
+    st.caption("No data was changed. Inspect desktop.log in the Trade Compass data directory before taking further action.")
     st.code(str(error), language="text")
-    print("Trading Journal diagnostic recovery screen active.", flush=True)
+    print("Trade Compass diagnostic recovery screen active.", flush=True)
 
 
 def render_strategy_settings(repo: SQLiteJournalRepository) -> None:
@@ -1081,12 +1081,12 @@ def main() -> None:
         repo = repository()
     except JournalDatabaseResetRequiredError as error:
         if is_desktop_mode():
-            st.set_page_config(page_title="Trading Journal recovery", page_icon="📈", layout="wide")
-            st.title("Trading Journal recovery")
+            st.set_page_config(page_title="Trade Compass recovery", page_icon="📈", layout="wide")
+            st.title("Trade Compass recovery")
             st.error(str(error))
             st.caption("Reset the local database to start a clean journal. This cannot be undone.")
             render_desktop_database_reset()
-            print("Trading Journal reset recovery screen active.", flush=True)
+            print("Trade Compass reset recovery screen active.", flush=True)
             return
         st.error(str(error))
         st.code("make reset-db CONFIRM_RESET=yes", language="bash")
@@ -1099,7 +1099,7 @@ def main() -> None:
     settings = repo.get_journal_settings()
     st.session_state.setdefault("display_language", settings.display_language)
     install_streamlit_translations()
-    st.set_page_config(page_title=tr("Trading Journal"), page_icon="📈", layout="wide")
+    st.set_page_config(page_title=tr("Trade Compass"), page_icon="📈", layout="wide")
     with st.sidebar:
         selected_language = st.selectbox(
             "Language",
@@ -1115,13 +1115,13 @@ def main() -> None:
         )
         st.rerun()
     apply_application_style()
-    st.title("Trading Journal")
-    st.caption("Local-only journal with read-only MT5 imports.")
+    st.title("Trade Compass")
+    st.caption("Local-first trade review, guided by discipline.")
     page = st.navigation(
         {
             "Workspace": [
                 st.Page("app_pages/dashboard.py", title=tr("Dashboard"), icon=":material/dashboard:", default=True),
-                st.Page("app_pages/framework.py", title=tr("Framework"), icon=":material/fact_check:"),
+                st.Page("app_pages/framework.py", title=tr("Bearings"), icon=":material/explore:"),
                 st.Page("app_pages/settings.py", title=tr("Settings"), icon=":material/settings:"),
                 st.Page("app_pages/guidance.py", title=tr("Guide"), icon=":material/menu_book:"),
             ]

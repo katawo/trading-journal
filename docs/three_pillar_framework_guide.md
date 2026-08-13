@@ -1,6 +1,6 @@
 # Operating the three-pillar journal
 
-> **This is the single source of truth for how the Trading Journal applies the Psychology, Risk management, and Trading system framework.**
+> **This is the single source of truth for how Trade Compass applies the Psychology, Risk management, and Trading system framework.**
 >
 > The app renders this file on the **Guide** page. It is maintained with the current app labels and workflow.
 
@@ -38,7 +38,7 @@ The journal starts at the completed trade. It does not claim to reconstruct ever
 
 ## Logical trades and scaled positions
 
-MT5 exports one completed **position** per row. The journal automatically maps each imported position to its own **logical trade**. A trading idea may use several scaled entries or exits, so **Framework → Review** can later regroup compatible positions into one logical trade.
+MT5 exports one completed **position** per row. The journal automatically maps each imported position to its own **logical trade**. A trading idea may use several scaled entries or exits, so **Bearings → Review** can later regroup compatible positions into one logical trade.
 
 | Layer | What remains true |
 |---|---|
@@ -48,7 +48,7 @@ MT5 exports one completed **position** per row. The journal automatically maps e
 
 ### Create and regroup a logical trade
 
-1. In **Framework → Review**, select two or more compatible single-position logical trades.
+1. In **Bearings → Review**, select two or more compatible single-position logical trades.
 2. Select **Create logical trade** and optionally add a label, such as `London breakout scale-in`.
 3. Save the group, then open the resulting logical trade and complete its one post-trade assessment.
 
@@ -105,7 +105,7 @@ For a later position whose entry timestamp is after an earlier completed positio
 
 ## 3. Complete one post-trade assessment
 
-Open **Framework → Review** and choose a logical trade from **Requires review**, **Auto-reviewed**, or **Reviewed**. Any automatic risk evidence can be accepted in one click, or you can rate all 13 criteria in a full assessment. A grouped logical trade contributes one review to the rolling sample, not one review per member position.
+Open **Bearings → Review** and choose a logical trade from **Requires review**, **Auto-reviewed**, or **Reviewed**. Any automatic risk evidence can be accepted in one click, or you can rate all 13 criteria in a full assessment. A grouped logical trade contributes one review to the rolling sample, not one review per member position.
 
 | Rating | Numeric value | Use it when |
 |---|---:|---|
@@ -216,7 +216,7 @@ Reason tags also make recurring patterns visible. Psychology critical tags inclu
 
 ## 6. How rolling monitoring is calculated
 
-In **Framework → Monitor**, choose a 20-, 30-, or 50-trade window. Auto-reviews, approved auto-reviews, and manually reviewed trades enter the window. Needs-approval imports remain outside it until approved or fully assessed.
+In **Bearings → Monitor**, choose a 20-, 30-, or 50-trade window. Auto-reviews, approved auto-reviews, and manually reviewed trades enter the window. Needs-approval imports remain outside it until approved or fully assessed.
 
 The Monitor computes a second set of period components from the reviewed window. These are not a simple average of the visible per-trade pillar scores; they are designed to reveal repeated behaviour and evidence quality.
 
@@ -288,7 +288,7 @@ The three pillars progress in parallel:
 | Measure | 30 full reviews, a saved weekly or monthly review for the latest completed period, a 30-review score of at least 80, and no active hard failure. |
 | Optimize | A hypothesis, baseline, result, and keep/reject decision are recorded. |
 
-The readiness roadmap progresses in parallel across the three pillars. **Psychology** evidence is behaviour-focused; **Risk management** evidence is account-specific policy and sizing evidence; **Trading system** evidence is strategy rules, examples, and backtest evidence. Complete the evidence in **Framework → Improve** only when it can be explained and revisited.
+The readiness roadmap progresses in parallel across the three pillars. **Psychology** evidence is behaviour-focused; **Risk management** evidence is account-specific policy and sizing evidence; **Trading system** evidence is strategy rules, examples, and backtest evidence. Complete the evidence in **Bearings → Improve** only when it can be explained and revisited.
 
 ## 9. Data limits
 

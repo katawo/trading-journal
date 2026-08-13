@@ -1,6 +1,6 @@
-# Trading Journal
+# Trade Compass
 
-Local-first desktop journal with a read-only MetaTrader 5 import path. The desktop release runs the existing Streamlit interface only on your computer and never exposes its local server to the network.
+Local-first trade review, guided by discipline — a desktop journal built around a three-pillar (Psychology/Risk/System) framework, with a read-only MetaTrader 5 import path. The desktop release runs the existing Streamlit interface only on your computer and never exposes its local server to the network.
 
 ## Run locally
 

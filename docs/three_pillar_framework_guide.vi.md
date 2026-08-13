@@ -1,6 +1,6 @@
 # Vận hành nhật ký giao dịch ba trụ cột
 
-> **Đây là nguồn tham chiếu chính thức cho cách Trading Journal áp dụng khung Tâm lý, Quản lý rủi ro và Hệ thống giao dịch.**
+> **Đây là nguồn tham chiếu chính thức cho cách Trade Compass áp dụng khung Tâm lý, Quản lý rủi ro và Hệ thống giao dịch.**
 >
 > Ứng dụng hiển thị tệp này tại trang **Hướng dẫn**. Nội dung luôn được cập nhật theo nhãn và quy trình hiện tại của ứng dụng.
 
@@ -38,7 +38,7 @@ Nhật ký bắt đầu từ giao dịch đã đóng. Nó không tuyên bố có
 
 ## Giao dịch logic và vị thế chia lệnh
 
-MT5 xuất một **vị thế** đã đóng cho mỗi dòng. Nhật ký tự ánh xạ mỗi vị thế đã nhập thành một **giao dịch logic** riêng. Một ý tưởng giao dịch có thể có nhiều lần vào hoặc thoát lệnh theo tầng, vì vậy **Framework → Đánh giá** có thể gộp các vị thế tương thích thành một giao dịch logic.
+MT5 xuất một **vị thế** đã đóng cho mỗi dòng. Nhật ký tự ánh xạ mỗi vị thế đã nhập thành một **giao dịch logic** riêng. Một ý tưởng giao dịch có thể có nhiều lần vào hoặc thoát lệnh theo tầng, vì vậy **Định hướng → Đánh giá** có thể gộp các vị thế tương thích thành một giao dịch logic.
 
 | Lớp dữ liệu | Điều luôn đúng |
 |---|---|
@@ -48,7 +48,7 @@ MT5 xuất một **vị thế** đã đóng cho mỗi dòng. Nhật ký tự án
 
 ### Tạo và gộp lại giao dịch logic
 
-1. Trong **Framework → Đánh giá**, chọn từ hai giao dịch logic một-vị-thế tương thích trở lên.
+1. Trong **Định hướng → Đánh giá**, chọn từ hai giao dịch logic một-vị-thế tương thích trở lên.
 2. Chọn **Tạo giao dịch logic** và có thể thêm nhãn, ví dụ `London breakout scale-in`.
 3. Lưu nhóm, sau đó mở giao dịch logic kết quả và hoàn tất một đánh giá sau giao dịch.
 
@@ -105,7 +105,7 @@ Với vị thế vào sau thời điểm một vị thế hoàn tất trước �
 
 ## 3. Hoàn tất một đánh giá sau giao dịch
 
-Mở **Framework → Đánh giá** và chọn một giao dịch logic từ **Cần xem xét**, **Đã đánh giá tự động** hoặc **Đã đánh giá**. Bất kỳ bằng chứng rủi ro tự động nào cũng có thể được chấp nhận bằng một nhấp chuột, hoặc bạn có thể chấm đủ 13 tiêu chí. Một giao dịch logic đã gộp chỉ đóng góp một đánh giá vào mẫu trượt, không phải một đánh giá cho mỗi vị thế thành viên.
+Mở **Định hướng → Đánh giá** và chọn một giao dịch logic từ **Cần xem xét**, **Đã đánh giá tự động** hoặc **Đã đánh giá**. Bất kỳ bằng chứng rủi ro tự động nào cũng có thể được chấp nhận bằng một nhấp chuột, hoặc bạn có thể chấm đủ 13 tiêu chí. Một giao dịch logic đã gộp chỉ đóng góp một đánh giá vào mẫu trượt, không phải một đánh giá cho mỗi vị thế thành viên.
 
 | Đánh giá | Giá trị số | Dùng khi |
 |---|---:|---|
@@ -216,7 +216,7 @@ Thẻ lý do cũng làm mẫu hình lặp lại hiển thị. Thẻ nghiêm tr�
 
 ## 6. Cách tính theo dõi trượt
 
-Trong **Framework → Theo dõi**, chọn cửa sổ 20, 30 hoặc 50 giao dịch. Đánh giá tự động, đánh giá tự động đã phê duyệt và giao dịch đánh giá thủ công đều vào cửa sổ. Bản nhập cần phê duyệt nằm ngoài đến khi được phê duyệt hoặc đánh giá đầy đủ.
+Trong **Định hướng → Theo dõi**, chọn cửa sổ 20, 30 hoặc 50 giao dịch. Đánh giá tự động, đánh giá tự động đã phê duyệt và giao dịch đánh giá thủ công đều vào cửa sổ. Bản nhập cần phê duyệt nằm ngoài đến khi được phê duyệt hoặc đánh giá đầy đủ.
 
 Theo dõi tính một bộ thành phần giai đoạn thứ hai từ cửa sổ đã đánh giá. Chúng không phải trung bình đơn giản của điểm trụ cột mỗi giao dịch nhìn thấy; chúng được thiết kế để chỉ ra hành vi lặp lại và chất lượng bằng chứng.
 
@@ -288,7 +288,7 @@ Ba trụ cột tiến song song:
 | Đo lường | 30 đánh giá đầy đủ, một đánh giá tuần hoặc tháng đã lưu cho giai đoạn hoàn tất gần nhất, điểm 30 đánh giá ít nhất 80 và không có lỗi cứng. |
 | Tối ưu | Một giả thuyết, đường cơ sở, kết quả và quyết định giữ/loại đã được ghi lại. |
 
-Lộ trình sẵn sàng tiến song song ở cả ba trụ cột. Bằng chứng **Tâm lý** tập trung vào hành vi; **Quản lý rủi ro** là bằng chứng chính sách và khối lượng theo tài khoản; **Hệ thống giao dịch** là quy tắc chiến lược, ví dụ và bằng chứng backtest. Chỉ hoàn tất bằng chứng trong **Framework → Cải thiện** khi có thể giải thích và xem lại.
+Lộ trình sẵn sàng tiến song song ở cả ba trụ cột. Bằng chứng **Tâm lý** tập trung vào hành vi; **Quản lý rủi ro** là bằng chứng chính sách và khối lượng theo tài khoản; **Hệ thống giao dịch** là quy tắc chiến lược, ví dụ và bằng chứng backtest. Chỉ hoàn tất bằng chứng trong **Định hướng → Cải thiện** khi có thể giải thích và xem lại.
 
 ## 9. Giới hạn dữ liệu
 

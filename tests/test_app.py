@@ -38,8 +38,8 @@ def test_app_renders_local_mt5_import_entrypoint(monkeypatch, tmp_path):
     app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
 
     assert not app.exception
-    assert app.title[0].value == "Trading Journal"
-    assert any("Local-only" in item.value for item in app.caption)
+    assert app.title[0].value == "Trade Compass"
+    assert any("Local-first" in item.value for item in app.caption)
 
 
 def test_app_requires_a_reset_for_legacy_monthly_target_data(monkeypatch, tmp_path):
@@ -76,7 +76,7 @@ def test_desktop_recovery_can_request_a_reset_for_an_incompatible_database(monke
     app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
 
     assert not app.exception
-    assert app.title[0].value == "Trading Journal recovery"
+    assert app.title[0].value == "Trade Compass recovery"
     assert any("predates the greenfield" in item.value for item in app.error)
     assert any(item.label == "Reset local database" for item in app.button)
     confirmation = next(item for item in app.text_input if item.label == "Type RESET to confirm")
@@ -100,8 +100,8 @@ def test_desktop_shows_a_diagnostic_for_a_corrupt_database(monkeypatch, tmp_path
     app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
 
     assert not app.exception
-    assert app.title[0].value == "Trading Journal recovery"
-    assert any(item.value == "Trading Journal could not open its local database." for item in app.error)
+    assert app.title[0].value == "Trade Compass recovery"
+    assert any(item.value == "Trade Compass could not open its local database." for item in app.error)
     assert not any(item.label == "Reset local database" for item in app.button)
 
 
@@ -450,7 +450,7 @@ def test_language_selection_persists_and_loads_the_vietnamese_guide(monkeypatch,
     language.set_value("vi").run()
 
     assert SQLiteJournalRepository(database_path).get_journal_settings().display_language == "vi"
-    assert app.title[0].value == "Nhật ký giao dịch"
+    assert app.title[0].value == "Trade Compass"
     app.switch_page("app_pages/guidance.py").run()
     guide = "\n".join(item.value for item in app.markdown)
     assert "Vận hành nhật ký giao dịch ba trụ cột" in guide

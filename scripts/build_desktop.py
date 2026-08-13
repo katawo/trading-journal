@@ -1,4 +1,4 @@
-"""Build a portable Trading Journal bundle for the current operating system."""
+"""Build a portable Trade Compass bundle for the current operating system."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 BUILD_ROOT = PROJECT_ROOT / "build" / "pyinstaller"
 DIST_ROOT = PROJECT_ROOT / "dist"
 RELEASE_ROOT = PROJECT_ROOT / "release"
-APPLICATION_NAME = "TradingJournal"
+APPLICATION_NAME = "TradeCompass"
 
 
 def _data_argument(source: Path, destination: str) -> str:

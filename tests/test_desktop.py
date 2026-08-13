@@ -180,7 +180,7 @@ def test_desktop_window_opens_the_local_server_in_a_native_webview(monkeypatch) 
 
     run_desktop_window("http://127.0.0.1:18501")
 
-    assert calls["args"] == ("TradingJournal", "http://127.0.0.1:18501")
+    assert calls["args"] == ("Trade Compass", "http://127.0.0.1:18501")
     assert calls["kwargs"] == {"width": 1440, "height": 920, "min_size": (1024, 700)}
     assert calls["started"] is True
 

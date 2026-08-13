@@ -1,1 +1,1 @@
-"""Trading Journal application package."""
+"""Trade Compass application package."""
