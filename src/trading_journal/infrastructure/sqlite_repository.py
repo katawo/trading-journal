@@ -130,6 +130,29 @@ class StrategyMagicNumber(Base):
     magic_number: Mapped[str] = mapped_column(String(32), nullable=False)
 
 
+class StrategySetup(Base):
+    __tablename__ = "strategy_setups"
+    __table_args__ = (UniqueConstraint("strategy_profile_id", "normalized_name", name="uq_strategy_setup_name"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    strategy_profile_id: Mapped[int] = mapped_column(ForeignKey("strategy_profiles.id"), nullable=False)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    normalized_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    description: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+
+class ReviewContextTag(Base):
+    __tablename__ = "review_context_tags"
+    __table_args__ = (UniqueConstraint("kind", "normalized_name", name="uq_review_context_tag"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    name: Mapped[str] = mapped_column(String(80), nullable=False)
+    normalized_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+
 class LogicalTrade(Base):
     """A journal trade: one imported position or a user-defined group of positions."""
 
@@ -247,6 +270,9 @@ class PostTradeAssessment(Base):
     risk_policy_state: Mapped[str | None] = mapped_column(String(32), nullable=True)
     strategy_profile_id: Mapped[int | None] = mapped_column(ForeignKey("strategy_profiles.id"), nullable=True)
     strategy_snapshot: Mapped[str | None] = mapped_column(Text, nullable=True)
+    setup_snapshot: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    session_snapshot: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    regime_snapshot: Mapped[str | None] = mapped_column(String(80), nullable=True)
     criterion_grades: Mapped[str] = mapped_column(Text, nullable=False)
     violation_codes: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     hard_rule_codes: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
@@ -335,6 +361,30 @@ class PillarRoadmapEvidence(Base):
     updated_at: Mapped[str] = mapped_column(String(64), nullable=False)
 
 
+class FrameworkFocus(Base):
+    """One deliberate, measurable improvement focus for the whole journal."""
+
+    __tablename__ = "framework_focuses"
+    __table_args__ = (Index("uq_active_framework_focus", "scope_key", unique=True, sqlite_where=text("status = 'active'")),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    scope_key: Mapped[str] = mapped_column(String(32), nullable=False, default="trader")
+    account_id: Mapped[int | None] = mapped_column(ForeignKey("mt5_accounts.id"), nullable=True)
+    pillar: Mapped[str] = mapped_column(String(24), nullable=False)
+    metric_kind: Mapped[str] = mapped_column(String(24), nullable=False)
+    metric_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    hypothesis: Mapped[str] = mapped_column(Text, nullable=False)
+    action_text: Mapped[str] = mapped_column(Text, nullable=False)
+    baseline_value: Mapped[str | None] = mapped_column(String, nullable=True)
+    target_value: Mapped[str] = mapped_column(String, nullable=False)
+    target_reviews: Mapped[int] = mapped_column(Integer, nullable=False)
+    starting_manual_reviews: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+    resolution_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[str] = mapped_column(String(64), nullable=False)
+    resolved_at: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
 @dataclass(frozen=True)
 class MT5AccountView:
     id: int
@@ -401,6 +451,30 @@ class StrategyProfileView:
         if self.backtest_start_date is None:
             return None
         return f"{self.backtest_start_date} to {self.backtest_end_date}"
+
+
+@dataclass(frozen=True)
+class StrategySetupView:
+    id: int
+    strategy_profile_id: int
+    name: str
+    description: str | None
+    active: bool
+
+
+@dataclass(frozen=True)
+class ReviewContextTagView:
+    id: int
+    kind: str
+    name: str
+    active: bool
+
+
+@dataclass(frozen=True)
+class ReviewContextSelection:
+    strategy_setup_id: int | None = None
+    session_tag_id: int | None = None
+    regime_tag_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -537,6 +611,9 @@ class PostTradeAssessmentView:
     risk_policy_state: str | None
     strategy_profile_id: int | None
     strategy_snapshot: "StrategyEvidenceSnapshot | None"
+    setup_snapshot: str | None
+    session_snapshot: str | None
+    regime_snapshot: str | None
     criterion_grades: dict[str, str]
     violation_codes: tuple[str, ...]
     hard_rule_codes: tuple[str, ...]
@@ -626,6 +703,25 @@ class PillarRoadmapEvidenceView:
     updated_at: str
 
 
+@dataclass(frozen=True)
+class FrameworkFocusView:
+    id: int
+    account_id: int | None
+    pillar: str
+    metric_kind: str
+    metric_code: str | None
+    hypothesis: str
+    action_text: str
+    baseline_value: str | None
+    target_value: str
+    target_reviews: int
+    starting_manual_reviews: int
+    status: str
+    resolution_note: str | None
+    created_at: str
+    resolved_at: str | None
+
+
 class SQLiteJournalRepository:
     def __init__(self, database_path: str | Path) -> None:
         self._database_path = Path(database_path)
@@ -664,6 +760,14 @@ class SQLiteJournalRepository:
                 connection.exec_driver_sql("ALTER TABLE mt5_import_runs ADD COLUMN source_file_mtime_ns INTEGER")
             if "source_file_size" not in import_columns:
                 connection.exec_driver_sql("ALTER TABLE mt5_import_runs ADD COLUMN source_file_size INTEGER")
+            assessment_columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(post_trade_assessments)")}
+            for column_name, column_type in (
+                ("setup_snapshot", "VARCHAR(100)"),
+                ("session_snapshot", "VARCHAR(80)"),
+                ("regime_snapshot", "VARCHAR(80)"),
+            ):
+                if column_name not in assessment_columns:
+                    connection.exec_driver_sql(f"ALTER TABLE post_trade_assessments ADD COLUMN {column_name} {column_type}")
             # create_all does not add newly-declared indexes to an existing table.
             for statement in (
                 "CREATE INDEX IF NOT EXISTS ix_trades_account_exit ON trades (mt5_account_id, exit_time, id)",
@@ -1453,11 +1557,11 @@ class SQLiteJournalRepository:
             ]
 
     def list_post_trade_assessment_outcomes(self, account_id: int | None = None) -> list[PostTradeAssessmentOutcome]:
-        """Full manual assessments only — a one-click approval does not satisfy the period-review gate."""
+        """Every active approved assessment — Auto and Manual count as reviewed evidence."""
         with self._sessions() as session:
             statement = (
                 select(PostTradeAssessment)
-                .where(PostTradeAssessment.superseded_at.is_(None), PostTradeAssessment.method == "manual")
+                .where(PostTradeAssessment.superseded_at.is_(None), PostTradeAssessment.method.in_(("auto", "manual")))
                 .order_by(PostTradeAssessment.updated_at)
             )
             if account_id is not None:
@@ -1496,6 +1600,7 @@ class SQLiteJournalRepository:
         declared_actual_risk_amount: str | None,
         post_review_note: str,
         corrective_action: str | None,
+        review_context: ReviewContextSelection | None = None,
     ) -> PostTradeAssessmentView:
         """Create or correct the review for one already-imported logical trade."""
         normalized_grades = self._normalize_criterion_grades(criterion_grades)
@@ -1513,6 +1618,7 @@ class SQLiteJournalRepository:
             self._required_decimal(declared_actual_risk_amount, "Actual risk", minimum=Decimal("0.00000001"))
         )
         review_note = self._required_text(post_review_note, "Post-trade review")
+        context = review_context or ReviewContextSelection()
         now = datetime.now(timezone.utc).isoformat()
         with self._sessions.begin() as session:
             trade = session.get(LogicalTrade, trade_id)
@@ -1524,6 +1630,9 @@ class SQLiteJournalRepository:
                 raise ValueError("Strategy profile was not found")
             if policy is not None and policy.mt5_account_id != account_id:
                 raise ValueError("Risk policy does not belong to this account")
+            setup_snapshot = self._context_setup_snapshot(session, strategy.id, context.strategy_setup_id)
+            session_snapshot = self._context_tag_snapshot(session, "session", context.session_tag_id)
+            regime_snapshot = self._context_tag_snapshot(session, "regime", context.regime_tag_id)
             row = session.scalar(
                 select(PostTradeAssessment).where(
                     PostTradeAssessment.logical_trade_id == trade_id,
@@ -1552,6 +1661,9 @@ class SQLiteJournalRepository:
                     risk_policy_id=risk_policy_id,
                     strategy_profile_id=strategy_profile_id,
                     strategy_snapshot=self._strategy_snapshot_json(strategy),
+                    setup_snapshot=setup_snapshot,
+                    session_snapshot=session_snapshot,
+                    regime_snapshot=regime_snapshot,
                     criterion_grades=json.dumps(normalized_grades, sort_keys=True),
                     violation_codes=json.dumps(normalized_violations),
                     hard_rule_codes=json.dumps(normalized_hard_rules),
@@ -1595,6 +1707,9 @@ class SQLiteJournalRepository:
                 row.risk_policy_id = risk_policy_id
                 row.strategy_profile_id = strategy_profile_id
                 row.strategy_snapshot = self._strategy_snapshot_json(strategy)
+                row.setup_snapshot = setup_snapshot
+                row.session_snapshot = session_snapshot
+                row.regime_snapshot = regime_snapshot
                 row.criterion_grades = json.dumps(normalized_grades, sort_keys=True)
                 row.violation_codes = json.dumps(normalized_violations)
                 row.hard_rule_codes = json.dumps(normalized_hard_rules)
@@ -1605,6 +1720,24 @@ class SQLiteJournalRepository:
                 row.version += 1
             session.flush()
             return self._to_post_trade_assessment_view(row)
+
+    @staticmethod
+    def _context_setup_snapshot(session, strategy_profile_id: int, setup_id: int | None) -> str | None:  # type: ignore[no-untyped-def]
+        if setup_id is None:
+            return None
+        row = session.get(StrategySetup, setup_id)
+        if row is None or row.strategy_profile_id != strategy_profile_id or not row.active:
+            raise ValueError("Choose an active setup from the selected strategy")
+        return row.name
+
+    @staticmethod
+    def _context_tag_snapshot(session, kind: str, tag_id: int | None) -> str | None:  # type: ignore[no-untyped-def]
+        if tag_id is None:
+            return None
+        row = session.get(ReviewContextTag, tag_id)
+        if row is None or row.kind != kind or not row.active:
+            raise ValueError(f"Choose an active {kind} tag")
+        return row.name
 
     @staticmethod
     def _normalize_criterion_grades(values: Mapping[str, str]) -> dict[str, str]:
@@ -1747,6 +1880,61 @@ class SQLiteJournalRepository:
                 .order_by(PillarRoadmapEvidence.pillar, PillarRoadmapEvidence.level, PillarRoadmapEvidence.item_key)
             ).all()
             return [PillarRoadmapEvidenceView(row.scope_key, row.pillar, row.level, row.item_key, row.completed, row.evidence_note, row.updated_at) for row in rows]
+
+    def get_active_framework_focus(self) -> FrameworkFocusView | None:
+        with self._sessions() as session:
+            row = session.scalar(select(FrameworkFocus).where(FrameworkFocus.scope_key == "trader", FrameworkFocus.status == "active"))
+            return None if row is None else self._to_framework_focus_view(row)
+
+    def save_framework_focus(
+        self, *, account_id: int | None, pillar: str, metric_kind: str, metric_code: str | None,
+        hypothesis: str, action_text: str, baseline_value: str | None, target_value: str, target_reviews: int,
+        starting_manual_reviews: int,
+    ) -> FrameworkFocusView:
+        if pillar not in {"psychology", "risk", "system"}:
+            raise ValueError("Unknown framework pillar")
+        if metric_kind not in {"manual_evidence", "criterion", "violation"}:
+            raise ValueError("Unknown framework focus metric")
+        if metric_kind == "manual_evidence" and metric_code is not None:
+            raise ValueError("Manual-evidence focus cannot use a metric code")
+        if metric_kind != "manual_evidence" and not metric_code:
+            raise ValueError("Choose a metric for this framework focus")
+        if target_reviews not in {5, 10, 20}:
+            raise ValueError("Focus sample must be 5, 10, or 20 reviewed trades")
+        if pillar == "risk" and account_id is None:
+            raise ValueError("A Risk focus needs an account")
+        with self._sessions.begin() as session:
+            if session.scalar(select(FrameworkFocus).where(FrameworkFocus.scope_key == "trader", FrameworkFocus.status == "active")) is not None:
+                raise ValueError("Resolve the active framework focus before starting another")
+            row = FrameworkFocus(
+                scope_key="trader", account_id=account_id if pillar == "risk" else None, pillar=pillar,
+                metric_kind=metric_kind, metric_code=metric_code, hypothesis=self._required_text(hypothesis, "Focus hypothesis"),
+                action_text=self._required_text(action_text, "Focus action"), baseline_value=baseline_value,
+                target_value=target_value, target_reviews=target_reviews, starting_manual_reviews=starting_manual_reviews,
+                status="active", resolution_note=None, created_at=datetime.now(timezone.utc).isoformat(), resolved_at=None,
+            )
+            session.add(row)
+            session.flush()
+            return self._to_framework_focus_view(row)
+
+    def resolve_framework_focus(self, *, focus_id: int, outcome: str, resolution_note: str) -> FrameworkFocusView:
+        if outcome not in {"completed", "abandoned"}:
+            raise ValueError("Focus outcome must be completed or abandoned")
+        with self._sessions.begin() as session:
+            row = session.get(FrameworkFocus, focus_id)
+            if row is None or row.status != "active":
+                raise ValueError("Active framework focus was not found")
+            row.status, row.resolution_note, row.resolved_at = outcome, self._required_text(resolution_note, "Focus reflection"), datetime.now(timezone.utc).isoformat()
+            session.flush()
+            return self._to_framework_focus_view(row)
+
+    @staticmethod
+    def _to_framework_focus_view(row: FrameworkFocus) -> FrameworkFocusView:
+        return FrameworkFocusView(
+            row.id, row.account_id, row.pillar, row.metric_kind, row.metric_code, row.hypothesis,
+            row.action_text, row.baseline_value, row.target_value, row.target_reviews,
+            row.starting_manual_reviews, row.status, row.resolution_note, row.created_at, row.resolved_at,
+        )
 
     def save_pillar_roadmap_evidence(
         self, *, account_id: int | None = None, pillar: str, level: int, item_key: str, completed: bool, evidence_note: str | None
@@ -1902,6 +2090,64 @@ class SQLiteJournalRepository:
             profiles = session.scalars(select(StrategyProfile).order_by(StrategyProfile.name)).all()
             magic_numbers = self._magic_numbers_by_profile(session)
             return [self._to_strategy_profile_view(profile, magic_numbers.get(profile.id, ())) for profile in profiles]
+
+    def list_strategy_setups(self, strategy_profile_id: int, *, include_inactive: bool = False) -> list[StrategySetupView]:
+        with self._sessions() as session:
+            statement = select(StrategySetup).where(StrategySetup.strategy_profile_id == strategy_profile_id)
+            if not include_inactive:
+                statement = statement.where(StrategySetup.active.is_(True))
+            rows = session.scalars(statement.order_by(StrategySetup.name)).all()
+            return [StrategySetupView(row.id, row.strategy_profile_id, row.name, row.description, row.active) for row in rows]
+
+    def save_strategy_setup(
+        self, *, strategy_profile_id: int, name: str, description: str | None = None, setup_id: int | None = None, active: bool = True
+    ) -> StrategySetupView:
+        clean_name = self._required_text(name, "Setup name")
+        normalized = normalize_strategy_name(clean_name)
+        with self._sessions.begin() as session:
+            if session.get(StrategyProfile, strategy_profile_id) is None:
+                raise ValueError("Strategy profile was not found")
+            row = session.get(StrategySetup, setup_id) if setup_id is not None else None
+            if setup_id is not None and (row is None or row.strategy_profile_id != strategy_profile_id):
+                raise ValueError("Strategy setup was not found")
+            duplicate = session.scalar(select(StrategySetup).where(StrategySetup.strategy_profile_id == strategy_profile_id, StrategySetup.normalized_name == normalized))
+            if duplicate is not None and (row is None or duplicate.id != row.id):
+                raise ValueError("This strategy already has a setup with that name")
+            if row is None:
+                row = StrategySetup(strategy_profile_id=strategy_profile_id, name=clean_name, normalized_name=normalized)
+                session.add(row)
+            row.name, row.normalized_name, row.description, row.active = clean_name, normalized, self._optional_text(description), active
+            session.flush()
+            return StrategySetupView(row.id, row.strategy_profile_id, row.name, row.description, row.active)
+
+    def list_review_context_tags(self, kind: str, *, include_inactive: bool = False) -> list[ReviewContextTagView]:
+        if kind not in {"session", "regime"}:
+            raise ValueError("Review context kind must be session or regime")
+        with self._sessions() as session:
+            statement = select(ReviewContextTag).where(ReviewContextTag.kind == kind)
+            if not include_inactive:
+                statement = statement.where(ReviewContextTag.active.is_(True))
+            rows = session.scalars(statement.order_by(ReviewContextTag.name)).all()
+            return [ReviewContextTagView(row.id, row.kind, row.name, row.active) for row in rows]
+
+    def save_review_context_tag(self, *, kind: str, name: str, tag_id: int | None = None, active: bool = True) -> ReviewContextTagView:
+        if kind not in {"session", "regime"}:
+            raise ValueError("Review context kind must be session or regime")
+        clean_name = self._required_text(name, f"{kind.capitalize()} name")
+        normalized = normalize_strategy_name(clean_name)
+        with self._sessions.begin() as session:
+            row = session.get(ReviewContextTag, tag_id) if tag_id is not None else None
+            if tag_id is not None and (row is None or row.kind != kind):
+                raise ValueError("Review context tag was not found")
+            duplicate = session.scalar(select(ReviewContextTag).where(ReviewContextTag.kind == kind, ReviewContextTag.normalized_name == normalized))
+            if duplicate is not None and (row is None or duplicate.id != row.id):
+                raise ValueError(f"This {kind} already exists")
+            if row is None:
+                row = ReviewContextTag(kind=kind, name=clean_name, normalized_name=normalized)
+                session.add(row)
+            row.name, row.normalized_name, row.active = clean_name, normalized, active
+            session.flush()
+            return ReviewContextTagView(row.id, row.kind, row.name, row.active)
 
     def find_strategy_profile_by_magic_number(self, magic_number: str | None) -> StrategyProfileView | None:
         if magic_number is None or magic_number == "0":
@@ -2180,6 +2426,9 @@ class SQLiteJournalRepository:
             risk_policy_state=row.risk_policy_state,
             strategy_profile_id=row.strategy_profile_id,
             strategy_snapshot=None if row.strategy_snapshot is None else SQLiteJournalRepository._strategy_snapshot_from_json(row.strategy_snapshot),
+            setup_snapshot=row.setup_snapshot,
+            session_snapshot=row.session_snapshot,
+            regime_snapshot=row.regime_snapshot,
             criterion_grades=dict(json.loads(row.criterion_grades)),
             violation_codes=tuple(json.loads(row.violation_codes)),
             hard_rule_codes=tuple(json.loads(row.hard_rule_codes)),

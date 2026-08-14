@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 import sqlite3
 
@@ -14,6 +14,7 @@ from trading_journal.domain.models import MT5PositionExport
 from trading_journal.infrastructure.sqlite_repository import (
     ASSESSMENT_CRITERIA,
     JournalDatabaseResetRequiredError,
+    ReviewContextSelection,
     SQLiteJournalRepository,
 )
 from trading_journal.presentation.framework import (
@@ -326,7 +327,7 @@ def test_low_raw_score_is_not_classified_as_a_good_trade_without_a_hard_rule(tmp
     assert score.classification == "Needs improvement Win"
 
 
-def test_within_policy_automatic_risk_awaits_approval_before_it_is_scored(tmp_path) -> None:
+def test_within_policy_automatic_risk_is_reviewed_evidence_after_approval(tmp_path) -> None:
     repository, account_id = _repository(tmp_path)
     policy = _policy(repository, account_id)
     trade_id = _import_position(repository, account_id, initial_risk_amount="8", initial_reward_amount="16", entry_stop_price="3290")
@@ -357,6 +358,14 @@ def test_within_policy_automatic_risk_awaits_approval_before_it_is_scored(tmp_pa
     assert approved.risk_score == "67.5"
     assert approved.system_score == "50"
     assert all(item.reviewed_total == 1 for item in approved_pillars)
+    coverage = after_approval.risk_evidence_coverage(account_id)
+    assert coverage.total == 1
+    assert coverage.approved == 1
+    assert coverage.pending == 0
+    assert len(after_approval.rolling_score_trend(account_id)) == 1
+    assert after_approval.period_review_status(
+        account_id, "weekly", now=datetime(2026, 8, 17, tzinfo=timezone.utc)
+    ).reviewed_trades == 1
 
 
 def test_risk_snapshot_clears_an_expired_daily_limit_breach(tmp_path) -> None:
@@ -482,7 +491,9 @@ def test_approval_needed_auto_review_can_be_approved_and_then_replaced_by_full_r
     assert approved.review_kind == "approved_auto_review"
     assert approved.risk_score == "32.5"
     _review(repository, account_id, trade_id, policy, strategy)
-    assert FrameworkService(repository).trade_process_scores(account_id)[0].review_kind == "manual_review"
+    after_manual = FrameworkService(repository)
+    assert after_manual.trade_process_scores(account_id)[0].review_kind == "manual_review"
+    assert all(item.reviewed_total == 1 for item in after_manual.pillar_scores(account_id))
 
 
 def test_upgrading_an_auto_review_to_manual_archives_it_as_a_revision(tmp_path) -> None:
@@ -1470,3 +1481,69 @@ def test_post_loss_discipline_scores_zero_for_a_tagged_reset_even_with_a_passing
     psychology = {item.pillar: item for item in FrameworkService(repository).pillar_scores(account_id)}["psychology"]
 
     assert psychology.component_scores[-1] == ("Post-loss discipline", "0")
+
+
+def test_deep_review_persists_controlled_context_and_reports_it(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    setup = repository.save_strategy_setup(strategy_profile_id=strategy.id, name="London pullback")
+    session = repository.save_review_context_tag(kind="session", name="London")
+    regime = repository.save_review_context_tag(kind="regime", name="Trending")
+    trade_id = _import_position(repository, account_id)
+
+    repository.save_post_trade_assessment(
+        account_id=account_id, trade_id=trade_id, risk_policy_id=policy.id, strategy_profile_id=strategy.id,
+        criterion_grades=ALL_PASS, violation_codes=(), hard_rule_codes=(), declared_actual_risk_amount="10",
+        post_review_note="Reviewed.", corrective_action=None,
+        review_context=ReviewContextSelection(setup.id, session.id, regime.id),
+    )
+
+    score = FrameworkService(repository).trade_process_scores(account_id)[0]
+    assert (score.setup_snapshot, score.session_snapshot, score.regime_snapshot) == ("London pullback", "London", "Trending")
+    assert FrameworkService(repository).context_breakdown(account_id, dimension="setup")[0].label == "London pullback"
+
+
+def test_monitor_analysis_keeps_review_eligibility_and_joins_standard_r(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    auto_trade = _import_position(repository, account_id, position_id="auto", initial_risk_amount="5", exit_time="2026-08-10T09:00:00+00:00")
+    manual_trade = _import_position(repository, account_id, position_id="manual", net_pnl="-20", exit_time="2026-08-11T09:00:00+00:00")
+    before = next(item for item in FrameworkService(repository).trade_process_scores(account_id) if item.trade_id == auto_trade)
+    repository.approve_auto_review(
+        account_id=account_id, trade_id=auto_trade, risk_policy_id=policy.id,
+        risk_evidence_source=before.risk_evidence_source, risk_policy_state=before.risk_policy_state,
+        actual_risk_amount=before.actual_risk_amount,
+        criterion_grades=FrameworkService._automatic_review_grades(before.risk_policy_state),
+    )
+    _review(repository, account_id, manual_trade, policy, strategy, tags=("revenge",), action="Pause after the loss.")
+
+    report = FrameworkService(repository).monitor_analysis(
+        account_id, start_date=date(2026, 8, 10), end_date=date(2026, 8, 11)
+    )
+
+    assert len(report.points) == 2
+    assert len(report.reviewed_points) == 2
+    assert {item.result_r for item in report.reviewed_points} == {"2", "-2"}
+    assert {item.label: item.count for item in report.lifecycle} == {"manual_review": 1, "approved_auto_review": 1}
+    assert report.issues[0].label == "revenge"
+    assert report.issues[0].count == 1
+
+
+def test_framework_focus_is_single_and_tracks_manual_reviews(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    first = _import_position(repository, account_id)
+    _review(repository, account_id, first, policy, strategy)
+    focus = repository.save_framework_focus(
+        account_id=None, pillar="psychology", metric_kind="manual_evidence", metric_code=None,
+        hypothesis="More deliberate review creates usable evidence.", action_text="Complete deep reviews.",
+        baseline_value="1", target_value="5", target_reviews=5, starting_manual_reviews=1,
+    )
+    with pytest.raises(ValueError, match="Resolve the active"):
+        repository.save_framework_focus(
+            account_id=None, pillar="system", metric_kind="manual_evidence", metric_code=None,
+            hypothesis="x", action_text="x", baseline_value=None, target_value="5", target_reviews=5, starting_manual_reviews=1,
+        )
+    current, progress = FrameworkService(repository).focus_progress(account_id)
+    assert current == focus
+    assert progress is not None and progress.reviews_completed == 0 and not progress.ready_to_evaluate

@@ -597,7 +597,7 @@ def render_mt5_account_settings(repo: SQLiteJournalRepository) -> AccountListIte
 def render_settings(repo: SQLiteJournalRepository) -> None:
     st.subheader("Settings")
     st.caption("Configure reporting, account risk, reusable strategies, and review rules.")
-    accounts_tab, strategies_tab, rules_tab = st.tabs(["Account & risk", "Strategies", "Review rules"])
+    accounts_tab, strategies_tab, context_tab, rules_tab = st.tabs(["Account & risk", "Strategies", "Review context", "Review rules"])
     with accounts_tab:
         render_journal_reporting_settings(repo)
         st.divider()
@@ -609,6 +609,8 @@ def render_settings(repo: SQLiteJournalRepository) -> None:
             _render_risk_policy(repo, account)
     with strategies_tab:
         render_strategy_settings(repo)
+    with context_tab:
+        render_review_context_settings(repo)
     with rules_tab:
         _render_framework_rules(repo)
     if is_desktop_mode():
@@ -667,6 +669,34 @@ def render_desktop_database_diagnostic(error: Exception) -> None:
     st.caption("No data was changed. Inspect desktop.log in the Trade Compass data directory before taking further action.")
     st.code(str(error), language="text")
     print("Trade Compass diagnostic recovery screen active.", flush=True)
+
+
+def render_review_context_settings(repo: SQLiteJournalRepository) -> None:
+    st.subheader("Review context")
+    st.caption("Maintain short reusable lists so setup, session, and regime reports stay comparable. Context is optional on Deep Reviews.")
+    for kind, label, placeholder in (
+        ("session", "Sessions", "e.g. London"),
+        ("regime", "Market regimes", "e.g. Trending"),
+    ):
+        with st.container(border=True):
+            st.markdown(f"##### {label}")
+            existing = repo.list_review_context_tags(kind, include_inactive=True)
+            if existing:
+                st.dataframe(
+                    pd.DataFrame([{"Name": item.name, "Active": item.active} for item in existing]),
+                    hide_index=True,
+                    width="stretch",
+                )
+            with st.form(f"review-context-{kind}", border=False):
+                name = st.text_input(f"Add {kind}", placeholder=placeholder)
+                if st.form_submit_button(f"Add {kind}", icon=":material/add:"):
+                    try:
+                        repo.save_review_context_tag(kind=kind, name=name)
+                    except ValueError as error:
+                        st.error(str(error))
+                    else:
+                        st.toast(f"{label[:-1]} added.")
+                        st.rerun()
 
 
 def render_strategy_settings(repo: SQLiteJournalRepository) -> None:
@@ -828,6 +858,28 @@ def render_strategy_settings(repo: SQLiteJournalRepository) -> None:
                 st.session_state["strategy-selected-id"] = profile.id
                 st.toast(tr("Strategy profile saved."))
                 st.success("Strategy profile saved.")
+
+        if selected is not None:
+            with st.expander("Strategy setups", expanded=False):
+                st.caption("Optional controlled setup names for Deep Review and System reports.")
+                setups = repo.list_strategy_setups(selected.id, include_inactive=True)
+                if setups:
+                    st.dataframe(
+                        pd.DataFrame([{"Setup": item.name, "Description": item.description or "", "Active": item.active} for item in setups]),
+                        hide_index=True,
+                        width="stretch",
+                    )
+                with st.form(f"strategy-setup-{selected.id}", border=False):
+                    setup_name = st.text_input("Setup name", placeholder="e.g. London pullback")
+                    setup_description = st.text_input("Setup description (optional)")
+                    if st.form_submit_button("Add setup", icon=":material/add:"):
+                        try:
+                            repo.save_strategy_setup(strategy_profile_id=selected.id, name=setup_name, description=setup_description or None)
+                        except ValueError as error:
+                            st.error(str(error))
+                        else:
+                            st.toast("Strategy setup added.")
+                            st.rerun()
 
 
 def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:

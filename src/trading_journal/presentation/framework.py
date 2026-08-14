@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import MutableMapping, Sequence
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pandas as pd
@@ -14,6 +15,7 @@ from trading_journal.application.framework import (
     PILLAR_NAMES,
     ROADMAP_ITEMS,
     FrameworkService,
+    MonitorAnalysisReport,
     PillarScore,
     RiskSnapshot,
     TradeProcessScore,
@@ -26,6 +28,7 @@ from trading_journal.infrastructure.sqlite_repository import (
     SYSTEM_CRITERIA,
     AccountListItem,
     PillarRoadmapEvidenceView,
+    ReviewContextSelection,
     SQLiteJournalRepository,
 )
 from trading_journal.presentation.i18n import tr
@@ -345,6 +348,20 @@ def _clear_group_dialog() -> None:
     st.session_state.pop("logical-trade-regroup-confirmation", None)
 
 
+def _bulk_quick_review_key(account_id: int) -> str:
+    return f"bulk-quick-review-confirmation-{account_id}"
+
+
+def _clear_bulk_quick_review(account_id: int) -> None:
+    st.session_state.pop(_bulk_quick_review_key(account_id), None)
+
+
+def _dismiss_bulk_quick_review() -> None:
+    """Dismissal has no account argument, so clear the one pending dialog state."""
+    for key in [key for key in st.session_state if key.startswith("bulk-quick-review-confirmation-")]:
+        st.session_state.pop(key, None)
+
+
 def _logical_trade_selection_prefix(account_id: int) -> str:
     return f"logical-trade-select-{account_id}-"
 
@@ -392,6 +409,65 @@ def _toggle_logical_trade_selection(account_id: int, logical_trade_id: int) -> N
 def _change_logical_trade_page(account_id: int, change: int, page_count: int) -> None:
     current = int(st.session_state.get(_logical_trade_page_key(account_id), 1))
     st.session_state[_logical_trade_page_key(account_id)] = max(1, min(page_count, current + change))
+
+
+@st.dialog("Quick review selected trades", width="large", on_dismiss=_dismiss_bulk_quick_review)
+def _render_bulk_quick_review_dialog(repo: SQLiteJournalRepository, account: AccountListItem, trades, scores: dict[int, TradeProcessScore]) -> None:  # type: ignore[no-untyped-def]
+    confirmation = st.session_state.get(_bulk_quick_review_key(account.id))
+    if confirmation is None or confirmation.get("account_id") != account.id:
+        return
+    selected_ids = set(confirmation.get("trade_ids", ()))
+    selected = [(trade, scores[trade.id]) for trade in trades if trade.id in selected_ids]
+    eligible = [(trade, score) for trade, score in selected if score.review_kind in {"auto_review", "needs_approval"}]
+    if not eligible:
+        st.info("None of the selected trades still has automatic evidence available for Quick Review.")
+        if st.button("Close", key=f"close-bulk-quick-review-{account.id}"):
+            _clear_bulk_quick_review(account.id)
+            st.rerun()
+        return
+    labels = {"within_policy": "Within policy", "over_policy": "Over policy", "unavailable": "Unavailable"}
+    counts = Counter(score.risk_policy_state for _, score in eligible)
+    st.write(f"Accept automatic risk evidence for **{len(eligible)} selected logical trade(s)**?")
+    st.caption(" · ".join(f"{labels.get(state, state)}: {count}" for state, count in sorted(counts.items())))
+    st.dataframe(
+        pd.DataFrame(
+            [{"Logical trade": f"LT-{trade.id}", "Trade": trade.display_label, "Policy evidence": labels.get(score.risk_policy_state, score.risk_policy_state)} for trade, score in eligible]
+        ),
+        hide_index=True,
+        width="stretch",
+    )
+    st.caption("Quick Review saves the displayed automatic evidence as approved review evidence. A Manual Review can still replace it later.")
+    with st.container(horizontal=True, horizontal_alignment="right"):
+        cancel = st.button("Cancel", key=f"cancel-bulk-quick-review-{account.id}")
+        confirm = st.button(f"Quick review {len(eligible)} selected", key=f"confirm-bulk-quick-review-{account.id}", type="primary", icon=":material/done_all:")
+    if cancel:
+        _clear_bulk_quick_review(account.id)
+        st.rerun()
+    if not confirm:
+        return
+    active_policy = repo.get_active_risk_policy(account.id)
+    approved_count = 0
+    skipped_count = 0
+    with st.spinner(tr("Saving…")):
+        for trade, score in eligible:
+            try:
+                repo.approve_auto_review(
+                    account_id=account.id, trade_id=trade.id, risk_policy_id=active_policy.id if active_policy else None,
+                    risk_evidence_source=score.risk_evidence_source, risk_policy_state=score.risk_policy_state,
+                    actual_risk_amount=score.actual_risk_amount,
+                    criterion_grades=FrameworkService._automatic_review_grades(score.risk_policy_state),
+                )
+                approved_count += 1
+            except ValueError:
+                skipped_count += 1
+    message = tr("Quick-reviewed {count} selected trade(s).", count=approved_count)
+    if skipped_count:
+        message += " " + tr("{count} could not be approved and were skipped.", count=skipped_count)
+    st.session_state["post-trade-review-notice"] = message
+    _clear_bulk_quick_review(account.id)
+    _defer_logical_trade_selection_reset(account.id)
+    st.toast(message)
+    st.rerun()
 
 
 def _begin_logical_trade_disband(repo: SQLiteJournalRepository, account: AccountListItem, trade_id: int) -> None:
@@ -534,6 +610,22 @@ def _render_post_trade_review_dialog(repo: SQLiteJournalRepository, account: Acc
     st.caption("\\* Required")
     with st.form(f"post-trade-assessment-{trade.id}"):
         strategy = st.selectbox(f"{tr('Strategy')} *", profiles, index=strategy_index, format_func=lambda item: item.name)
+        setup_options = [None, *repo.list_strategy_setups(strategy.id)]
+        session_options = [None, *repo.list_review_context_tags("session")]
+        regime_options = [None, *repo.list_review_context_tags("regime")]
+        context_left, context_middle, context_right = st.columns(3)
+        selected_setup = context_left.selectbox(
+            "Setup (optional)", setup_options, format_func=lambda item: "Unspecified" if item is None else item.name,
+            key=f"assessment-{trade.id}-setup",
+        )
+        selected_session = context_middle.selectbox(
+            "Session (optional)", session_options, format_func=lambda item: "Unspecified" if item is None else item.name,
+            key=f"assessment-{trade.id}-session",
+        )
+        selected_regime = context_right.selectbox(
+            "Market regime (optional)", regime_options, format_func=lambda item: "Unspecified" if item is None else item.name,
+            key=f"assessment-{trade.id}-regime",
+        )
         pillars = (
             ("Psychology", PSYCHOLOGY_CRITERIA),
             ("Risk management", RISK_CRITERIA),
@@ -643,6 +735,11 @@ def _render_post_trade_review_dialog(repo: SQLiteJournalRepository, account: Acc
                 declared_actual_risk_amount=actual_risk,
                 post_review_note=note,
                 corrective_action=action,
+                review_context=ReviewContextSelection(
+                    strategy_setup_id=None if selected_setup is None else selected_setup.id,
+                    session_tag_id=None if selected_session is None else selected_session.id,
+                    regime_tag_id=None if selected_regime is None else selected_regime.id,
+                ),
             )
     except ValueError as error:
         st.error(str(error))
@@ -883,16 +980,21 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
     visible = groups[selected_group]
     if failed_only:
         visible = [(trade, score) for trade, score in visible if score.process_status == "FAIL"]
-    single_position_trades = [trade for trade, _ in visible if not trade.is_group]
-    single_position_by_id = {trade.id: trade for trade in single_position_trades}
+    visible_by_id = {trade.id: trade for trade, _ in visible}
+    single_position_by_id = {trade.id: trade for trade, _ in visible if not trade.is_group}
     selected_logical_trade_ids = tuple(
         trade_id
         for trade_id in st.session_state.get(_logical_trade_selection_store_key(account.id), ())
-        if trade_id in single_position_by_id
+        if trade_id in visible_by_id
     )
     st.session_state[_logical_trade_selection_store_key(account.id)] = selected_logical_trade_ids
     selected_position_trade_ids = tuple(
         single_position_by_id[trade_id].members[0].id for trade_id in selected_logical_trade_ids
+        if trade_id in single_position_by_id
+    )
+    selected_reviewable_count = sum(
+        scores[trade_id].review_kind in {"auto_review", "needs_approval"}
+        for trade_id in selected_logical_trade_ids
     )
     with st.container(horizontal=True, gap="small"):
         create = st.button(
@@ -906,9 +1008,17 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
             "Clear selection",
             key=f"clear-logical-trade-selection-{account.id}",
             icon=":material/clear:",
-            disabled=not selected_position_trade_ids,
+            disabled=not selected_logical_trade_ids,
             on_click=_clear_logical_trade_selection,
             args=(account.id,),
+        )
+        bulk_selected = st.button(
+            f"Quick review selected ({selected_reviewable_count})",
+            key=f"bulk-quick-review-selected-{account.id}",
+            icon=":material/done_all:",
+            type="primary",
+            disabled=selected_reviewable_count == 0,
+            help="Review selected Awaiting approval or Requires review trades in one confirmed action.",
         )
         bulk_approve = (
             st.button(
@@ -941,6 +1051,12 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
             message += " " + tr("{count} could not be approved and were skipped.", count=skipped_count)
         st.session_state["post-trade-review-notice"] = message
         st.toast(message)
+        st.rerun()
+    if bulk_selected:
+        st.session_state[_bulk_quick_review_key(account.id)] = {
+            "account_id": account.id,
+            "trade_ids": selected_logical_trade_ids,
+        }
         st.rerun()
     if create:
         st.session_state["logical-trade-group-editor"] = {
@@ -1002,20 +1118,21 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
                 select_column, logical_column, trade_column, positions_column, pnl_column, review_column, score_column, process_column, actions_column = st.columns(
                     [0.5, 0.85, 1.35, 1.3, 0.75, 1.1, 0.85, 0.75, 1.0]
                 )
-                if trade.is_group:
-                    select_column.caption("—")
-                else:
-                    checkbox_key = f"{_logical_trade_selection_prefix(account.id)}{trade.id}"
-                    if checkbox_key not in st.session_state:
-                        st.session_state[checkbox_key] = trade.id in selected_logical_trade_ids
-                    select_column.checkbox(
-                        f"Select LT-{trade.id}",
-                        key=checkbox_key,
-                        label_visibility="collapsed",
-                        help="Select this single-position logical trade to group it with other selected trades.",
-                        on_change=_toggle_logical_trade_selection,
-                        args=(account.id, trade.id),
-                    )
+                checkbox_key = f"{_logical_trade_selection_prefix(account.id)}{trade.id}"
+                if checkbox_key not in st.session_state:
+                    st.session_state[checkbox_key] = trade.id in selected_logical_trade_ids
+                select_column.checkbox(
+                    f"Select LT-{trade.id}",
+                    key=checkbox_key,
+                    label_visibility="collapsed",
+                    help=(
+                        "Select this logical trade for Bulk Quick Review. Grouped trades cannot be used to create another logical trade."
+                        if trade.is_group
+                        else "Select this logical trade for Bulk Quick Review or to group it with other single-position trades."
+                    ),
+                    on_change=_toggle_logical_trade_selection,
+                    args=(account.id, trade.id),
+                )
                 logical_column.markdown(f"**LT-{trade.id}**")
                 trade_column.write(trade.display_label)
                 positions_column.write(", ".join(f"#{position_id}" for position_id in trade.position_ids))
@@ -1107,6 +1224,8 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
             )
         else:
             _clear_group_dialog()
+    if st.session_state.get(_bulk_quick_review_key(account.id)) is not None:
+        _render_bulk_quick_review_dialog(repo, account, trades, scores)
     selected = st.session_state.get("post-trade-review-trade-id")
     if selected is None:
         return
@@ -1135,7 +1254,27 @@ def _render_monitor(repo: SQLiteJournalRepository, account: AccountListItem) -> 
     st.markdown("#### Monitoring")
     st.caption(tr("Psychology and System are trader-wide. Risk is scoped to {account}.", account=_account_label(account)))
     _render_risk_configuration_notice(service, account.id)
-    window = st.slider(tr("Rolling sample"), min_value=10, max_value=100, value=20, step=5, key=f"framework-window-{account.id}")
+    controls, scope_note = st.columns((2, 3))
+    with controls:
+        window = st.slider(tr("Rolling sample"), min_value=10, max_value=100, value=20, step=5, key=f"framework-window-{account.id}")
+        period = st.segmented_control("Analysis period", ["This month", "Last 90 days", "All time", "Custom"], default="Last 90 days", required=True, key=f"framework-analysis-period-{account.id}")
+    today = date.today()
+    if period == "This month":
+        start_date, end_date = today.replace(day=1), today
+    elif period == "Last 90 days":
+        start_date, end_date = today - timedelta(days=89), today
+    elif period == "All time":
+        dates = [service._trade_date(item.exit_time, item.server_utc_offset_minutes) for item in service.trade_process_scores(account.id)]
+        start_date, end_date = min(dates, default=today), today
+    else:
+        with scope_note:
+            range_value = st.date_input("Analysis date range", value=(today - timedelta(days=89), today), key=f"framework-analysis-dates-{account.id}")
+        if not isinstance(range_value, tuple) or len(range_value) != 2:
+            st.info("Choose a start and end date for Monitor analysis.")
+            return
+        start_date, end_date = range_value
+    with scope_note:
+        st.caption(f"Analysis: {start_date.isoformat()} to {end_date.isoformat()} · scores and gates always use the rolling reviewed sample.")
     critical_threshold = repo.get_framework_rule_settings().repeated_critical_threshold
     st.caption(
         tr(
@@ -1145,8 +1284,17 @@ def _render_monitor(repo: SQLiteJournalRepository, account: AccountListItem) -> 
     )
     scores = service.pillar_scores(account.id, window=int(window))
     readiness = service.readiness(account.id, window=int(window))
+    coverage = service.risk_evidence_coverage(account.id, window=int(window))
+    analysis = service.monitor_analysis(account.id, start_date=start_date, end_date=end_date, window=int(window))
+    _render_framework_focus(repo, account, service, scores)
     st.metric("Readiness", _score_text(readiness.score), tr(readiness.status.capitalize()), border=True)
     st.caption(readiness.detail)
+    with st.container(horizontal=True, gap="small"):
+        st.metric("Risk checks", f"{coverage.approved}/{coverage.total}", "approved evidence", border=True)
+        st.metric("Risk pending", str(coverage.pending), border=True)
+        st.metric("Over policy", str(coverage.over_policy), border=True)
+        st.metric("Risk unavailable", str(coverage.unavailable), border=True)
+    st.caption("Approved Quick Risk Checks and Manual Reviews both feed pillar scores, readiness, and roadmap gates.")
     _render_score_cards(scores)
     _render_pillar_radar(scores)
     component_rows = [
@@ -1161,33 +1309,153 @@ def _render_monitor(repo: SQLiteJournalRepository, account: AccountListItem) -> 
             for name in COMPONENT_DEFINITIONS:
                 if name in present_names:
                     st.caption(f"**{tr(name)}** — {tr(COMPONENT_DEFINITIONS[name])}")
-    trend = service.rolling_score_trend(account.id, window=int(window))
+    _render_monitor_insights(analysis)
+    process_tab, risk_tab, system_tab = st.tabs(["Process & outcomes", "Risk", "System & context"])
+    with process_tab:
+        _render_monitor_process(service, account, analysis, int(window))
+    with risk_tab:
+        _render_monitor_risk(analysis, service.risk_snapshot(account.id))
+    with system_tab:
+        _render_monitor_system(analysis)
+    _render_period_reviews(repo, account, service)
+
+
+def _render_monitor_insights(analysis: MonitorAnalysisReport) -> None:
+    st.markdown("##### Evidence-led actions")
+    if not analysis.insights:
+        st.success("No urgent Monitor finding in the selected evidence. Keep collecting reviewed trades and complete the active focus.")
+        return
+    for insight in analysis.insights:
+        getattr(st, {"critical": "error", "warning": "warning"}.get(insight.severity, "info"))(insight.message, icon=":material/analytics:")
+
+
+def _render_monitor_process(service: FrameworkService, account: AccountListItem, analysis: MonitorAnalysisReport, window: int) -> None:
+    trend = [row for row in service.rolling_score_trend(account.id, window=window) if analysis.start_date <= row[0][:10] <= analysis.end_date]
     if trend:
-        st.markdown("##### Selected-account execution trend")
-        frame = pd.DataFrame(trend, columns=[tr("Closed"), tr("Psychology"), tr("Risk management"), tr("Trading system")]).set_index(tr("Closed"))
+        frame = pd.DataFrame(trend, columns=["Closed", "Psychology", "Risk management", "Trading system"]).set_index("Closed")
         st.line_chart(frame, width="stretch")
-        st.caption(
-            "This trend averages each reviewed trade's own 13-criterion score — a different, simpler calculation than "
-            "the weighted behavioral components in the score cards and \"What drives the current scores\" above. "
-            "Expect the two to diverge; that is not an error."
-        )
-    classifications = Counter(score.classification for score in service.trade_process_scores(account.id) if score.classification is not None)
-    issues = service.recurring_issues(account.id, window=int(window))
+        st.caption("Each point keeps the same approved-review scoring rules as the score cards. Psychology and System are trader-wide; Risk is selected-account only.")
+    else:
+        st.info("No approved review trend exists in this analysis period.")
     left, right = st.columns(2)
     with left:
-        st.markdown("##### Process-quality distribution")
-        if classifications:
-            st.caption("First word = process quality (Good/Needs improvement/Bad). Second word = P&L outcome (Win/Loss/Breakeven). The two are independent.")
-            st.bar_chart(pd.DataFrame({tr("Classification"): [tr(item) for item in classifications], tr("Trades"): list(classifications.values())}).set_index(tr("Classification")), width="stretch")
+        st.markdown("##### Process quality and outcome")
+        points = [item for item in analysis.reviewed_points if item.overall_score is not None and item.result_r is not None]
+        if points:
+            frame = pd.DataFrame([{"Process score": float(item.overall_score), "Result R": float(item.result_r), "Review": "Manual" if item.review_kind == "manual_review" else "Auto", "Classification": item.classification} for item in points])
+            st.scatter_chart(frame, x="Process score", y="Result R", color="Review", size=None, width="stretch")
+            st.caption("Only reviewed trades with standard 1R are plotted. A positive result does not prove good process, and a loss does not prove poor process.")
         else:
-            st.caption("Save complete assessments to build a process-quality distribution.")
+            st.caption("Approve reviews and configure standard risk to compare process score with outcome R.")
     with right:
-        st.markdown("##### Recurring issues")
-        if issues:
-            st.dataframe(pd.DataFrame([{tr("Issue"): tr(VIOLATION_LABELS.get(issue, issue)), tr("Count"): count} for issue, count in issues]), hide_index=True, width="stretch")
+        st.markdown("##### Quality/outcome distribution")
+        if analysis.classifications:
+            st.bar_chart(pd.DataFrame({"Classification": [item.label for item in analysis.classifications], "Trades": [item.count for item in analysis.classifications]}).set_index("Classification"), width="stretch")
         else:
-            st.caption("No tagged recurring issues in this sample.")
-    _render_period_reviews(repo, account, service)
+            st.caption("No reviewed classifications in this period.")
+    st.markdown("##### Recurring reviewed issues")
+    if analysis.issues:
+        st.bar_chart(pd.DataFrame({"Issue": [VIOLATION_LABELS.get(item.label, HARD_RULE_LABELS.get(item.label, item.label)) for item in analysis.issues], "Trades": [item.count for item in analysis.issues]}).set_index("Issue"), width="stretch")
+        st.caption(f"Counts are across {len(analysis.reviewed_points)} reviewed trade(s) in this period; one trade can carry more than one issue.")
+    else:
+        st.caption("No tagged issues in reviewed trades for this period.")
+
+
+def _render_monitor_risk(analysis: MonitorAnalysisReport, snapshot: RiskSnapshot) -> None:
+    with st.container(horizontal=True, gap="small"):
+        st.metric("Daily R", snapshot.daily_r or "—", border=True)
+        st.metric("Weekly R", snapshot.weekly_r or "—", border=True)
+        st.metric("Drawdown", "—" if snapshot.current_drawdown_percent is None else f"{snapshot.current_drawdown_percent}%", border=True)
+        st.metric("Loss streak", "—" if snapshot.consecutive_losses is None else str(snapshot.consecutive_losses), border=True)
+    left, right = st.columns(2)
+    with left:
+        st.markdown("##### Review evidence lifecycle")
+        if analysis.lifecycle:
+            labels = {"manual_review": "Manual", "approved_auto_review": "Approved Auto", "auto_review": "Awaiting approval", "needs_approval": "Requires review"}
+            st.bar_chart(pd.DataFrame({"State": [labels.get(item.label, item.label) for item in analysis.lifecycle], "Trades": [item.count for item in analysis.lifecycle]}).set_index("State"), width="stretch")
+    with right:
+        st.markdown("##### Policy evidence")
+        if analysis.policy_states:
+            labels = {"within_policy": "Within policy", "over_policy": "Over policy", "unavailable": "Unavailable"}
+            st.bar_chart(pd.DataFrame({"State": [labels.get(item.label, item.label) for item in analysis.policy_states], "Trades": [item.count for item in analysis.policy_states]}).set_index("State"), width="stretch")
+    st.caption("These are post-close monitoring signals only; they never place, block, or change MT5 orders.")
+
+
+def _render_monitor_system(analysis: MonitorAnalysisReport) -> None:
+    st.markdown("##### Strategy evidence")
+    if analysis.strategies:
+        frame = pd.DataFrame([{"Strategy": item.label, "Reviewed": item.count, "Process score": None if item.average_process_score is None else float(item.average_process_score), "Win rate": None if item.win_rate is None else float(item.win_rate), "Average R": None if item.average_r is None else float(item.average_r)} for item in analysis.strategies])
+        st.bar_chart(frame.set_index("Strategy")[["Process score"]], width="stretch")
+        st.dataframe(frame, hide_index=True, width="stretch", column_config={"Process score": st.column_config.NumberColumn(format="%.0f"), "Win rate": st.column_config.NumberColumn(format="%.0f%%"), "Average R": st.column_config.NumberColumn(format="%+.2fR")})
+    else:
+        st.caption("No reviewed strategy evidence in this period.")
+    st.markdown("##### Manual-review context")
+    st.caption("Setup, session, and regime are Manual Review fields. Samples below five reviews are directional, not causal evidence.")
+    tabs = st.tabs(["Setup", "Session", "Market regime"])
+    for tab, dimension in zip(tabs, ("setup", "session", "regime"), strict=True):
+        with tab:
+            rows = analysis.contexts[dimension]
+            if not rows:
+                st.caption("Complete Manual Reviews with optional context to populate this report.")
+                continue
+            frame = pd.DataFrame([{"Context": item.label, "Reviews": item.count, "Process score": item.average_process_score, "Win rate": item.win_rate, "Average R": item.average_r} for item in rows])
+            st.bar_chart(frame.set_index("Context")[["Process score"]].astype(float), width="stretch")
+            st.dataframe(frame, hide_index=True, width="stretch", column_config={"Process score": st.column_config.NumberColumn(format="%.0f"), "Win rate": st.column_config.NumberColumn(format="%.0f%%"), "Average R": st.column_config.NumberColumn(format="%+.2fR")})
+
+
+def _render_framework_focus(repo: SQLiteJournalRepository, account: AccountListItem, service: FrameworkService, scores: tuple[PillarScore, ...]) -> None:
+    focus, progress = service.focus_progress(account.id)
+    st.markdown("##### Coaching focus")
+    if focus is not None and progress is not None:
+        with st.container(border=True):
+            st.markdown(f"**{PILLAR_NAMES[focus.pillar]} · {focus.metric_kind.replace('_', ' ')}**")
+            st.write(focus.action_text)
+            st.caption(f"Hypothesis: {focus.hypothesis}")
+            current = "—" if progress.current_value is None else progress.current_value
+            st.metric("Reviewed trades collected", f"{progress.reviews_completed}/{progress.target_reviews}", f"Current metric: {current}", border=True)
+            st.caption(f"Baseline: {focus.baseline_value or '—'} · Target: {focus.target_value}")
+            if progress.ready_to_evaluate:
+                with st.form(f"resolve-framework-focus-{focus.id}"):
+                    outcome = st.segmented_control("Focus outcome", ["completed", "abandoned"], default="completed", required=True)
+                    note = st.text_area("Focus reflection", placeholder="What changed, and what will you carry forward?")
+                    if st.form_submit_button("Resolve focus", type="primary"):
+                        try:
+                            repo.resolve_framework_focus(focus_id=focus.id, outcome=outcome, resolution_note=note)
+                        except ValueError as error:
+                            st.error(str(error))
+                        else:
+                            st.toast("Framework focus resolved.")
+                            st.rerun()
+        return
+    st.caption("Choose one measurable focus. Keep it active until its reviewed-trade sample is complete.")
+    with st.form(f"start-framework-focus-{account.id}"):
+        focus_type = st.selectbox("Focus type", ["Build reviewed evidence", "Improve a criterion", "Eliminate a violation"])
+        pillar = st.selectbox("Pillar", list(PILLAR_NAMES), format_func=PILLAR_NAMES.get)
+        metric_kind = {"Build reviewed evidence": "manual_evidence", "Improve a criterion": "criterion", "Eliminate a violation": "violation"}[focus_type]
+        codes = ()
+        if metric_kind == "criterion":
+            codes = PSYCHOLOGY_CRITERIA if pillar == "psychology" else RISK_CRITERIA if pillar == "risk" else SYSTEM_CRITERIA
+        elif metric_kind == "violation":
+            codes = tuple(VIOLATION_LABELS)
+        metric_code = st.selectbox("Metric", list(codes), format_func=lambda value: CRITERION_LABELS.get(value, VIOLATION_LABELS.get(value, value))) if codes else None
+        target_reviews = st.selectbox("Reviewed-trade sample", [5, 10, 20], index=1)
+        hypothesis = st.text_area("Hypothesis", placeholder="Why will this action improve the chosen metric?")
+        action = st.text_area("One action", placeholder="What will you do on every relevant trade?")
+        if st.form_submit_button("Start focus", type="primary"):
+            current_score = next((item.score for item in scores if item.pillar == pillar), None)
+            target_value = "0" if metric_kind == "violation" else "80" if metric_kind == "criterion" else str(target_reviews)
+            starting = next((item.reviewed_total for item in scores if item.pillar == pillar), 0)
+            try:
+                repo.save_framework_focus(
+                    account_id=account.id if pillar == "risk" else None, pillar=pillar, metric_kind=metric_kind, metric_code=metric_code,
+                    hypothesis=hypothesis, action_text=action, baseline_value=current_score, target_value=target_value,
+                    target_reviews=int(target_reviews), starting_manual_reviews=starting,
+                )
+            except ValueError as error:
+                st.error(str(error))
+            else:
+                st.toast("Framework focus started.")
+                st.rerun()
 
 
 def _render_period_reviews(repo: SQLiteJournalRepository, account: AccountListItem, service: FrameworkService) -> None:

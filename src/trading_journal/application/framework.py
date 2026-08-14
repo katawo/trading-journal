@@ -17,6 +17,7 @@ from trading_journal.infrastructure.sqlite_repository import (
     ClosedTradeReviewItem,
     PillarRoadmapEvidenceView,
     PostTradeAssessmentView,
+    FrameworkFocusView,
     SQLiteJournalRepository,
     StrategyEvidenceSnapshot,
     StrategyProfileView,
@@ -26,6 +27,7 @@ from trading_journal.infrastructure.sqlite_repository import (
 PILLAR_NAMES = {"psychology": "Psychology", "risk": "Risk management", "system": "Trading system"}
 GRADE_VALUES = {"pass": Decimal("100"), "partial": Decimal("50"), "fail": Decimal("0")}
 GOOD_PROCESS_SCORE = Decimal("70")
+REVIEWED_KINDS = frozenset({"approved_auto_review", "manual_review"})
 TRADE_WEIGHTS = {
     "psychology": (("rule_adherence", Decimal("0.35")), ("impulse_control", Decimal("0.25")), ("emotional_control", Decimal("0.20")), ("patience_discipline", Decimal("0.20"))),
     "risk": (("policy_adherence", Decimal("0.35")), ("position_size_accuracy", Decimal("0.20")), ("stop_discipline", Decimal("0.25")), ("exposure_limit_compliance", Decimal("0.20"))),
@@ -157,6 +159,9 @@ class TradeProcessScore:
     # manually-reviewed trade, so later edits to a strategy's backtest fields
     # never retroactively change an already-reviewed trade's Monitor score.
     mapped_strategy: "StrategyProfileView | StrategyEvidenceSnapshot | None"
+    setup_snapshot: str | None = None
+    session_snapshot: str | None = None
+    regime_snapshot: str | None = None
 
 
 @dataclass(frozen=True)
@@ -174,6 +179,85 @@ class PillarScore:
     component_scores: tuple[tuple[str, str | None], ...]
     detail: str
     scope: str
+
+
+@dataclass(frozen=True)
+class RiskEvidenceCoverage:
+    total: int
+    approved: int
+    pending: int
+    over_policy: int
+    unavailable: int
+
+
+@dataclass(frozen=True)
+class ContextBreakdown:
+    label: str
+    review_count: int
+    average_process_score: str | None
+    win_rate: str
+    average_r: str | None
+
+
+@dataclass(frozen=True)
+class MonitorAnalysisPoint:
+    """One selected-account logical trade for descriptive Monitor analysis."""
+
+    trade_id: int
+    closed: str
+    review_kind: str
+    overall_score: str | None
+    psychology_score: str | None
+    risk_score: str | None
+    system_score: str | None
+    classification: str | None
+    result_r: str | None
+    strategy: str
+    risk_policy_state: str
+    violation_codes: tuple[str, ...]
+    hard_rule_codes: tuple[str, ...]
+    setup: str | None
+    session: str | None
+    regime: str | None
+
+
+@dataclass(frozen=True)
+class MonitorBreakdown:
+    label: str
+    count: int
+    average_process_score: str | None = None
+    win_rate: str | None = None
+    average_r: str | None = None
+
+
+@dataclass(frozen=True)
+class MonitorInsight:
+    severity: str
+    message: str
+
+
+@dataclass(frozen=True)
+class MonitorAnalysisReport:
+    start_date: str
+    end_date: str
+    points: tuple[MonitorAnalysisPoint, ...]
+    reviewed_points: tuple[MonitorAnalysisPoint, ...]
+    lifecycle: tuple[MonitorBreakdown, ...]
+    policy_states: tuple[MonitorBreakdown, ...]
+    classifications: tuple[MonitorBreakdown, ...]
+    issues: tuple[MonitorBreakdown, ...]
+    strategies: tuple[MonitorBreakdown, ...]
+    contexts: dict[str, tuple[MonitorBreakdown, ...]]
+    insights: tuple[MonitorInsight, ...]
+
+
+@dataclass(frozen=True)
+class FrameworkFocusProgress:
+    focus_id: int
+    reviews_completed: int
+    target_reviews: int
+    current_value: str | None
+    ready_to_evaluate: bool
 
 
 @dataclass(frozen=True)
@@ -333,26 +417,160 @@ class FrameworkService:
         )
 
     def recurring_issues(self, account_id: int, *, window: int = 20, as_of: date | None = None) -> tuple[tuple[str, int], ...]:
-        scored = [item for item in self._scores_through(self.trade_process_scores(account_id), as_of) if item.assessment_state == "reviewed"][-window:]
+        scored = [item for item in self._scores_through(self.trade_process_scores(account_id), as_of) if item.review_kind in REVIEWED_KINDS][-window:]
         counter: Counter[str] = Counter(code for item in scored for code in set(item.violation_codes) | set(item.hard_rule_codes))
         return tuple(counter.most_common())
 
     def rolling_score_trend(self, account_id: int, *, window: int = 20) -> tuple[tuple[str, str | None, str | None, str | None], ...]:
-        """Selected-account trend; readiness cards keep the documented wider scopes."""
-        reviewed = [item for item in self.trade_process_scores(account_id) if item.assessment_state == "reviewed"]
+        """Historical card-equivalent scores, retaining documented pillar scopes."""
+        reviewed = [item for item in self.trade_process_scores(account_id) if item.review_kind in REVIEWED_KINDS]
         points: list[tuple[str, str | None, str | None, str | None]] = []
-        for index in range(1, len(reviewed) + 1):
-            sample = reviewed[max(0, index - window) : index]
-            if not sample:
-                continue
-            values = []
-            for pillar in ("psychology", "risk", "system"):
-                numeric = [Decimal(getattr(item, f"{pillar}_score")) for item in sample if getattr(item, f"{pillar}_score") is not None]
-                values.append(_decimal_text(sum(numeric, Decimal("0")) / len(numeric)) if numeric else None)
-            trade = reviewed[index - 1]
+        for trade in reviewed:
+            as_of = self._trade_date(trade.exit_time, trade.server_utc_offset_minutes)
+            values_by_pillar = {item.pillar: item.score for item in self.pillar_scores(account_id, window=window, as_of=as_of)}
             closed = reporting_datetime(trade.exit_time, trade.server_utc_offset_minutes, self._reporting_time_basis()).isoformat()
-            points.append((closed, *values))
+            points.append((closed, values_by_pillar["psychology"], values_by_pillar["risk"], values_by_pillar["system"]))
         return tuple(points)
+
+    def risk_evidence_coverage(self, account_id: int, *, window: int = 20) -> RiskEvidenceCoverage:
+        scores = self.trade_process_scores(account_id)[-window:]
+        return RiskEvidenceCoverage(
+            total=len(scores),
+            approved=sum(item.review_kind in {"approved_auto_review", "manual_review"} for item in scores),
+            pending=sum(item.review_kind in {"needs_approval", "auto_review"} for item in scores),
+            over_policy=sum(item.risk_policy_state == "over_policy" for item in scores),
+            unavailable=sum(item.risk_policy_state == "unavailable" for item in scores),
+        )
+
+    def context_breakdown(self, account_id: int, *, dimension: str, window: int = 20) -> tuple[ContextBreakdown, ...]:
+        if dimension not in {"setup", "session", "regime"}:
+            raise ValueError("Context dimension must be setup, session, or regime")
+        attribute = f"{dimension}_snapshot"
+        manual = [item for item in self.trade_process_scores(account_id) if item.review_kind == "manual_review"][-window:]
+        buckets: dict[str, list[TradeProcessScore]] = {}
+        for item in manual:
+            label = getattr(item, attribute, None) or "Unspecified"
+            buckets.setdefault(label, []).append(item)
+        rows: list[ContextBreakdown] = []
+        for label, items in sorted(buckets.items()):
+            scores = [Decimal(item.overall_score) for item in items if item.overall_score is not None]
+            wins = sum(Decimal(item.net_pnl) > 0 for item in items)
+            # Normalised R uses the attached account policy evidence where available.
+            r_values = [Decimal(item.net_pnl) / Decimal(item.policy_risk_amount) for item in items if item.policy_risk_amount and Decimal(item.policy_risk_amount) > 0]
+            rows.append(ContextBreakdown(
+                label, len(items), None if not scores else _decimal_text(sum(scores, Decimal("0")) / len(scores)),
+                _decimal_text(Decimal(wins * 100) / len(items)),
+                None if not r_values else _decimal_text(sum(r_values, Decimal("0")) / len(r_values)),
+            ))
+        return tuple(rows)
+
+    def monitor_analysis(self, account_id: int, *, start_date: date, end_date: date, window: int = 20) -> MonitorAnalysisReport:
+        """Return descriptive selected-account evidence without changing score gates.
+
+        Outcome R is intentionally joined from the Performance-dashboard read model so
+        every Monitor outcome chart uses the journal's standard 1R convention.
+        """
+        if start_date > end_date:
+            raise ValueError("Start date must be on or before end date")
+        performance = {item.logical_trade_id: item for item in self._repository.list_trade_performance(account_id)}
+        scores = [
+            item for item in self.trade_process_scores(account_id)
+            if start_date <= self._trade_date(item.exit_time, item.server_utc_offset_minutes) <= end_date
+        ]
+        points = tuple(
+            MonitorAnalysisPoint(
+                trade_id=item.trade_id,
+                closed=reporting_datetime(item.exit_time, item.server_utc_offset_minutes, self._reporting_time_basis()).isoformat(),
+                review_kind=item.review_kind,
+                overall_score=item.overall_score,
+                psychology_score=item.psychology_score,
+                risk_score=item.risk_score,
+                system_score=item.system_score,
+                classification=item.classification,
+                result_r=performance[item.trade_id].result_r if item.trade_id in performance else None,
+                strategy=(item.mapped_strategy.name if item.mapped_strategy is not None else "Untagged"),
+                risk_policy_state=item.risk_policy_state,
+                violation_codes=item.violation_codes,
+                hard_rule_codes=item.hard_rule_codes,
+                setup=item.setup_snapshot,
+                session=item.session_snapshot,
+                regime=item.regime_snapshot,
+            )
+            for item in scores
+        )
+        reviewed = tuple(item for item in points if item.review_kind in REVIEWED_KINDS)
+
+        def counts(values: list[str], order: tuple[str, ...] = ()) -> tuple[MonitorBreakdown, ...]:
+            counter = Counter(values)
+            labels = [*order, *(key for key in counter if key not in order)]
+            return tuple(MonitorBreakdown(label, counter[label]) for label in labels if counter[label])
+
+        lifecycle = counts([item.review_kind for item in points], ("manual_review", "approved_auto_review", "auto_review", "needs_approval"))
+        policy_states = counts([item.risk_policy_state for item in points], ("within_policy", "over_policy", "unavailable"))
+        classifications = counts([item.classification for item in reviewed if item.classification is not None])
+        issues = tuple(MonitorBreakdown(label, count) for label, count in Counter(
+            code for item in reviewed for code in set(item.violation_codes) | set(item.hard_rule_codes)
+        ).most_common())
+
+        def grouped(items: tuple[MonitorAnalysisPoint, ...], attribute: str) -> tuple[MonitorBreakdown, ...]:
+            buckets: dict[str, list[MonitorAnalysisPoint]] = {}
+            for item in items:
+                label = getattr(item, attribute) or "Unspecified"
+                buckets.setdefault(label, []).append(item)
+            rows: list[MonitorBreakdown] = []
+            for label, bucket in sorted(buckets.items()):
+                quality = [Decimal(item.overall_score) for item in bucket if item.overall_score is not None]
+                r_values = [Decimal(item.result_r) for item in bucket if item.result_r is not None]
+                wins = sum(value > 0 for value in r_values)
+                rows.append(MonitorBreakdown(
+                    label=label,
+                    count=len(bucket),
+                    average_process_score=None if not quality else _decimal_text(sum(quality, Decimal("0")) / len(quality)),
+                    win_rate=None if not r_values else _decimal_text(Decimal(wins * 100) / len(r_values)),
+                    average_r=None if not r_values else _decimal_text(sum(r_values, Decimal("0")) / len(r_values)),
+                ))
+            return tuple(rows)
+
+        strategies = grouped(reviewed, "strategy")
+        manual = tuple(item for item in reviewed if item.review_kind == "manual_review")
+        scores_now = self.pillar_scores(account_id, window=window)
+        insight_rows: list[MonitorInsight] = []
+        for score in scores_now:
+            if score.hard_block:
+                insight_rows.append(MonitorInsight("critical", f"{PILLAR_NAMES[score.pillar]} has a hard-rule failure in the rolling sample."))
+            elif score.status == "caution":
+                insight_rows.append(MonitorInsight("warning", f"{PILLAR_NAMES[score.pillar]} is capped after repeated critical violations."))
+            elif score.score is not None and Decimal(score.score) < Decimal("70"):
+                insight_rows.append(MonitorInsight("warning", f"{PILLAR_NAMES[score.pillar]} is below 70 in the rolling sample."))
+        pending = sum(item.review_kind in {"auto_review", "needs_approval"} for item in points)
+        if pending:
+            insight_rows.append(MonitorInsight("info", f"{pending} trade(s) in this period still need review approval before they can contribute to scoring."))
+        if issues and issues[0].count >= 2:
+            insight_rows.append(MonitorInsight("info", f"Most frequent reviewed issue: {issues[0].label} ({issues[0].count} trade(s) in this period)."))
+        return MonitorAnalysisReport(
+            start_date=start_date.isoformat(), end_date=end_date.isoformat(), points=points, reviewed_points=reviewed,
+            lifecycle=lifecycle, policy_states=policy_states, classifications=classifications, issues=issues,
+            strategies=strategies, contexts={dimension: grouped(manual, dimension) for dimension in ("setup", "session", "regime")},
+            insights=tuple(insight_rows[:3]),
+        )
+
+    def focus_progress(self, account_id: int) -> tuple[FrameworkFocusView | None, FrameworkFocusProgress | None]:
+        focus = self._repository.get_active_framework_focus()
+        if focus is None:
+            return None, None
+        focus_account = focus.account_id if focus.pillar == "risk" else account_id
+        reviewed = [item for item in self.trade_process_scores(focus_account) if item.review_kind in REVIEWED_KINDS]
+        completed = max(0, len(reviewed) - focus.starting_manual_reviews)
+        sample = reviewed[-focus.target_reviews:]
+        current: str | None = None
+        if focus.metric_kind == "manual_evidence":
+            current = str(completed)
+        elif focus.metric_kind == "criterion" and sample:
+            values = [GRADE_VALUES[item.criterion_grades[focus.metric_code]] for item in sample if item.criterion_grades and focus.metric_code]
+            current = _decimal_text(sum(values, Decimal("0")) / len(values)) if values else None
+        elif focus.metric_kind == "violation" and sample:
+            current = str(sum((focus.metric_code or "") in item.violation_codes for item in sample))
+        return focus, FrameworkFocusProgress(focus.id, completed, focus.target_reviews, current, completed >= focus.target_reviews)
 
     def roadmap_status(self, account_id: int, *, now: datetime | None = None) -> tuple[PillarRoadmapStatus, ...]:
         evidence = {(item.pillar, item.level, item.item_key): item for item in self._repository.list_pillar_roadmap_evidence(account_id)}
@@ -526,10 +744,13 @@ class FrameworkService:
         scope: str,
         historical_events: dict[int, dict[str, object]] | None = None,
     ) -> PillarScore:
-        reviewed = [item for item in scores if item.assessment_state == "reviewed"]
+        # A reviewed trade is either a one-click approval of normalized MT5
+        # evidence or a full Manual Review. Both use persisted criterion grades
+        # and have equal weight in framework scoring and maturity gates.
+        reviewed = [item for item in scores if item.review_kind in REVIEWED_KINDS]
         sample = reviewed[-window:]
-        automatic = sum(item.review_kind == "auto_review" for item in scores)
-        unreviewed = sum(item.assessment_state != "reviewed" for item in scores)
+        automatic = sum(item.review_kind in {"auto_review", "approved_auto_review"} for item in scores)
+        unreviewed = sum(item.review_kind not in REVIEWED_KINDS for item in scores)
         if not sample:
             return PillarScore(pillar, None, None, "incomplete", 0, 0, unreviewed, automatic, False, 0, (), "No complete post-trade review evidence yet.", scope)
         pnl_by_trade = {item.trade_id: Decimal(item.net_pnl) for item in scores}
@@ -725,6 +946,9 @@ class FrameworkService:
                 risk_policy_state,
                 risk_evidence_source,
                 mapped,
+                None,
+                None,
+                None,
             )
         psychology = self._trade_pillar_score(assessment, "psychology")
         risk = self._trade_pillar_score(assessment, "risk")
@@ -757,6 +981,9 @@ class FrameworkService:
             risk_policy_state,
             risk_evidence_source,
             assessment.strategy_snapshot,
+            assessment.setup_snapshot,
+            assessment.session_snapshot,
+            assessment.regime_snapshot,
         )
 
     @staticmethod

@@ -54,6 +54,8 @@ MT5 exports one completed **position** per row. The journal automatically maps e
 
 Positions can be grouped only when they share the same MT5 account, symbol, direction, and imported risk-policy version. The generated label is based on symbol, direction, and first entry when no custom label is supplied. A group becomes one reviewable logical trade, and appears in the dashboard's **Per trade** analysis when its **last** member position closes.
 
+The same row selection also supports **Quick review selected**. It can include single-position or grouped logical trades that are Awaiting approval or Require review. The confirmation lists the selected policy-evidence states before saving approved Auto reviews; a later Manual Review can replace any of them.
+
 Logical-trade membership and labels are mutable. Use **Manage positions** from any review to add, remove, split, merge, or disband positions. A membership change never alters an MT5 row. Instead, it supersedes each affected saved assessment, removes it from active pillar scores and roadmap evidence, and requires a new review. The superseded review keeps its original member-position snapshot and remains available in assessment history. A label-only change does not supersede an assessment.
 
 ### Group reporting and automatic risk
@@ -82,10 +84,11 @@ Risk policies are versioned. A completed assessment retains the policy and strat
 | Review status | What it means | Three-pillar score? | What to do |
 |---|---|---:|---|
 | Requires review | Automatic risk evidence is over policy or unavailable, and has not been approved yet. | No | Quick review to approve it in one click, or complete a full post-trade assessment. |
-| Auto-reviewed | Automatic risk evidence is within policy and still awaiting your approval. | No | Approve it in one click, or complete a full assessment instead. |
-| Reviewed | Automatic evidence you have approved (tagged **Auto**), or a full 13-criterion assessment (tagged **Manual**). | Yes | Nothing further for an Auto entry; correct a Manual entry by saving a new assessment. |
+| Auto-reviewed | Automatic risk evidence is within policy and still awaiting your approval. | No | Approve it in one click, or complete a Deep Review instead. |
+| Quick Risk Check | Automatic evidence you approved (tagged **Auto**). | Yes | Its normalized criterion grades enter the same rolling score as a Manual Review. |
+| Deep Review | A full 13-criterion manual assessment (tagged **Manual**). | Yes | It adds detailed tags, corrective action, and optional setup/session/regime context. |
 
-No automatic risk evidence counts toward pillar scores or the readiness roadmap on its own — not even when it is within policy. It must be explicitly approved in one click (Quick review or Approve), or replaced by a full assessment, first. Once approved, an **Auto** entry uses `Partial` (neutral) for Psychology and Trading system. For Risk management, policy adherence is `Pass` only when the automatic amount is within policy; the remaining criteria are neutral. Approving over-policy evidence records policy adherence as `Fail`. A full assessment (**Manual**) remains the only way to record violations or hard-rule events, and it always replaces an existing approval.
+Automatic risk evidence enters the Psychology, Risk management, and Trading system rolling scores only after you approve it in one click as a **Quick Risk Check**. Approved Auto and Manual reviews have equal scoring weight, readiness, roadmap, and coaching status. A full **Deep Review** remains the only way to record behavioural/system notes, violations, hard-rule events, corrective actions, and optional context; it replaces an earlier Quick Risk Check for the same logical trade.
 
 ### Automatic risk evidence
 
@@ -216,7 +219,9 @@ Reason tags also make recurring patterns visible. Psychology critical tags inclu
 
 ## 6. How rolling monitoring is calculated
 
-In **Bearings → Monitor**, choose a rolling window from 10 to 100 trades (slider, step 5; the Dashboard's compact widget always shows a fixed 20-trade snapshot). Auto-reviews, approved auto-reviews, and manually reviewed trades enter the window. Needs-approval imports remain outside it until approved or fully assessed. A smaller window reaches the repeated-critical-violation Caution threshold sooner than a larger one, since that threshold is a fixed count, not a percentage of the window.
+In **Bearings → Monitor**, choose a rolling window from 10 to 100 trades (slider, step 5; the Dashboard's compact widget always shows a fixed 20-trade snapshot). Pillar scores, readiness, recurring issues, and coaching use the latest approved Auto and Manual reviews. Quick Risk Checks remain visible separately as selected-account risk-evidence coverage over the latest closed logical trades. A smaller reviewed window reaches the repeated-critical-violation Caution threshold sooner than a larger one, since that threshold is a fixed count, not a percentage of the window.
+
+The Monitor also has an **Analysis period** (this month, last 90 days, all time, or custom). It changes descriptive charts only; it never changes a rolling score, readiness, or roadmap gate. Its Overview highlights the next evidence-led actions, while the Process & outcomes, Risk, and System & context views separate process quality from outcome, review coverage from policy evidence, and strategy/context observations from causal claims. Outcome comparisons use the same standard 1R convention as the Performance dashboard. Trades without a usable standard 1R are excluded from R charts and reported as missing evidence.
 
 The Monitor computes a second set of period components from the reviewed window. These are not a simple average of the visible per-trade pillar scores; they are designed to reveal repeated behaviour and evidence quality.
 
@@ -275,6 +280,16 @@ Use the diagnosis rather than recent P&L to choose the action:
 | Psychology and Risk strong, System weak | The process is disciplined but the setup/evidence needs work. | Freeze the strategy rules and collect or validate more backtest evidence before changing execution. |
 
 Do not change a strategy solely because of a small recent P&L sample. Make one hypothesis, collect evidence, then keep or reject the change.
+
+### Coaching focus
+
+The Monitor can hold one active journal-wide **Coaching focus**. Choose either to build reviewed evidence, improve one criterion, or eliminate one recurring violation. Record a hypothesis and one action, then collect 5, 10, or 20 newly reviewed trades before resolving it as completed or abandoned with a reflection. Risk focuses are account-specific; Psychology and Trading system focuses are trader-wide. The app does not change a focus automatically.
+
+### Optional review context
+
+Deep Reviews may record an optional strategy setup, session, and market regime from controlled lists in **Settings**. These labels make the Monitor's context tables comparable. They are descriptive: small samples are not proof that a setup or regime caused an outcome.
+
+Context charts deliberately use Manual Reviews only because Quick Risk Checks do not contain optional context. Treat fewer than five Manual Reviews in a context bucket as directional evidence only, not a conclusion or a reason to change the trading system.
 
 ## 8. Improvement roadmap and gates
 

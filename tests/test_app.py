@@ -199,7 +199,7 @@ def test_settings_groups_reporting_accounts_risk_strategies_and_review_rules(mon
     app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
     app.switch_page("app_pages/settings.py").run()
 
-    assert [tab.label for tab in app.tabs] == ["Account & risk", "Strategies", "Review rules"]
+    assert [tab.label for tab in app.tabs] == ["Account & risk", "Strategies", "Review context", "Review rules"]
     assert any(item.label == "Account name" for item in app.text_input)
     assert any(item.label == "MT5 account ID" for item in app.text_input)
     funded_capital = next(item for item in app.text_input if item.label == "Funded capital (optional)")
@@ -965,7 +965,7 @@ def test_approving_within_policy_evidence_moves_the_trade_from_auto_reviewed_to_
     assert active.risk_policy_state == "within_policy"
 
 
-def test_bulk_approving_all_visible_within_policy_trades(monkeypatch, tmp_path):
+def test_bulk_quick_reviewing_selected_trades_requires_confirmation(monkeypatch, tmp_path):
     database_path = tmp_path / "journal.db"
     repository = SQLiteJournalRepository(database_path)
     repository.initialize()
@@ -1029,7 +1029,14 @@ def test_bulk_approving_all_visible_within_policy_trades(monkeypatch, tmp_path):
 
     review_filter = next(item for item in app.segmented_control if item.label == "Review status")
     assert review_filter.options == ["Requires review (0)", "Auto-reviewed (2)", "Reviewed (0)", "All (2)"]
-    next(item for item in app.button if item.label == "Approve all visible within-policy (2)").click().run()
+    for checkbox in app.checkbox:
+        if checkbox.label.startswith("Select LT-"):
+            checkbox.set_value(True).run()
+    next(item for item in app.button if item.label == "Quick review selected (2)").click().run()
+
+    assert not app.exception
+    assert any(item.label == "Quick review 2 selected" for item in app.button)
+    next(item for item in app.button if item.label == "Quick review 2 selected").click().run()
 
     assert not app.exception
     active = repository.list_active_post_trade_assessments(account.id)
@@ -1448,7 +1455,7 @@ def test_settings_strategies_tab_renders_optional_backtest_fields(monkeypatch, t
     app.switch_page("app_pages/settings.py").run()
 
     assert not app.exception
-    assert [tab.label for tab in app.tabs] == ["Account & risk", "Strategies", "Review rules"]
+    assert [tab.label for tab in app.tabs] == ["Account & risk", "Strategies", "Review context", "Review rules"]
     assert any(item.value == "Strategy library" for item in app.subheader)
     assert any(item.label == "Backtest sample size" for item in app.text_input)
     assert any(item.label == "MT5 magic numbers (optional)" for item in app.text_input)
