@@ -33,10 +33,17 @@ from trading_journal.presentation.i18n import (
     install_streamlit_translations,
     tr,
 )
+from trading_journal.presentation.formatting import (
+    currency_decimal_places,
+    currency_prefix,
+    format_currency,
+    format_number,
+    format_percent,
+    format_r,
+)
 from trading_journal.presentation.trade_tags import direction_tag, outcome_tag
 
 
-_CURRENCY_SYMBOLS = {"USD": "$", "EUR": "€", "GBP": "£", "JPY": "¥", "AUD": "A$", "CAD": "C$", "CHF": "CHF", "NZD": "NZ$"}
 _AUTO_SYNC_INTERVAL_SECONDS = 15
 _FRESHNESS_INTERVAL_SECONDS = 5
 _ANALYTICS_CACHE_TTL_SECONDS = 15
@@ -56,34 +63,16 @@ def supported_mt5_schema_versions() -> str:
     return ", ".join(str(item) for item in sorted(SUPPORTED_SCHEMA_VERSIONS))
 
 
-def format_number(value: str | Decimal, decimal_places: int = 2) -> str:
-    return f"{Decimal(value):,.{decimal_places}f}"
-
-
-def format_signed(value: str | Decimal, suffix: str = "", decimal_places: int = 2) -> str:
-    number = Decimal(value)
-    prefix = "+" if number > 0 else "−" if number < 0 else ""
-    return f"{prefix}{format_number(abs(number), decimal_places)}{suffix}"
-
-
-def format_currency(value: str | Decimal, currency: str) -> str:
-    number = Decimal(value)
-    prefix = "+" if number > 0 else "−" if number < 0 else ""
-    symbol = _CURRENCY_SYMBOLS.get(currency.upper())
-    amount = format_number(abs(number))
-    return f"{prefix}{symbol}{amount}" if symbol else f"{prefix}{currency.upper()} {amount}"
-
-
-def format_currency_caption(value: str | Decimal, currency: str) -> str:
+def format_currency_caption(value: str | Decimal, currency: str, *, signed: bool = True) -> str:
     """Format currency safely for Streamlit text elements that parse Markdown."""
-    return format_currency(value, currency).replace("$", r"\$")
+    return format_currency(value, currency, signed=signed).replace("$", r"\$")
 
 
 def format_account_label(account: AccountListItem) -> str:
     return f"{account.display_name} · {account.login} · {account.broker_server}"
 
 
-def style_chart(figure: go.Figure, *, yaxis_title: str) -> go.Figure:
+def style_chart(figure: go.Figure, *, yaxis_title: str, currency: str | None = None) -> go.Figure:
     """Keep data semantics while Streamlit supplies the active chart theme.
 
     The browser can switch Streamlit's Light/Dark theme without a Python rerun.
@@ -98,7 +87,10 @@ def style_chart(figure: go.Figure, *, yaxis_title: str) -> go.Figure:
         showlegend=False,
     )
     figure.update_xaxes(showgrid=False, zeroline=False)
-    figure.update_yaxes(title=yaxis_title, zeroline=True)
+    yaxis = {"title": yaxis_title, "zeroline": True}
+    if currency is not None:
+        yaxis.update(tickprefix=currency_prefix(currency), tickformat=f",.{currency_decimal_places(currency)}f")
+    figure.update_yaxes(**yaxis)
     return figure
 
 
@@ -976,15 +968,15 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
     position_label = f"{report.raw_position_count} MT5 position{'s' if report.raw_position_count != 1 else ''}"
     st.markdown(f'<div class="dashboard-period">{period_label} · {logical_label} · {position_label}</div>', unsafe_allow_html=True)
     with st.container(horizontal=True, gap="small"):
-        st.metric("Account balance", "—" if report.ending_balance is None else format_currency(report.ending_balance, currency), border=True)
-        st.metric("Account growth", "—" if report.balance_growth_percent is None else f"{format_signed(report.balance_growth_percent, '%', 1)}", border=True)
+        st.metric("Account balance", "—" if report.ending_balance is None else format_currency(report.ending_balance, currency, signed=False), border=True)
+        st.metric("Account growth", "—" if report.balance_growth_percent is None else format_percent(report.balance_growth_percent, signed=True), border=True)
         st.metric("Realized P&L", format_currency(report.net_pnl, currency), border=True)
         st.metric("Account drawdown", format_currency(-Decimal(report.max_drawdown), currency), border=True)
 
     st.markdown("#### Logical-trade quality")
     with st.container(horizontal=True, gap="small"):
-        st.metric("Total R", "Awaiting risk" if report.total_r is None else format_signed(report.total_r, "R"), border=True)
-        st.metric("Win rate", f"{format_number(report.win_rate, 1)}%", border=True)
+        st.metric("Total R", "Awaiting risk" if report.total_r is None else format_r(report.total_r), border=True)
+        st.metric("Win rate", format_percent(report.win_rate), border=True)
         st.metric("Profit factor", "No losses" if report.profit_factor is None else format_number(report.profit_factor, 2), border=True)
         st.metric("Expectancy", "—" if report.expectancy is None else format_currency(report.expectancy, currency), border=True)
         st.metric("Worst day", "—" if report.worst_day is None else format_currency(report.worst_day, currency), border=True)
@@ -997,8 +989,8 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
     else:
         st.caption(
             f"Current drawdown: {format_currency_caption(-Decimal(report.current_drawdown), currency)}"
-            + (f" ({format_number(report.current_drawdown_percent, 1)}%)" if report.current_drawdown_percent is not None else "")
-            + f" · Balance at period start: {format_currency_caption(report.starting_balance, currency)}."
+            + (f" ({format_percent(report.current_drawdown_percent)})" if report.current_drawdown_percent is not None else "")
+            + f" · Balance at period start: {format_currency_caption(report.starting_balance, currency, signed=False)}."
         )
 
     chart_view = st.segmented_control(
@@ -1062,6 +1054,9 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
         pnl_x = pnl_data["exit_time"]
         pnl_title = tr("Logical-trade P&L")
     curve_is_balance = chart_view == "Daily" and report.ending_balance is not None
+    timeline["hover_amount"] = [format_currency(value, currency, signed=not curve_is_balance) for value in timeline[curve_column]]
+    pnl_data["hover_amount"] = [format_currency(value, currency) for value in pnl_data["net_pnl"]]
+    strategies["hover_amount"] = [format_currency(value, currency) for value in strategies["net_pnl"]]
 
     left, right = st.columns(2)
     with left:
@@ -1070,34 +1065,39 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
                 go.Scatter(
                     x=timeline_x,
                     y=timeline[curve_column],
-                    customdata=timeline["hover_label"],
+                    customdata=timeline[["hover_label", "hover_amount"]],
                     mode="lines+markers",
                     line=dict(color=_CHART_POSITIVE, width=3),
                     marker=dict(color=_CHART_POSITIVE, size=7),
                     fill=None if curve_is_balance else "tozeroy",
                     fillcolor="rgba(14, 145, 99, 0.14)" if not curve_is_balance else None,
-                    hovertemplate=f"%{{customdata}}<br><b>{currency} %{{y:,.2f}}</b><extra></extra>",
+                    hovertemplate="%{customdata[0]}<br><b>%{customdata[1]}</b><extra></extra>",
                 )
             )
             pnl_figure.update_layout(title=curve_title)
-            st.plotly_chart(style_chart(pnl_figure, yaxis_title=currency), width="stretch", config={"displayModeBar": False})
+            st.plotly_chart(style_chart(pnl_figure, yaxis_title=currency, currency=currency), width="stretch", config={"displayModeBar": False})
     with right:
         with st.container(border=True):
             drawdown_figure = go.Figure(
                 go.Scatter(
                     x=timeline_x,
                     y=-timeline["drawdown"],
-                    customdata=timeline[["hover_label", "drawdown"]],
+                    customdata=pd.DataFrame(
+                        {
+                            "label": timeline["hover_label"],
+                            "amount": [format_currency(-Decimal(value), currency) for value in timeline["drawdown"]],
+                        }
+                    ),
                     mode="lines+markers",
                     line=dict(color=_CHART_NEGATIVE, width=3),
                     marker=dict(color=_CHART_NEGATIVE, size=7),
                     fill="tozeroy",
                     fillcolor="rgba(199, 53, 69, 0.16)",
-                    hovertemplate=f"%{{customdata[0]}}<br><b>−{currency} %{{customdata[1]:,.2f}}</b><extra></extra>",
+                    hovertemplate="%{customdata[0]}<br><b>%{customdata[1]}</b><extra></extra>",
                 )
             )
             drawdown_figure.update_layout(title=drawdown_title)
-            st.plotly_chart(style_chart(drawdown_figure, yaxis_title=f"{currency} drawdown"), width="stretch", config={"displayModeBar": False})
+            st.plotly_chart(style_chart(drawdown_figure, yaxis_title=f"{currency} drawdown", currency=currency), width="stretch", config={"displayModeBar": False})
 
     left, right = st.columns(2)
     with left:
@@ -1107,14 +1107,14 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
                 go.Bar(
                     x=pnl_x,
                     y=pnl_data["net_pnl"],
-                    customdata=pnl_data["hover_label"],
+                    customdata=pnl_data[["hover_label", "hover_amount"]],
                     marker_color=bar_colours,
                     marker_line_width=0,
-                    hovertemplate=f"%{{customdata}}<br><b>{currency} %{{y:,.2f}}</b><extra></extra>",
+                    hovertemplate="%{customdata[0]}<br><b>%{customdata[1]}</b><extra></extra>",
                 )
             )
             daily_figure.update_layout(title=pnl_title)
-            st.plotly_chart(style_chart(daily_figure, yaxis_title=currency), width="stretch", config={"displayModeBar": False})
+            st.plotly_chart(style_chart(daily_figure, yaxis_title=currency, currency=currency), width="stretch", config={"displayModeBar": False})
     with right:
         with st.container(border=True):
             strategies = strategies.sort_values("net_pnl", ascending=False)
@@ -1124,11 +1124,12 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
                     y=strategies["net_pnl"],
                     marker_color=[_CHART_POSITIVE if value >= 0 else _CHART_NEGATIVE for value in strategies["net_pnl"]],
                     marker_line_width=0,
-                    hovertemplate=f"%{{x}}<br><b>{currency} %{{y:,.2f}}</b><extra></extra>",
+                    customdata=strategies["hover_amount"],
+                    hovertemplate="%{x}<br><b>%{customdata}</b><extra></extra>",
                 )
             )
             strategy_figure.update_layout(title=tr("Strategy P&L"))
-            st.plotly_chart(style_chart(strategy_figure, yaxis_title=currency), width="stretch", config={"displayModeBar": False})
+            st.plotly_chart(style_chart(strategy_figure, yaxis_title=currency, currency=currency), width="stretch", config={"displayModeBar": False})
 
     if chart_view == "Per trade":
         with st.container(border=True):
@@ -1143,7 +1144,7 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
                     tr("Direction"): [tr(direction_tag(value).label) for value in per_trade["direction"]],
                     tr("Outcome"): [tr(outcome_tag(value).label) for value in per_trade["net_pnl"]],
                     f"P&L ({currency})": [format_currency(value, currency) for value in per_trade["net_pnl"]],
-                    tr("Result R"): ["—" if value is None else format_signed(value, "R") for value in per_trade["result_r"]],
+                    tr("Result R"): ["—" if value is None else format_r(value) for value in per_trade["result_r"]],
                     tr("Post-close drawdown"): [format_currency(-Decimal(value), currency) for value in per_trade["drawdown"]],
                 }
             )
@@ -1156,11 +1157,11 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
             {
                 tr("Strategy"): strategies["strategy"],
                 tr("Live P&L ({currency})", currency=currency): [format_currency(value, currency) for value in strategies["net_pnl"]],
-                tr("Live total R"): ["—" if value is None else format_signed(value, "R") for value in strategies["total_r"]],
+                tr("Live total R"): ["—" if value is None else format_r(value) for value in strategies["total_r"]],
                 tr("Backtest trades"): strategies["backtest_trade_count"].fillna("—"),
-                tr("Backtest win rate"): ["—" if value is None else f"{format_number(value, 1)}%" for value in strategies["backtest_win_rate"]],
-                tr("Backtest expectancy"): ["—" if value is None else format_signed(value, "R") for value in strategies["backtest_expectancy_r"]],
-                tr("Backtest net R"): ["—" if value is None else format_signed(value, "R") for value in strategies["backtest_net_r"]],
+                tr("Backtest win rate"): ["—" if value is None else format_percent(value) for value in strategies["backtest_win_rate"]],
+                tr("Backtest expectancy"): ["—" if value is None else format_r(value) for value in strategies["backtest_expectancy_r"]],
+                tr("Backtest net R"): ["—" if value is None else format_r(value) for value in strategies["backtest_net_r"]],
             }
         )
         st.dataframe(strategy_table, hide_index=True, width="stretch")

@@ -33,6 +33,7 @@ from trading_journal.infrastructure.sqlite_repository import (
     SQLiteJournalRepository,
 )
 from trading_journal.presentation.i18n import tr
+from trading_journal.presentation.formatting import format_currency, format_percent, format_r, format_score
 from trading_journal.presentation.trade_tags import direction_tag, outcome_tag
 
 
@@ -103,7 +104,7 @@ def _account_label(account: AccountListItem) -> str:
 
 
 def _score_text(value: str | None) -> str:
-    return "—" if value is None else f"{Decimal(value):.0f}%"
+    return "—" if value is None else format_score(value)
 
 
 def _state_label(snapshot: RiskSnapshot) -> str:
@@ -271,8 +272,8 @@ def render_framework_dashboard(repo: SQLiteJournalRepository, account: AccountLi
     with st.container(horizontal=True, gap="small"):
         st.metric("Readiness", _score_text(readiness.score), tr(readiness.status.capitalize()), border=True)
         st.metric("Risk state", _state_label(snapshot), border=True)
-        st.metric("Today", "—" if snapshot.daily_r is None else f"{Decimal(snapshot.daily_r):+.2f}R", border=True)
-        st.metric("Max drawdown", "—" if snapshot.max_drawdown_percent is None else f"{Decimal(snapshot.max_drawdown_percent):.2f}%", border=True)
+        st.metric("Today", "—" if snapshot.daily_r is None else format_r(snapshot.daily_r), border=True)
+        st.metric("Max drawdown", "—" if snapshot.max_drawdown_percent is None else format_percent(snapshot.max_drawdown_percent), border=True)
     _render_score_cards(scores)
     _render_pillar_radar(scores)
     st.caption(tr(readiness.detail))
@@ -510,7 +511,7 @@ def _render_imported_execution(repo: SQLiteJournalRepository, account: AccountLi
     with st.container(horizontal=True, gap="small"):
         st.metric("Symbol", trade.symbol, border=True)
         st.metric("Positions", str(trade.position_count), border=True)
-        st.metric(f"P&L ({account.account_currency})", f"{Decimal(trade.net_pnl):+.2f}", border=True)
+        st.metric(f"P&L ({account.account_currency})", format_currency(trade.net_pnl, account.account_currency), border=True)
         st.metric("Trade score", _score_text(score.overall_score), border=True)
         st.metric("Risk evidence", _auto_risk_label(score), border=True)
     st.caption(tr("{trade} · Entry {entry} · Exit {exit}. MT5 execution data is read-only.", trade=trade.display_label, entry=_reporting_time(repo, trade.entry_time, trade.server_utc_offset_minutes), exit=_reporting_time(repo, trade.exit_time, trade.server_utc_offset_minutes)))
@@ -524,14 +525,13 @@ def _render_imported_execution(repo: SQLiteJournalRepository, account: AccountLi
                             tr("Position"): f"#{member.position_id or '—'}",
                             tr("Opened"): _reporting_time(repo, member.entry_time, member.server_utc_offset_minutes),
                             tr("Closed"): _reporting_time(repo, member.exit_time, member.server_utc_offset_minutes),
-                            "P&L": Decimal(member.net_pnl),
+                            f"P&L ({account.account_currency})": format_currency(member.net_pnl, account.account_currency),
                         }
                         for member in trade.members
                     ]
                 ),
                 hide_index=True,
                 width="stretch",
-                column_config={"P&L": st.column_config.NumberColumn(format="%.2f")},
             )
 
 
@@ -818,7 +818,7 @@ def _render_logical_trade_group_dialog(
     labels = {
         position.id: (
             f"#{position.position_id or '—'} · {position.symbol} {position.direction} · "
-            f"{Decimal(position.net_pnl):+.2f} · "
+            f"{format_currency(position.net_pnl, account.account_currency)} · "
             f"{unit_by_position_id[position.id].display_label if unit_by_position_id[position.id].is_group else 'Standalone'}"
         )
         for position in positions
@@ -1150,7 +1150,7 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
                 outcome = outcome_tag(trade.net_pnl)
                 trade_column.badge(tr(direction.label), color=direction.color, icon=direction.icon)
                 positions_column.write(", ".join(f"#{position_id}" for position_id in trade.position_ids))
-                pnl_column.write(f"{Decimal(trade.net_pnl):+.2f}")
+                pnl_column.write(format_currency(trade.net_pnl, account.account_currency))
                 pnl_column.badge(tr(outcome.label), color=outcome.color, icon=outcome.icon)
                 review_column.write(tr(review))
                 score_column.markdown(f"**{_score_text(score.overall_score)}**")
@@ -1400,9 +1400,9 @@ def _render_monitor_process(service: FrameworkService, account: AccountListItem,
 
 def _render_monitor_risk(analysis: MonitorAnalysisReport, snapshot: RiskSnapshot) -> None:
     with st.container(horizontal=True, gap="small"):
-        st.metric("Daily R", snapshot.daily_r or "—", border=True)
-        st.metric("Weekly R", snapshot.weekly_r or "—", border=True)
-        st.metric("Drawdown", "—" if snapshot.current_drawdown_percent is None else f"{snapshot.current_drawdown_percent}%", border=True)
+        st.metric("Daily R", "—" if snapshot.daily_r is None else format_r(snapshot.daily_r), border=True)
+        st.metric("Weekly R", "—" if snapshot.weekly_r is None else format_r(snapshot.weekly_r), border=True)
+        st.metric("Drawdown", "—" if snapshot.current_drawdown_percent is None else format_percent(snapshot.current_drawdown_percent), border=True)
         st.metric("Loss streak", "—" if snapshot.consecutive_losses is None else str(snapshot.consecutive_losses), border=True)
     left, right = st.columns(2)
     with left:
@@ -1423,7 +1423,7 @@ def _render_monitor_system(analysis: MonitorAnalysisReport) -> None:
     if analysis.strategies:
         frame = pd.DataFrame([{"Strategy": item.label, "Reviewed": item.count, "Process score": None if item.average_process_score is None else float(item.average_process_score), "Win rate": None if item.win_rate is None else float(item.win_rate), "Average R": None if item.average_r is None else float(item.average_r)} for item in analysis.strategies])
         st.bar_chart(frame.set_index("Strategy")[["Process score"]], width="stretch")
-        st.dataframe(frame, hide_index=True, width="stretch", column_config={"Process score": st.column_config.NumberColumn(format="%.0f"), "Win rate": st.column_config.NumberColumn(format="%.0f%%"), "Average R": st.column_config.NumberColumn(format="%+.2fR")})
+        st.dataframe(frame, hide_index=True, width="stretch", column_config={"Process score": st.column_config.NumberColumn(format="%.0f"), "Win rate": st.column_config.NumberColumn(format="%.1f%%"), "Average R": st.column_config.NumberColumn(format="%+.2fR")})
     else:
         st.caption("No reviewed strategy evidence in this period.")
     st.markdown("##### Manual-review context")
@@ -1437,7 +1437,7 @@ def _render_monitor_system(analysis: MonitorAnalysisReport) -> None:
                 continue
             frame = pd.DataFrame([{"Context": item.label, "Reviews": item.count, "Process score": item.average_process_score, "Win rate": item.win_rate, "Average R": item.average_r} for item in rows])
             st.bar_chart(frame.set_index("Context")[["Process score"]].astype(float), width="stretch")
-            st.dataframe(frame, hide_index=True, width="stretch", column_config={"Process score": st.column_config.NumberColumn(format="%.0f"), "Win rate": st.column_config.NumberColumn(format="%.0f%%"), "Average R": st.column_config.NumberColumn(format="%+.2fR")})
+            st.dataframe(frame, hide_index=True, width="stretch", column_config={"Process score": st.column_config.NumberColumn(format="%.0f"), "Win rate": st.column_config.NumberColumn(format="%.1f%%"), "Average R": st.column_config.NumberColumn(format="%+.2fR")})
 
 
 def _render_framework_focus(repo: SQLiteJournalRepository, account: AccountListItem, service: FrameworkService, scores: tuple[PillarScore, ...]) -> None:
