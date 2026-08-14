@@ -18,10 +18,10 @@ jobs:
         include:
           - name: Windows
             runner: windows-latest
-            executable: .\dist\TradingJournal\TradingJournal.exe
+            executable: .\dist\TradeCompass\TradeCompass.exe
           - name: Linux
             runner: ubuntu-latest
-            executable: ./dist/TradingJournal/TradingJournal
+            executable: ./dist/TradeCompass/TradeCompass
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
