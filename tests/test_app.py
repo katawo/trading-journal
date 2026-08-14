@@ -456,6 +456,325 @@ def test_language_selection_persists_and_loads_the_vietnamese_guide(monkeypatch,
     assert "Vận hành nhật ký giao dịch ba trụ cột" in guide
 
 
+def test_review_tab_surfaces_the_last_saved_periods_priority_action(monkeypatch, tmp_path):
+    database_path = tmp_path / "journal.db"
+    repository = SQLiteJournalRepository(database_path)
+    repository.initialize()
+    repository.configure_journal(reporting_time_basis="utc")
+    repository.register_mt5_account(
+        display_name="Primary",
+        login="123456",
+        broker_server="DemoBroker-Live",
+        account_currency="USD",
+        export_file_path="",
+    )
+    account = repository.find_active_mt5_account("123456", "DemoBroker-Live")
+    assert account is not None
+    repository.upsert_mt5_positions(
+        account.id,
+        [
+            MT5PositionExport(
+                schema_version=5,
+                account_login="123456",
+                broker_server="DemoBroker-Live",
+                account_currency="USD",
+                position_id="9010",
+                symbol="XAUUSD",
+                direction="long",
+                entry_time="2026-08-10T08:00:00+00:00",
+                exit_time="2026-08-10T09:00:00+00:00",
+                entry_price="3300",
+                exit_price="3320",
+                volume="0.1",
+                gross_pnl="20",
+                commission="0",
+                swap="0",
+                fees="0",
+                net_pnl="20",
+            )
+        ],
+        "positions.csv",
+        "focus-banner-test",
+    )
+    repository.save_framework_period_review(
+        account_id=account.id,
+        cadence="weekly",
+        period_start="2026-08-03",
+        period_end="2026-08-09",
+        psychology_score="100",
+        risk_score="100",
+        system_score="100",
+        readiness_score="100",
+        alert_codes=(),
+        recurring_issues=(),
+        review_note="Clean week.",
+        priority_action="Wait for the written setup before entering.",
+    )
+    monkeypatch.setenv("TRADING_JOURNAL_DB", str(database_path))
+
+    app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
+    app.switch_page("app_pages/framework.py").run()
+
+    assert not app.exception
+    assert any("Wait for the written setup before entering." in item.value for item in app.info)
+
+
+def test_monitor_tab_shows_early_estimate_not_incomplete_for_a_partial_sample(monkeypatch, tmp_path):
+    # A reviewed trade with no saved period review triggers a real "review due"
+    # alert, which needs a live session for its bidi component — see the
+    # identical note on the Caution-cap test below.
+    monkeypatch.setattr("trading_journal.presentation.global_alert_bubble.render_global_alert_bubble", lambda **kwargs: None)
+    database_path = tmp_path / "journal.db"
+    repository = SQLiteJournalRepository(database_path)
+    repository.initialize()
+    repository.configure_journal(reporting_time_basis="utc")
+    repository.register_mt5_account(
+        display_name="Primary",
+        login="123456",
+        broker_server="DemoBroker-Live",
+        account_currency="USD",
+        export_file_path="",
+    )
+    account = repository.find_active_mt5_account("123456", "DemoBroker-Live")
+    assert account is not None
+    strategy = repository.save_strategy_profile(
+        name="Trend continuation",
+        description=None,
+        backtest_start_date=None,
+        backtest_end_date=None,
+        backtest_trade_count=None,
+        backtest_win_rate=None,
+        backtest_expectancy_r=None,
+        backtest_net_r=None,
+        backtest_notes=None,
+    )
+    all_pass = {
+        "rule_adherence": "pass", "impulse_control": "pass", "emotional_control": "pass", "patience_discipline": "pass",
+        "policy_adherence": "pass", "position_size_accuracy": "pass", "stop_discipline": "pass", "exposure_limit_compliance": "pass",
+        "setup_validity": "pass", "context_alignment": "pass", "entry_fidelity": "pass", "invalidation_fidelity": "pass", "management_exit_fidelity": "pass",
+    }
+    repository.upsert_mt5_positions(
+        account.id,
+        [
+            MT5PositionExport(
+                schema_version=5,
+                account_login="123456",
+                broker_server="DemoBroker-Live",
+                account_currency="USD",
+                position_id="9010",
+                symbol="XAUUSD",
+                direction="long",
+                entry_time="2026-08-10T08:00:00+00:00",
+                exit_time="2026-08-10T09:00:00+00:00",
+                entry_price="3300",
+                exit_price="3320",
+                volume="0.1",
+                gross_pnl="20",
+                commission="0",
+                swap="0",
+                fees="0",
+                net_pnl="20",
+            )
+        ],
+        "positions.csv",
+        "early-estimate-test",
+    )
+    trade = repository.list_closed_trades_for_review(account.id)[0]
+    repository.save_post_trade_assessment(
+        account_id=account.id,
+        trade_id=trade.id,
+        risk_policy_id=None,
+        strategy_profile_id=strategy.id,
+        criterion_grades=all_pass,
+        violation_codes=(),
+        hard_rule_codes=(),
+        declared_actual_risk_amount=None,
+        post_review_note="Reviewed independently of trade P&L.",
+        corrective_action=None,
+    )
+    monkeypatch.setenv("TRADING_JOURNAL_DB", str(database_path))
+
+    app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
+    app.switch_page("app_pages/framework.py").run()
+    app.session_state["framework-tab"] = "Monitor"
+    app.run()
+
+    assert not app.exception
+    psychology = next(m for m in app.metric if m.label == "Psychology")
+    assert psychology.value == "100%"
+    assert "Early estimate" in psychology.delta
+    assert "Incomplete" not in psychology.delta
+
+
+def test_monitor_tab_explains_why_a_pillar_is_capped(monkeypatch, tmp_path):
+    # This scenario deliberately scores a pillar below 70, which triggers the
+    # cross-account alert bubble's real bidi-component render path — a path
+    # AppTest's bare execution mode doesn't support outside of a live session.
+    # This test is about the Monitor tab's own caption, not the alert bubble.
+    monkeypatch.setattr("trading_journal.presentation.global_alert_bubble.render_global_alert_bubble", lambda **kwargs: None)
+    database_path = tmp_path / "journal.db"
+    repository = SQLiteJournalRepository(database_path)
+    repository.initialize()
+    repository.configure_journal(reporting_time_basis="utc")
+    repository.register_mt5_account(
+        display_name="Primary",
+        login="123456",
+        broker_server="DemoBroker-Live",
+        account_currency="USD",
+        export_file_path="",
+    )
+    account = repository.find_active_mt5_account("123456", "DemoBroker-Live")
+    assert account is not None
+    strategy = repository.save_strategy_profile(
+        name="Trend continuation",
+        description=None,
+        backtest_start_date=None,
+        backtest_end_date=None,
+        backtest_trade_count=None,
+        backtest_win_rate=None,
+        backtest_expectancy_r=None,
+        backtest_net_r=None,
+        backtest_notes=None,
+    )
+    all_pass = {
+        "rule_adherence": "pass", "impulse_control": "pass", "emotional_control": "pass", "patience_discipline": "pass",
+        "policy_adherence": "pass", "position_size_accuracy": "pass", "stop_discipline": "pass", "exposure_limit_compliance": "pass",
+        "setup_validity": "pass", "context_alignment": "pass", "entry_fidelity": "pass", "invalidation_fidelity": "pass", "management_exit_fidelity": "pass",
+    }
+    for index in range(2):
+        repository.upsert_mt5_positions(
+            account.id,
+            [
+                MT5PositionExport(
+                    schema_version=5,
+                    account_login="123456",
+                    broker_server="DemoBroker-Live",
+                    account_currency="USD",
+                    position_id=f"cap-{index}",
+                    symbol="XAUUSD",
+                    direction="long",
+                    entry_time=f"2026-08-{index + 3:02d}T08:00:00+00:00",
+                    exit_time=f"2026-08-{index + 3:02d}T09:00:00+00:00",
+                    entry_price="3300",
+                    exit_price="3320",
+                    volume="0.1",
+                    gross_pnl="20",
+                    commission="0",
+                    swap="0",
+                    fees="0",
+                    net_pnl="20",
+                )
+            ],
+            "positions.csv",
+            f"caution-cap-test-{index}",
+        )
+        trade = next(item for item in repository.list_closed_trades_for_review(account.id) if item.position_id == f"cap-{index}")
+        repository.save_post_trade_assessment(
+            account_id=account.id,
+            trade_id=trade.id,
+            risk_policy_id=None,
+            strategy_profile_id=strategy.id,
+            criterion_grades=all_pass,
+            violation_codes=("revenge",),
+            hard_rule_codes=(),
+            declared_actual_risk_amount=None,
+            post_review_note="Reviewed independently of trade P&L.",
+            corrective_action="Step away after a loss before re-entering.",
+        )
+    monkeypatch.setenv("TRADING_JOURNAL_DB", str(database_path))
+
+    app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
+    app.switch_page("app_pages/framework.py").run()
+    app.session_state["framework-tab"] = "Monitor"
+    app.run()
+
+    assert not app.exception
+    assert any("cap this pillar at 59" in item.value for item in app.caption)
+
+
+def test_register_flags_the_specific_hard_blocked_pillar(monkeypatch, tmp_path):
+    # A hard-rule failure triggers a real cross-account alert, which needs a live
+    # session for its bidi component — see the identical note above.
+    monkeypatch.setattr("trading_journal.presentation.global_alert_bubble.render_global_alert_bubble", lambda **kwargs: None)
+    database_path = tmp_path / "journal.db"
+    repository = SQLiteJournalRepository(database_path)
+    repository.initialize()
+    repository.configure_journal(reporting_time_basis="utc")
+    repository.register_mt5_account(
+        display_name="Primary",
+        login="123456",
+        broker_server="DemoBroker-Live",
+        account_currency="USD",
+        export_file_path="",
+    )
+    account = repository.find_active_mt5_account("123456", "DemoBroker-Live")
+    assert account is not None
+    strategy = repository.save_strategy_profile(
+        name="Trend continuation",
+        description=None,
+        backtest_start_date=None,
+        backtest_end_date=None,
+        backtest_trade_count=None,
+        backtest_win_rate=None,
+        backtest_expectancy_r=None,
+        backtest_net_r=None,
+        backtest_notes=None,
+    )
+    all_pass = {
+        "rule_adherence": "pass", "impulse_control": "pass", "emotional_control": "pass", "patience_discipline": "pass",
+        "policy_adherence": "pass", "position_size_accuracy": "pass", "stop_discipline": "pass", "exposure_limit_compliance": "pass",
+        "setup_validity": "pass", "context_alignment": "pass", "entry_fidelity": "pass", "invalidation_fidelity": "pass", "management_exit_fidelity": "pass",
+    }
+    repository.upsert_mt5_positions(
+        account.id,
+        [
+            MT5PositionExport(
+                schema_version=5,
+                account_login="123456",
+                broker_server="DemoBroker-Live",
+                account_currency="USD",
+                position_id="9010",
+                symbol="XAUUSD",
+                direction="long",
+                entry_time="2026-08-10T08:00:00+00:00",
+                exit_time="2026-08-10T09:00:00+00:00",
+                entry_price="3300",
+                exit_price="3320",
+                volume="0.1",
+                gross_pnl="20",
+                commission="0",
+                swap="0",
+                fees="0",
+                net_pnl="20",
+            )
+        ],
+        "positions.csv",
+        "hard-block-flag-test",
+    )
+    trade = repository.list_closed_trades_for_review(account.id)[0]
+    repository.save_post_trade_assessment(
+        account_id=account.id,
+        trade_id=trade.id,
+        risk_policy_id=None,
+        strategy_profile_id=strategy.id,
+        criterion_grades=all_pass,
+        violation_codes=("stop_widened",),
+        hard_rule_codes=("stop_widened",),
+        declared_actual_risk_amount=None,
+        post_review_note="Reviewed independently of trade P&L.",
+        corrective_action="Do not widen stops.",
+    )
+    monkeypatch.setenv("TRADING_JOURNAL_DB", str(database_path))
+
+    app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
+    app.switch_page("app_pages/framework.py").run()
+    next(item for item in app.segmented_control if item.label == "Review status").set_value("all").run()
+
+    assert not app.exception
+    assert any("R 100% ⚠" in item.value for item in app.caption)
+    assert any("This overrides the numeric score above" in item.value for item in app.caption)
+
+
 def test_framework_renders_a_filtered_review_register(monkeypatch, tmp_path):
     database_path = tmp_path / "journal.db"
     repository = SQLiteJournalRepository(database_path)
@@ -570,7 +889,7 @@ def test_framework_renders_a_filtered_review_register(monkeypatch, tmp_path):
 
     next(item for item in app.checkbox if item.label == "Show failed only").set_value(True).run()
 
-    assert any("No reviewed failed trades" in item.value for item in app.info)
+    assert any("No reviewed (failed) trades" in item.value for item in app.info)
 
 
 def test_approving_within_policy_evidence_moves_the_trade_from_auto_reviewed_to_reviewed(monkeypatch, tmp_path):
@@ -644,6 +963,79 @@ def test_approving_within_policy_evidence_moves_the_trade_from_auto_reviewed_to_
     active = repository.list_active_post_trade_assessments(account.id)[0]
     assert active.method == "auto"
     assert active.risk_policy_state == "within_policy"
+
+
+def test_bulk_approving_all_visible_within_policy_trades(monkeypatch, tmp_path):
+    database_path = tmp_path / "journal.db"
+    repository = SQLiteJournalRepository(database_path)
+    repository.initialize()
+    repository.configure_journal(reporting_time_basis="utc")
+    repository.register_mt5_account(
+        display_name="Primary",
+        login="123456",
+        broker_server="DemoBroker-Live",
+        account_currency="USD",
+        export_file_path="",
+    )
+    account = repository.find_active_mt5_account("123456", "DemoBroker-Live")
+    assert account is not None
+    repository.save_account_risk_policy(
+        account_id=account.id,
+        standard_risk_per_trade_percent="1",
+        maximum_risk_per_trade_percent="1",
+        daily_loss_limit_r="2",
+        weekly_loss_limit_r="4",
+        max_drawdown_percent="10",
+        max_open_risk_r="1",
+        max_consecutive_losses=3,
+        minimum_rr="1.5",
+        correlation_policy=None,
+        starting_balance="1000",
+    )
+    repository.upsert_mt5_positions(
+        account.id,
+        [
+            MT5PositionExport(
+                schema_version=5,
+                account_login="123456",
+                broker_server="DemoBroker-Live",
+                account_currency="USD",
+                position_id=position_id,
+                symbol="XAUUSD",
+                direction="long",
+                entry_time="2026-08-10T08:00:00+00:00",
+                exit_time="2026-08-10T09:00:00+00:00",
+                entry_price="3300",
+                exit_price="3320",
+                volume="0.1",
+                gross_pnl="20",
+                commission="0",
+                swap="0",
+                fees="0",
+                net_pnl="20",
+                initial_risk_amount="5",
+                entry_stop_price="3280",
+            )
+            for position_id in ("9010", "9011")
+        ],
+        "positions.csv",
+        "bulk-approve-test",
+    )
+    monkeypatch.setenv("TRADING_JOURNAL_DB", str(database_path))
+
+    app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
+    app.switch_page("app_pages/framework.py").run()
+    next(item for item in app.segmented_control if item.label == "Review status").set_value("auto_reviewed").run()
+
+    review_filter = next(item for item in app.segmented_control if item.label == "Review status")
+    assert review_filter.options == ["Requires review (0)", "Auto-reviewed (2)", "Reviewed (0)", "All (2)"]
+    next(item for item in app.button if item.label == "Approve all visible within-policy (2)").click().run()
+
+    assert not app.exception
+    active = repository.list_active_post_trade_assessments(account.id)
+    assert len(active) == 2
+    assert all(item.method == "auto" and item.risk_policy_state == "within_policy" for item in active)
+    assert any("No auto-reviewed trades" in item.value for item in app.info)
 
 
 def test_reopening_review_after_upgrading_an_auto_review_does_not_crash(monkeypatch, tmp_path):
@@ -731,6 +1123,65 @@ def test_reopening_review_after_upgrading_an_auto_review_does_not_crash(monkeypa
 
     assert not app.exception
     assert any("Assessment history" in item.label for item in app.expander)
+
+
+def test_save_and_review_next_skips_a_stale_queue_entry_instead_of_dropping_the_queue(monkeypatch, tmp_path):
+    database_path = tmp_path / "journal.db"
+    repository = SQLiteJournalRepository(database_path)
+    repository.initialize()
+    repository.configure_journal(reporting_time_basis="utc")
+    repository.register_mt5_account(
+        display_name="Primary",
+        login="123456",
+        broker_server="DemoBroker-Live",
+        account_currency="USD",
+        export_file_path="",
+    )
+    account = repository.find_active_mt5_account("123456", "DemoBroker-Live")
+    assert account is not None
+    repository.upsert_mt5_positions(
+        account.id,
+        [
+            MT5PositionExport(
+                schema_version=5,
+                account_login="123456",
+                broker_server="DemoBroker-Live",
+                account_currency="USD",
+                position_id=position_id,
+                symbol="XAUUSD",
+                direction="long",
+                entry_time="2026-08-10T08:00:00+00:00",
+                exit_time="2026-08-10T09:00:00+00:00",
+                entry_price="3300",
+                exit_price="3320",
+                volume="0.1",
+                gross_pnl="20",
+                commission="0",
+                swap="0",
+                fees="0",
+                net_pnl="20",
+            )
+            for position_id in ("stale-queue-1", "stale-queue-2")
+        ],
+        "positions.csv",
+        "stale-queue-test",
+    )
+    real_trade_id = next(
+        item.id for item in repository.list_closed_trades_for_review(account.id) if item.position_id == "stale-queue-2"
+    )
+    monkeypatch.setenv("TRADING_JOURNAL_DB", str(database_path))
+
+    app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
+    app.switch_page("app_pages/framework.py").run()
+    stale_trade_id = 999999
+    app.session_state["post-trade-review-trade-id"] = stale_trade_id
+    app.session_state["post-trade-review-queue"] = (real_trade_id,)
+    app.run()
+
+    assert not app.exception
+    assert app.session_state["post-trade-review-trade-id"] == real_trade_id
+    assert app.session_state["post-trade-review-queue"] == ()
+    assert any(item.label == "What happened and what did you learn? *" for item in app.text_area)
 
 
 def test_framework_groups_positions_through_a_confirmation_step(monkeypatch, tmp_path):

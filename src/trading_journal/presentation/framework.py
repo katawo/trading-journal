@@ -76,6 +76,21 @@ AUTOMATIC_RISK_EVENT_LABELS = {
     "drawdown_limit": "Maximum drawdown limit",
     "loss_streak": "Maximum losing-streak limit",
 }
+COMPONENT_DEFINITIONS = {
+    "Rule adherence": "Average reviewed Rule adherence grade.",
+    "Impulse control": "Average reviewed Impulse control grade.",
+    "Emotional control": "Average reviewed Emotional control grade.",
+    "Post-loss discipline": "The next reviewed trade after a loss across all active accounts: its Impulse control grade, or 0 when tagged post_loss_reset. 100 when the sample has no eligible post-loss sequence.",
+    "Policy adherence": "Average reviewed Policy adherence grade.",
+    "Stop discipline": "Average reviewed Stop discipline grade.",
+    "Limit compliance": "100 for a reviewed trade with no historical daily/weekly/drawdown/streak event; 0 when an event occurred.",
+    "Exposure control": "Average reviewed Exposure-limit compliance grade.",
+    "Setup validity": "Average reviewed Setup validity grade.",
+    "Execution fidelity": "Average of Entry, Invalidation, and Management/exit grades.",
+    "Context alignment": "Average reviewed Context alignment grade.",
+    "Evidence quality": "100 when the attached strategy is documented with 100 or more backtest trades; 50 when documented with fewer; otherwise 0.",
+    "Edge evidence": "100 for 100 or more backtest trades with positive expectancy after costs; 50 for 50 or more; otherwise 0.",
+}
 
 
 def _account_label(account: AccountListItem) -> str:
@@ -87,7 +102,11 @@ def _score_text(value: str | None) -> str:
 
 
 def _state_label(snapshot: RiskSnapshot) -> str:
-    return tr({"clear": "Clear", "caution": "Caution", "stop": "Stop", "unconfigured": "Set up"}[snapshot.state])
+    # "Elevated," not "Caution" — a pillar's rolling score can independently show
+    # "Caution" (capped by repeated critical violations) at the same time this
+    # metric is visible; reusing the same word for two unrelated states would
+    # collide on screen.
+    return tr({"clear": "Clear", "caution": "Elevated", "stop": "Stop", "unconfigured": "Set up"}[snapshot.state])
 
 
 def _auto_risk_label(score: TradeProcessScore) -> str:
@@ -138,7 +157,10 @@ def _process_failure_detail(score: TradeProcessScore) -> str | None:
         HARD_RULE_LABELS.get(code, code.replace("_", " ").capitalize())
         for code in score.hard_rule_codes
     ]
-    return tr("Process failed — hard-rule event: {events}", events=", ".join(tr(item) for item in (assessed_hard_rules or ["recorded"])))
+    return tr(
+        "Process failed — hard-rule event: {events}. This overrides the numeric score above; the pillar(s) it affects show FAIL regardless of their percentage.",
+        events=", ".join(tr(item) for item in (assessed_hard_rules or ["recorded"])),
+    )
 
 
 def _automatic_risk_monitoring_detail(score: TradeProcessScore) -> str | None:
@@ -167,16 +189,43 @@ def _reporting_time(repo: SQLiteJournalRepository, value: str, server_utc_offset
 
 
 def _render_score_cards(scores: tuple[PillarScore, ...]) -> None:
-    with st.container(horizontal=True, gap="small"):
-        for score in scores:
-            label = "FAIL" if score.hard_block else "Incomplete" if score.score is None else score.status.capitalize()
-            st.metric(tr(PILLAR_NAMES[score.pillar]), _score_text(score.score), tr("{label} · {count} in sample", label=tr(label), count=score.sample_size), border=True)
+    for column, score in zip(st.columns(len(scores), gap="small"), scores, strict=True):
+        if score.hard_block:
+            label = "FAIL"
+        elif score.score is None:
+            label = "Incomplete"
+        elif score.status == "incomplete":
+            # A live percentage next to the literal word "Incomplete" reads as
+            # self-contradictory — this is a partial-sample early read, not the
+            # same "no evidence yet" state as score.score is None.
+            label = "Early estimate"
+        else:
+            label = score.status.capitalize()
+        column.metric(tr(PILLAR_NAMES[score.pillar]), _score_text(score.score), tr("{label} · {count} in sample", label=tr(label), count=score.sample_size), border=True)
+        if score.status != "ready":
+            column.caption(tr(score.detail))
 
 
 def _render_pillar_radar(scores: tuple[PillarScore, ...]) -> None:
     labels = [tr(PILLAR_NAMES[score.pillar]) for score in scores]
     values = [float(Decimal(score.score)) if score.score is not None else 0.0 for score in scores]
-    figure = go.Figure(go.Scatterpolar(r=values + values[:1], theta=labels + labels[:1], fill="toself"))
+    # A hard-blocked pillar's score is not capped (only Caution caps at 59), so its
+    # vertex can otherwise look just as healthy as a clean pillar. A Caution-capped
+    # pillar has the same problem — 59% renders identically whether it's a genuine
+    # score or a cap. Mark both distinctly so the chart never visually contradicts
+    # the status shown on its card.
+    blocked = [score.hard_block for score in scores]
+    capped = [score.status == "caution" and not score.hard_block for score in scores]
+    marker_colors = ["#d62728" if is_blocked else "#ffa15a" if is_capped else "#636efa" for is_blocked, is_capped in zip(blocked, capped, strict=True)]
+    marker_symbols = ["x" if is_blocked else "diamond" if is_capped else "circle" for is_blocked, is_capped in zip(blocked, capped, strict=True)]
+    figure = go.Figure(
+        go.Scatterpolar(
+            r=values + values[:1],
+            theta=labels + labels[:1],
+            fill="toself",
+            marker=dict(color=marker_colors + marker_colors[:1], symbol=marker_symbols + marker_symbols[:1], size=10),
+        )
+    )
     figure.update_layout(
         height=260,
         margin=dict(l=24, r=24, t=24, b=24),
@@ -185,7 +234,15 @@ def _render_pillar_radar(scores: tuple[PillarScore, ...]) -> None:
         polar=dict(radialaxis=dict(range=[0, 100], showticklabels=True, ticksuffix="%"), bgcolor="rgba(0,0,0,0)"),
     )
     st.plotly_chart(figure, width="stretch", config={"displayModeBar": False})
-    if any(score.score is None for score in scores):
+    sample_line = "  ·  ".join(f"{tr(PILLAR_NAMES[score.pillar])} {score.sample_size}" for score in scores)
+    st.caption(tr("Sample size: {sample_line}", sample_line=sample_line))
+    if any(blocked) and any(capped):
+        st.caption("Pillars marked ✕ in red have an active hard-rule failure; pillars marked ◆ in amber are capped by repeated critical violations — neither score reflects readiness.")
+    elif any(blocked):
+        st.caption("Pillars marked ✕ in red have an active hard-rule failure — their score does not reflect readiness.")
+    elif any(capped):
+        st.caption("Pillars marked ◆ in amber are capped at 59 by repeated critical violations — see the detail below the score card.")
+    elif any(score.score is None for score in scores):
         st.caption("Pillars without a scored sample yet show as 0 on this chart.")
 
 
@@ -204,9 +261,10 @@ def render_framework_dashboard(repo: SQLiteJournalRepository, account: AccountLi
     readiness = service.readiness(account.id)
     st.markdown("#### Three-pillar monitor")
     st.caption(tr("Psychology and System are trader-wide. Risk is scoped to {account}.", account=_account_label(account)))
+    st.caption(tr("This compact view always uses a fixed 20-trade window. Open Bearings → Monitor to adjust the rolling sample."))
     _render_risk_configuration_notice(service, account.id)
     with st.container(horizontal=True, gap="small"):
-        st.metric("Readiness", _score_text(readiness.score), readiness.status.capitalize(), border=True)
+        st.metric("Readiness", _score_text(readiness.score), tr(readiness.status.capitalize()), border=True)
         st.metric("Risk state", _state_label(snapshot), border=True)
         st.metric("Today", "—" if snapshot.daily_r is None else f"{Decimal(snapshot.daily_r):+.2f}R", border=True)
         st.metric("Max drawdown", "—" if snapshot.max_drawdown_percent is None else f"{Decimal(snapshot.max_drawdown_percent):.2f}%", border=True)
@@ -253,6 +311,18 @@ def _render_post_trade_review(repo: SQLiteJournalRepository, account: AccountLis
     score_items = service.trade_process_scores(account.id)
     snapshot = service.risk_snapshot(account.id)
     st.caption(f"{tr('Risk state:')} {_state_label(snapshot)} · {tr(snapshot.message)}")
+    recent_period_reviews = repo.list_framework_period_reviews(account.id)
+    if recent_period_reviews:
+        latest_period_review = recent_period_reviews[0]
+        st.info(
+            tr(
+                "Focus from your last {cadence} ({period_end}): {action}",
+                cadence=tr(f"{latest_period_review.cadence.capitalize()} review"),
+                period_end=latest_period_review.period_end,
+                action=latest_period_review.priority_action,
+            ),
+            icon=":material/flag:",
+        )
     trade_scores = {item.trade_id: item for item in score_items}
     _render_review_register(repo, account, trades, trade_scores, profiles)
 
@@ -519,7 +589,14 @@ def _render_post_trade_review_dialog(repo: SQLiteJournalRepository, account: Acc
             help="Overrides automatic evidence for this logical trade's policy comparison. It does not rewrite immutable MT5 position history or account-limit monitoring.",
         )
         if policy is not None:
-            st.caption(f"Risk policy v{policy.version}: Standard 1R {policy.standard_risk_per_trade_percent}% · maximum {policy.maximum_risk_per_trade_percent}%.")
+            st.caption(
+                tr(
+                    "Risk policy v{version}: Standard 1R {standard}% · maximum {maximum}%.",
+                    version=policy.version,
+                    standard=policy.standard_risk_per_trade_percent,
+                    maximum=policy.maximum_risk_per_trade_percent,
+                )
+            )
         else:
             st.caption("No active Risk policy is attached; the assessment still records your judgement, while automatic limit checks remain unavailable.")
         violation_codes = st.multiselect(
@@ -593,14 +670,16 @@ def _render_review_history(repo: SQLiteJournalRepository, account_id: int, trade
         for revision in revisions:
             failed = sum(value == "fail" for value in revision.criterion_grades.values())
             strategy_label = revision.strategy_snapshot.name if revision.strategy_snapshot is not None else tr("Auto-approved")
-            st.markdown(f"**Version {revision.version}** · {revision.archived_at[:19]} · {strategy_label}")
-            st.caption(f"{failed} failed criterion/criteria · Hard rules: {', '.join(revision.hard_rule_codes) or 'none'}")
+            st.markdown(f"**{tr('Version {version}', version=revision.version)}** · {revision.archived_at[:19]} · {strategy_label}")
+            hard_rule_text = ", ".join(tr(HARD_RULE_LABELS.get(code, code)) for code in revision.hard_rule_codes) or tr("none")
+            st.caption(tr("{failed} failed criterion/criteria · Hard rules: {hard_rules}", failed=failed, hard_rules=hard_rule_text))
             if revision.post_review_note:
                 st.write(revision.post_review_note)
         for assessment in superseded:
             positions = ", ".join(f"#{position_id}" for position_id in assessment.assessed_position_ids)
-            st.markdown(f"**Superseded assessment** · {assessment.superseded_at[:19] if assessment.superseded_at else '—'} · {assessment.assessed_trade_label}")
-            st.caption(f"Assessed {positions} · {assessment.superseded_reason or 'Logical-trade membership changed'}")
+            st.markdown(f"**{tr('Superseded assessment')}** · {assessment.superseded_at[:19] if assessment.superseded_at else '—'} · {assessment.assessed_trade_label}")
+            reason = tr(assessment.superseded_reason) if assessment.superseded_reason else tr("Logical-trade membership changed")
+            st.caption(tr("Assessed {positions} · {reason}", positions=positions, reason=reason))
             if assessment.post_review_note:
                 st.write(assessment.post_review_note)
 
@@ -716,9 +795,14 @@ def _render_logical_trade_regroup_confirmation(repo: SQLiteJournalRepository, ac
     else:
         st.warning("This will apply the selected current membership to the logical trade.")
     if count:
-        st.error(f"{count} saved assessment(s) will be superseded and removed from active scores, reports, alerts, and roadmap evidence. Each resulting logical trade needs a new review.")
+        st.error(
+            tr(
+                "{count} saved assessment(s) will be superseded and removed from active scores, reports, alerts, and roadmap evidence. Each resulting logical trade needs a new review.",
+                count=count,
+            )
+        )
         for label in confirmation["affected_assessment_labels"]:
-            st.caption(f"Supersede: {label}")
+            st.caption(tr("Supersede: {label}", label=label))
     else:
         st.caption("No active saved assessment is affected. Dashboard reporting will recalculate from the new grouping.")
     with st.container(horizontal=True, gap="small"):
@@ -781,7 +865,7 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
         "manual_reviewed": "Reviewed",
         "all": "All",
     }
-    filter_labels = {key: f"{filter_names[key]} ({len(items)})" for key, items in groups.items()}
+    filter_labels = {key: f"{tr(filter_names[key])} ({len(items)})" for key, items in groups.items()}
     filter_value = st.segmented_control(
         "Review status", list(groups),
         format_func=filter_labels.get,
@@ -826,6 +910,38 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
             on_click=_clear_logical_trade_selection,
             args=(account.id,),
         )
+        bulk_approve = (
+            st.button(
+                tr("Approve all visible within-policy ({count})", count=len(visible)),
+                key=f"bulk-approve-auto-review-{account.id}",
+                icon=":material/done_all:",
+                help="Approve every within-policy auto-review trade currently shown by this filter, one click for all of them.",
+            )
+            if selected_group == "auto_reviewed" and visible
+            else False
+        )
+    if bulk_approve:
+        approved_count = 0
+        skipped_count = 0
+        with st.spinner(tr("Saving…")):
+            for trade, score in visible:
+                try:
+                    repo.approve_auto_review(
+                        account_id=account.id, trade_id=trade.id, risk_policy_id=active_policy.id if active_policy else None,
+                        risk_evidence_source=score.risk_evidence_source,
+                        risk_policy_state=score.risk_policy_state,
+                        actual_risk_amount=score.actual_risk_amount,
+                        criterion_grades=FrameworkService._automatic_review_grades(score.risk_policy_state),
+                    )
+                    approved_count += 1
+                except ValueError:
+                    skipped_count += 1
+        message = tr("Approved {count} within-policy trade(s).", count=approved_count)
+        if skipped_count:
+            message += " " + tr("{count} could not be approved and were skipped.", count=skipped_count)
+        st.session_state["post-trade-review-notice"] = message
+        st.toast(message)
+        st.rerun()
     if create:
         st.session_state["logical-trade-group-editor"] = {
             "account_id": account.id,
@@ -857,10 +973,14 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
             args=(account.id, 1, page_count),
         )
     if not visible:
-        qualifier = " failed" if failed_only else ""
-        st.info(f"No {filter_names[selected_group].casefold()}{qualifier} trades for this account.")
+        status_text = tr(filter_names[selected_group]).casefold()
+        if failed_only:
+            st.info(tr("No {status} ({qualifier}) trades for this account.", status=status_text, qualifier=tr("failed")))
+        else:
+            st.info(tr("No {status} trades for this account.", status=status_text))
     else:
-        st.caption("P = Psychology · R = Risk management · S = Trading system")
+        st.caption("P = Psychology · R = Risk management · S = Trading system. This is each trade's own 13-criterion score — the Monitor tab's rolling pillar scores use a different calculation and can show a different number.")
+        st.caption("Classification below: first word = process quality (Good/Needs improvement/Bad), second word = P&L outcome (Win/Loss/Breakeven) — independent of each other.")
         position_by_id = {trade.id: index for index, (trade, _) in enumerate(visible)}
         start = (current_page - 1) * REVIEW_PAGE_SIZE
         page_items = visible[start : start + REVIEW_PAGE_SIZE]
@@ -902,10 +1022,13 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
                 pnl_column.write(f"{Decimal(trade.net_pnl):+.2f}")
                 review_column.write(tr(review))
                 score_column.markdown(f"**{_score_text(score.overall_score)}**")
+                psychology_flag = " ⚠" if score.psychology_hard_block else ""
+                risk_flag = " ⚠" if score.risk_hard_block else ""
+                system_flag = " ⚠" if score.system_hard_block else ""
                 score_column.caption(
-                    f"P {_score_text(score.psychology_score)}  \n"
-                    f"R {_score_text(score.risk_score)}  \n"
-                    f"S {_score_text(score.system_score)}"
+                    f"P {_score_text(score.psychology_score)}{psychology_flag}  \n"
+                    f"R {_score_text(score.risk_score)}{risk_flag}  \n"
+                    f"S {_score_text(score.system_score)}{system_flag}"
                 )
                 if score.process_status == "FAIL":
                     process_column.badge(tr("Fail"), icon=":material/error:", color="red")
@@ -987,7 +1110,20 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
     selected = st.session_state.get("post-trade-review-trade-id")
     if selected is None:
         return
+    skipped_stale = False
     item = next(((trade, score) for trade, score in [(trade, scores[trade.id]) for trade in ordered] if trade.id == selected), None)
+    while item is None and selected is not None:
+        # The queued trade's logical-trade membership changed (regroup/disband) mid-session.
+        # Skip past it instead of silently discarding the rest of the review queue.
+        skipped_stale = True
+        queue = tuple(st.session_state.get("post-trade-review-queue", ()))
+        selected, remaining = _advance_review_queue(queue)
+        st.session_state["post-trade-review-trade-id"] = selected
+        st.session_state["post-trade-review-queue"] = remaining
+        if selected is not None:
+            item = next(((trade, score) for trade, score in [(trade, scores[trade.id]) for trade in ordered] if trade.id == selected), None)
+    if skipped_stale:
+        st.toast(tr("A queued trade could no longer be reviewed (its logical trade changed) and was skipped."))
     if item is None:
         _clear_review_dialog()
         return
@@ -997,11 +1133,19 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
 def _render_monitor(repo: SQLiteJournalRepository, account: AccountListItem) -> None:
     service = FrameworkService(repo)
     st.markdown("#### Monitoring")
+    st.caption(tr("Psychology and System are trader-wide. Risk is scoped to {account}.", account=_account_label(account)))
     _render_risk_configuration_notice(service, account.id)
     window = st.slider(tr("Rolling sample"), min_value=10, max_value=100, value=20, step=5, key=f"framework-window-{account.id}")
+    critical_threshold = repo.get_framework_rule_settings().repeated_critical_threshold
+    st.caption(
+        tr(
+            "Caution triggers after {threshold} repeated critical violations within this window — a smaller window reaches that count sooner.",
+            threshold=critical_threshold,
+        )
+    )
     scores = service.pillar_scores(account.id, window=int(window))
     readiness = service.readiness(account.id, window=int(window))
-    st.metric("Overall readiness", _score_text(readiness.score), readiness.status.capitalize(), border=True)
+    st.metric("Readiness", _score_text(readiness.score), tr(readiness.status.capitalize()), border=True)
     st.caption(readiness.detail)
     _render_score_cards(scores)
     _render_pillar_radar(scores)
@@ -1012,18 +1156,28 @@ def _render_monitor(repo: SQLiteJournalRepository, account: AccountListItem) -> 
     if component_rows:
         st.markdown("##### What drives the current scores")
         st.dataframe(pd.DataFrame(component_rows), hide_index=True, width="stretch")
+        present_names = {name for score in scores for name, _ in score.component_scores}
+        with st.expander(tr("What do these mean?")):
+            for name in COMPONENT_DEFINITIONS:
+                if name in present_names:
+                    st.caption(f"**{tr(name)}** — {tr(COMPONENT_DEFINITIONS[name])}")
     trend = service.rolling_score_trend(account.id, window=int(window))
     if trend:
         st.markdown("##### Selected-account execution trend")
         frame = pd.DataFrame(trend, columns=[tr("Closed"), tr("Psychology"), tr("Risk management"), tr("Trading system")]).set_index(tr("Closed"))
         st.line_chart(frame, width="stretch")
-        st.caption("This trend uses selected-account reviewed trades. Score-card scopes remain explicit above.")
+        st.caption(
+            "This trend averages each reviewed trade's own 13-criterion score — a different, simpler calculation than "
+            "the weighted behavioral components in the score cards and \"What drives the current scores\" above. "
+            "Expect the two to diverge; that is not an error."
+        )
     classifications = Counter(score.classification for score in service.trade_process_scores(account.id) if score.classification is not None)
     issues = service.recurring_issues(account.id, window=int(window))
     left, right = st.columns(2)
     with left:
         st.markdown("##### Process-quality distribution")
         if classifications:
+            st.caption("First word = process quality (Good/Needs improvement/Bad). Second word = P&L outcome (Win/Loss/Breakeven). The two are independent.")
             st.bar_chart(pd.DataFrame({tr("Classification"): [tr(item) for item in classifications], tr("Trades"): list(classifications.values())}).set_index(tr("Classification")), width="stretch")
         else:
             st.caption("Save complete assessments to build a process-quality distribution.")
@@ -1065,7 +1219,7 @@ def _render_period_reviews(repo: SQLiteJournalRepository, account: AccountListIt
         with st.expander("Latest saved period review"):
             st.caption(f"{tr(latest.cadence.capitalize())} · {latest.period_start} to {latest.period_end} · {tr('Readiness').casefold()} {_score_text(latest.readiness_score)}")
             st.write(latest.review_note)
-            st.markdown(f"**Priority action:** {latest.priority_action}")
+            st.markdown(f"**{tr('Priority action:')}** {latest.priority_action}")
 
 
 def _next_roadmap_item(
@@ -1116,7 +1270,7 @@ def _render_roadmap(repo: SQLiteJournalRepository, account: AccountListItem) -> 
                 else:
                     try:
                         with st.spinner(tr("Saving…")):
-                            repo.save_pillar_roadmap_evidence(
+                            service.save_pillar_roadmap_evidence(
                                 account_id=account.id,
                                 pillar=pillar,
                                 level=level,
@@ -1200,7 +1354,7 @@ def _render_risk_policy(repo: SQLiteJournalRepository, account: AccountListItem)
 def _render_framework_rules(repo: SQLiteJournalRepository) -> None:
     settings = repo.get_framework_rule_settings()
     st.markdown("#### Review rules")
-    st.caption("These rules affect new or corrected assessments and alerts only. Their effective result is snapshotted when an assessment is saved; later changes never rewrite history or lock MT5 trading.")
+    st.caption("The four hard-rule toggles below affect new or corrected assessments only — their effective result is snapshotted when an assessment is saved, so later changes never rewrite an already-saved review. The violation-count threshold is different: it is read live and can change the Caution cap for trades still inside the current rolling Monitor window. Neither ever locks MT5 trading.")
     with st.form("framework-rule-settings"):
         revenge = st.checkbox("Oversized revenge trade is a hard Psychology and Risk failure", value=settings.oversized_revenge_hard)
         setup = st.checkbox("Mandatory setup absent is a hard System failure", value=settings.mandatory_setup_hard)

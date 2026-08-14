@@ -15,6 +15,7 @@ from trading_journal.infrastructure.sqlite_repository import (
     SYSTEM_CRITERIA,
     AccountRiskPolicyView,
     ClosedTradeReviewItem,
+    PillarRoadmapEvidenceView,
     PostTradeAssessmentView,
     SQLiteJournalRepository,
     StrategyEvidenceSnapshot,
@@ -47,21 +48,21 @@ ROADMAP_ITEMS: dict[str, dict[int, tuple[tuple[str, str], ...]]] = {
         2: (("practice", "Record structured practice and recurring patterns"),),
         3: (("execution", "20 full reviews, score at least 70, no active hard failure"),),
         4: (("measure", "30 full reviews, current period review, score at least 80"),),
-        5: (("hypothesis", "Record one behavioural hypothesis, result, and keep/reject decision"),),
+        5: (("hypothesis", "Record one behavioural hypothesis, baseline, result, and keep/reject decision"),),
     },
     "risk": {
         1: (("policy", "Define account risk policy and hard limits"), ("sizing", "Document the position-sizing method")),
         2: (("test", "Record risk-calculation or simulation evidence"),),
         3: (("execution", "20 full reviews, score at least 70, no active hard failure"),),
         4: (("measure", "30 full reviews, current period review, score at least 80"),),
-        5: (("hypothesis", "Record one risk-policy hypothesis, result, and keep/reject decision"),),
+        5: (("hypothesis", "Record one risk-policy hypothesis, baseline, result, and keep/reject decision"),),
     },
     "system": {
         1: (("rules", "Define context, entry, invalidation, exit, and no-trade rules"), ("examples", "Document valid and invalid examples")),
         2: (("backtest", "Record 100+ backtest trades with positive expectancy after costs"),),
         3: (("execution", "20 full reviews, score at least 70, no active hard failure"),),
         4: (("measure", "30 full reviews, current period review, score at least 80"),),
-        5: (("hypothesis", "Record one system hypothesis, result, and keep/reject decision"),),
+        5: (("hypothesis", "Record one system hypothesis, baseline, result, and keep/reject decision"),),
     },
 }
 
@@ -69,6 +70,11 @@ ROADMAP_ITEMS: dict[str, dict[int, tuple[tuple[str, str], ...]]] = {
 def _decimal_text(value: Decimal) -> str:
     text = format(value.normalize(), "f")
     return text.rstrip("0").rstrip(".") if "." in text else text
+
+
+def _rounded_score_text(value: str | None) -> str:
+    """Round a stored score string for display in generated gate text (never for comparisons)."""
+    return "—" if value is None else f"{Decimal(value):.0f}"
 
 
 @dataclass(frozen=True)
@@ -146,7 +152,11 @@ class TradeProcessScore:
     actual_risk_amount: str | None
     risk_policy_state: str
     risk_evidence_source: str
-    mapped_strategy: StrategyProfileView | None
+    # Live magic-number mapping for auto/not-yet-scored trades (no strategy is
+    # attached yet); the strategy *snapshot* attached at save time for a
+    # manually-reviewed trade, so later edits to a strategy's backtest fields
+    # never retroactively change an already-reviewed trade's Monitor score.
+    mapped_strategy: "StrategyProfileView | StrategyEvidenceSnapshot | None"
 
 
 @dataclass(frozen=True)
@@ -346,36 +356,73 @@ class FrameworkService:
 
     def roadmap_status(self, account_id: int, *, now: datetime | None = None) -> tuple[PillarRoadmapStatus, ...]:
         evidence = {(item.pillar, item.level, item.item_key): item for item in self._repository.list_pillar_roadmap_evidence(account_id)}
-        current_period_review = self._has_current_period_review(account_id, now=now)
+        # Psychology/System are trader-wide: a period review saved against any of the
+        # trader's accounts satisfies their level-4 gate. Risk stays account-scoped.
+        current_period_review_account = self._has_current_period_review(account_id, now=now)
+        current_period_review_trader_wide = self._has_current_period_review(account_id, now=now, trader_wide=True)
         statuses: list[PillarRoadmapStatus] = []
         for pillar, levels in ROADMAP_ITEMS.items():
             total = sum(len(items) for items in levels.values())
             completed = sum(1 for level, items in levels.items() for key, _ in items if (item := evidence.get((pillar, level, key))) and item.completed)
             current_level = next((level for level, items in levels.items() if not all((item := evidence.get((pillar, level, key))) and item.completed for key, _ in items)), 5)
+            current_period_review = current_period_review_account if pillar == "risk" else current_period_review_trader_wide
             if completed == total:
                 allowed, gate = False, "All framework evidence is complete; continue monitoring the current sample."
             elif current_level == 3:
                 score = {item.pillar: item for item in self.pillar_scores(account_id, window=20)}[pillar]
                 allowed = score.reviewed_total >= 20 and score.score is not None and Decimal(score.score) >= 70 and not score.hard_block
-                gate = "Needs 20 full reviews, a score of at least 70, and no active hard failure."
+                gate = (
+                    f"Needs 20 full reviews (have {score.reviewed_total}), a score of at least 70 "
+                    f"(current {_rounded_score_text(score.score)}), and no active hard failure."
+                )
             elif current_level == 4:
                 score = {item.pillar: item for item in self.pillar_scores(account_id, window=30)}[pillar]
                 allowed = score.reviewed_total >= 30 and score.score is not None and Decimal(score.score) >= 80 and not score.hard_block and current_period_review
-                gate = "Needs 30 full reviews, a 30-review score of at least 80, a saved weekly or monthly review for the latest completed period, and no active hard failure."
+                gate = (
+                    f"Needs 30 full reviews (have {score.reviewed_total}), a 30-review score of at least 80 "
+                    f"(current {_rounded_score_text(score.score)}), a saved weekly or monthly review "
+                    f"for the latest completed period{'' if current_period_review else ' (not yet saved)'}, and no active hard failure."
+                )
             else:
                 allowed, gate = True, "Complete the current evidence item with a note."
             statuses.append(PillarRoadmapStatus(pillar, completed, total, current_level, allowed, gate))
         return tuple(statuses)
 
-    def _has_current_period_review(self, account_id: int, *, now: datetime | None = None) -> bool:
-        """Require reflection on the latest completed eligible week or month."""
-        for cadence in ("weekly", "monthly"):
-            status = self.period_review_status(account_id, cadence, now=now)
-            if any(
-                review.period_start == status.period_start and review.period_end == status.period_end
-                for review in self._repository.list_framework_period_reviews(account_id, cadence)
-            ):
-                return True
+    def save_pillar_roadmap_evidence(
+        self,
+        *,
+        account_id: int | None,
+        pillar: str,
+        level: int,
+        item_key: str,
+        completed: bool,
+        evidence_note: str | None,
+    ) -> PillarRoadmapEvidenceView:
+        """Defense-in-depth: re-validate the level gate here, not only in the presentation layer."""
+        if completed and account_id is not None:
+            status = next(item for item in self.roadmap_status(account_id) if item.pillar == pillar)
+            if level != status.current_level or not status.can_complete_current_level:
+                raise ValueError("This roadmap item is not yet unlocked.")
+        return self._repository.save_pillar_roadmap_evidence(
+            account_id=account_id, pillar=pillar, level=level, item_key=item_key, completed=completed, evidence_note=evidence_note,
+        )
+
+    def _has_current_period_review(self, account_id: int, *, now: datetime | None = None, trader_wide: bool = False) -> bool:
+        """Require reflection on the latest completed eligible week or month.
+
+        Trader-wide pillars (Psychology/System) must not be gated by whichever
+        single account happens to be active — a period review saved against
+        any of the trader's accounts satisfies them. Risk stays account-scoped.
+        """
+        account_ids = tuple(item.id for item in self._repository.list_mt5_accounts()) if trader_wide else (account_id,)
+        for candidate_account_id in account_ids:
+            for cadence in ("weekly", "monthly"):
+                status = self.period_review_status(candidate_account_id, cadence, now=now)
+                if any(
+                    review.period_start == status.period_start and review.period_end == status.period_end
+                    for review in self._repository.list_framework_period_reviews(candidate_account_id, cadence)
+                ):
+                    return True
         return False
 
     def risk_snapshot(self, account_id: int, *, now: datetime | None = None) -> RiskSnapshot:
@@ -488,13 +535,19 @@ class FrameworkService:
         pnl_by_trade = {item.trade_id: Decimal(item.net_pnl) for item in scores}
         components = self._period_components(pillar, sample, historical_events, pnl_by_trade)
         values = [value for _, value in components]
-        raw = None if any(value is None for value in values) else sum(
-            (value * weight for value, weight in zip(values, PERIOD_WEIGHTS[pillar], strict=True) if value is not None), Decimal("0")
-        )
+        # Exclude any component that couldn't be computed and renormalize over what's
+        # available, rather than nulling the whole pillar the moment one is missing.
+        # No current component can actually return None here (each has an unconditional
+        # fallback given a non-empty sample), but this keeps a future one degrading
+        # gracefully instead of silently blanking the pillar.
+        available = [(value, weight) for value, weight in zip(values, PERIOD_WEIGHTS[pillar], strict=True) if value is not None]
+        weight_total = sum((weight for _, weight in available), Decimal("0"))
+        raw = None if not available else sum((value * weight for value, weight in available), Decimal("0")) / weight_total
         hard_block = any(getattr(item, f"{pillar}_hard_block") for item in sample)
         critical = sum(1 for item in sample if self._is_critical_violation(pillar, item))
         settings = self._repository.get_framework_rule_settings()
-        capped = critical >= settings.repeated_critical_threshold and not self._review_after_last_critical(pillar, sample)
+        reviewed_after_critical, last_critical_date = self._review_after_last_critical(pillar, sample)
+        capped = critical >= settings.repeated_critical_threshold and not reviewed_after_critical
         score = None if raw is None else min(raw, Decimal("59")) if capped else raw
         status = "fail" if hard_block else "caution" if capped else "incomplete" if len(sample) < window else "ready"
         formatted = tuple((name, None if value is None else _decimal_text(Decimal(value))) for name, value in components)
@@ -502,7 +555,11 @@ class FrameworkService:
         if hard_block:
             detail += " A hard-rule failure overrides the numeric score."
         elif capped:
-            detail += " Repeated critical violations cap this pillar at 59 until a period review is saved."
+            detail += (
+                f" Repeated critical violations cap this pillar at 59 until a period review is saved after the last one on {last_critical_date}."
+                if last_critical_date is not None
+                else " Repeated critical violations cap this pillar at 59 until a period review is saved."
+            )
         return PillarScore(pillar, None if score is None else _decimal_text(score), None if raw is None else _decimal_text(raw), status, len(reviewed), len(sample), unreviewed, automatic, hard_block, critical, formatted, detail, scope)
 
     def _period_components(
@@ -549,6 +606,9 @@ class FrameworkService:
         for previous, current in zip(ordered, ordered[1:], strict=False):
             if pnl_by_trade.get(previous.trade_id, Decimal("0")) >= 0:
                 continue
+            if "post_loss_reset" in current.violation_codes:
+                values.append(Decimal("0"))
+                continue
             grade = assessments[current.trade_id]["impulse_control"]
             values.append(GRADE_VALUES[grade])
         return sum(values, Decimal("0")) / len(values) if values else Decimal("100")
@@ -577,16 +637,21 @@ class FrameworkService:
                 values.append(Decimal("100") if documented and count >= 100 else Decimal("50") if documented else Decimal("0"))
         return sum(values, Decimal("0")) / len(values) if values else None
 
-    def _review_after_last_critical(self, pillar: str, sample: list[TradeProcessScore]) -> bool:
-        last_critical = max((item.exit_time for item in sample if self._is_critical_violation(pillar, item)), default=None)
-        if last_critical is None:
-            return True
+    def _review_after_last_critical(self, pillar: str, sample: list[TradeProcessScore]) -> tuple[bool, str | None]:
+        """Return whether a period review has been saved since the last critical violation, and that violation's date."""
+        critical_items = [item for item in sample if self._is_critical_violation(pillar, item)]
+        last_critical_item = max(critical_items, key=lambda item: item.exit_time, default=None)
+        if last_critical_item is None:
+            return True, None
+        last_critical = last_critical_item.exit_time
+        last_critical_date = self._trade_date(last_critical, last_critical_item.server_utc_offset_minutes).isoformat()
         account_ids = {sample[-1].account_id} if pillar == "risk" else {item.id for item in self._repository.list_mt5_accounts()}
-        return any(
+        reviewed_after = any(
             review.created_at > last_critical
             for account_id in account_ids
             for review in self._repository.list_framework_period_reviews(account_id)
         )
+        return reviewed_after, last_critical_date
 
     @staticmethod
     def _is_critical_violation(pillar: str, score: TradeProcessScore) -> bool:
@@ -691,7 +756,7 @@ class FrameworkService:
             actual_risk,
             risk_policy_state,
             risk_evidence_source,
-            mapped,
+            assessment.strategy_snapshot,
         )
 
     @staticmethod

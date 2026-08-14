@@ -1704,29 +1704,26 @@ class SQLiteJournalRepository:
                     FrameworkPeriodReview.period_end == period_end,
                 )
             )
-            payload = {
-                "psychology_score": psychology_score,
-                "risk_score": risk_score,
-                "system_score": system_score,
-                "readiness_score": readiness_score,
-                "alert_codes": json.dumps(sorted(set(alert_codes))),
-                "recurring_issues": json.dumps(sorted(set(recurring_issues))),
-                "review_note": note,
-                "priority_action": action,
-            }
-            if row is None:
-                row = FrameworkPeriodReview(
-                    mt5_account_id=account_id,
-                    cadence=cadence,
-                    period_start=period_start,
-                    period_end=period_end,
-                    created_at=datetime.now(timezone.utc).isoformat(),
-                    **payload,
-                )
-                session.add(row)
-            else:
-                for field, value in payload.items():
-                    setattr(row, field, value)
+            if row is not None:
+                # A saved period review snapshots that period's scores/alerts/action;
+                # it must never be silently rewritten by a later save.
+                raise ValueError("A period review for this period has already been saved and cannot be overwritten.")
+            row = FrameworkPeriodReview(
+                mt5_account_id=account_id,
+                cadence=cadence,
+                period_start=period_start,
+                period_end=period_end,
+                created_at=datetime.now(timezone.utc).isoformat(),
+                psychology_score=psychology_score,
+                risk_score=risk_score,
+                system_score=system_score,
+                readiness_score=readiness_score,
+                alert_codes=json.dumps(sorted(set(alert_codes))),
+                recurring_issues=json.dumps(sorted(set(recurring_issues))),
+                review_note=note,
+                priority_action=action,
+            )
+            session.add(row)
             session.flush()
             return self._to_framework_period_review_view(row)
 

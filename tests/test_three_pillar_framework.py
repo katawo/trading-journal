@@ -919,6 +919,35 @@ def test_grouping_does_not_hide_raw_position_risk_limits(tmp_path) -> None:
     assert snapshot.state == "stop"
 
 
+def test_a_missing_component_is_excluded_and_the_rest_renormalized(tmp_path, monkeypatch) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    trade_id = _import_position(repository, account_id)
+    _review(repository, account_id, trade_id, policy, strategy)
+
+    original_components = FrameworkService._period_components
+
+    def fake_components(self, pillar, sample, historical_events, pnl_by_trade):
+        if pillar != "risk":
+            return original_components(self, pillar, sample, historical_events, pnl_by_trade)
+        return (
+            ("Policy adherence", Decimal("100")),
+            ("Stop discipline", None),
+            ("Limit compliance", Decimal("80")),
+            ("Exposure control", Decimal("60")),
+        )
+
+    monkeypatch.setattr(FrameworkService, "_period_components", fake_components)
+
+    risk = {item.pillar: item for item in FrameworkService(repository).pillar_scores(account_id)}["risk"]
+
+    # weights for risk are (0.35, 0.25, 0.25, 0.15); excluding the None (weight 0.25)
+    # and renormalizing over the remaining 0.75: (100*0.35 + 80*0.25 + 60*0.15) / 0.75
+    expected = (Decimal("100") * Decimal("0.35") + Decimal("80") * Decimal("0.25") + Decimal("60") * Decimal("0.15")) / Decimal("0.75")
+    assert Decimal(risk.raw_score) == expected
+    assert risk.score is not None
+
+
 def test_period_scores_use_the_documented_components(tmp_path) -> None:
     repository, account_id = _repository(tmp_path)
     policy, strategy = _policy(repository, account_id), _strategy(repository)
@@ -930,6 +959,31 @@ def test_period_scores_use_the_documented_components(tmp_path) -> None:
 
     assert all(item.score == "100" for item in scores.values())
     assert scores["psychology"].component_scores[-1] == ("Post-loss discipline", "100")
+    assert scores["system"].component_scores[-1] == ("Edge evidence", "100")
+
+
+def test_editing_a_strategy_later_does_not_change_an_already_reviewed_trades_score(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    for index in range(20):
+        trade_id = _import_position(repository, account_id, position_id=f"trade-{index}", exit_time=f"2026-08-{index + 1:02d}T09:00:00+00:00")
+        _review(repository, account_id, trade_id, policy, strategy)
+
+    repository.save_strategy_profile(
+        strategy_id=strategy.id,
+        name=strategy.name,
+        description=None,
+        backtest_start_date=None,
+        backtest_end_date=None,
+        backtest_trade_count=None,
+        backtest_win_rate=None,
+        backtest_expectancy_r="-1",
+        backtest_net_r=None,
+        backtest_notes=None,
+    )
+
+    scores = {item.pillar: item for item in FrameworkService(repository).pillar_scores(account_id)}
+
     assert scores["system"].component_scores[-1] == ("Edge evidence", "100")
 
 
@@ -965,6 +1019,20 @@ def test_weekly_period_review_captures_scores_and_resolves_repeated_cap(tmp_path
     assert len(saved) == 1
     assert saved[0].cadence == "weekly"
     assert saved[0].priority_action == "Use fixed stop orders."
+
+
+def test_caution_cap_detail_names_the_date_of_the_last_critical_violation(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    for index in range(2):
+        trade_id = _import_position(repository, account_id, position_id=f"trade-{index}", exit_time=f"2026-08-0{index + 3}T09:00:00+00:00")
+        _review(repository, account_id, trade_id, policy, strategy, tags=("revenge",), action="Step away after a loss before re-entering.")
+
+    psychology = {item.pillar: item for item in FrameworkService(repository).pillar_scores(account_id)}["psychology"]
+
+    assert psychology.status == "caution"
+    assert not psychology.hard_block
+    assert "2026-08-04" in psychology.detail
 
 
 def test_readiness_is_the_lowest_complete_pillar_and_requires_window(tmp_path) -> None:
@@ -1031,6 +1099,25 @@ def test_roadmap_execution_gate_requires_score_sample_and_no_hard_rule(tmp_path)
     assert status.current_level == 3
     assert not status.can_complete_current_level
     assert "20 full reviews" in status.gate
+
+
+def test_roadmap_execution_gate_rounds_a_non_terminating_score_for_display(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    for index in range(7):
+        trade_id = _import_position(repository, account_id, position_id=f"seven-{index}", exit_time=f"2026-08-{index + 1:02d}T09:00:00+00:00")
+        grades = {**ALL_PASS, "impulse_control": "fail"} if index == 0 else ALL_PASS
+        tags = ("fomo_or_chase",) if index == 0 else ()
+        action = "Wait for the written setup." if index == 0 else None
+        _review(repository, account_id, trade_id, policy, strategy, grades=grades, tags=tags, action=action)
+    for level in (1, 2):
+        for item_key, _ in ROADMAP_ITEMS["psychology"][level]:
+            repository.save_pillar_roadmap_evidence(account_id=account_id, pillar="psychology", level=level, item_key=item_key, completed=True, evidence_note="Documented evidence.")
+
+    status = {item.pillar: item for item in FrameworkService(repository).roadmap_status(account_id)}["psychology"]
+
+    assert status.current_level == 3
+    assert "(current 96)" in status.gate
 
 
 def test_roadmap_measure_gate_requires_a_review_for_the_latest_completed_period(tmp_path) -> None:
@@ -1136,6 +1223,96 @@ def test_roadmap_measure_gate_uses_the_full_thirty_review_sample(tmp_path) -> No
     assert Decimal(thirty_review_score.score) < Decimal("80")
     assert status.current_level == 4
     assert not status.can_complete_current_level
+
+
+def test_saving_roadmap_evidence_through_the_service_rejects_a_locked_level(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    service = FrameworkService(repository)
+
+    with pytest.raises(ValueError, match="not yet unlocked"):
+        service.save_pillar_roadmap_evidence(
+            account_id=account_id,
+            pillar="psychology",
+            level=3,
+            item_key="execution",
+            completed=True,
+            evidence_note="Skipping ahead of the gate.",
+        )
+
+
+def test_saving_a_period_review_twice_for_the_same_period_is_rejected(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    trade_id = _import_position(repository, account_id, exit_time="2026-08-03T09:00:00+00:00")
+    _review(repository, account_id, trade_id, policy, strategy)
+    now = datetime(2026, 8, 10, tzinfo=timezone.utc)
+    service = FrameworkService(repository)
+    service.save_period_review(
+        account_id=account_id,
+        cadence="weekly",
+        review_note="First save.",
+        priority_action="Keep the same process.",
+        now=now,
+    )
+
+    with pytest.raises(ValueError, match="already been saved"):
+        repository.save_framework_period_review(
+            account_id=account_id,
+            cadence="weekly",
+            period_start="2026-08-03",
+            period_end="2026-08-09",
+            psychology_score="0",
+            risk_score="0",
+            system_score="0",
+            readiness_score="0",
+            alert_codes=(),
+            recurring_issues=(),
+            review_note="Attempted rewrite.",
+            priority_action="Should never be stored.",
+        )
+
+
+def test_trader_wide_pillars_accept_a_period_review_saved_against_any_account(tmp_path) -> None:
+    repository, primary_id = _repository(tmp_path)
+    repository.register_mt5_account(
+        display_name="Secondary",
+        login="654321",
+        broker_server="DemoBroker-Live",
+        account_currency="USD",
+        export_file_path="",
+        opening_balance="1000",
+    )
+    secondary = repository.find_active_mt5_account("654321", "DemoBroker-Live")
+    assert secondary is not None
+    primary_policy, secondary_policy = _policy(repository, primary_id), _policy(repository, secondary.id)
+    strategy = _strategy(repository)
+    for index in range(30):
+        trade_id = _import_position(repository, primary_id, position_id=f"primary-{index}")
+        _review(repository, primary_id, trade_id, primary_policy, strategy)
+    for level in (1, 2, 3):
+        for item_key, _ in ROADMAP_ITEMS["psychology"][level]:
+            repository.save_pillar_roadmap_evidence(account_id=primary_id, pillar="psychology", level=level, item_key=item_key, completed=True, evidence_note="Documented evidence.")
+        for item_key, _ in ROADMAP_ITEMS["risk"][level]:
+            repository.save_pillar_roadmap_evidence(account_id=primary_id, pillar="risk", level=level, item_key=item_key, completed=True, evidence_note="Documented evidence.")
+    now = datetime(2026, 8, 17, tzinfo=timezone.utc)
+
+    before = {item.pillar: item for item in FrameworkService(repository).roadmap_status(primary_id, now=now)}
+    assert not before["psychology"].can_complete_current_level
+    assert not before["risk"].can_complete_current_level
+
+    secondary_trade_id = _import_position(repository, secondary.id, position_id="secondary-only")
+    _review(repository, secondary.id, secondary_trade_id, secondary_policy, strategy)
+    FrameworkService(repository).save_period_review(
+        account_id=secondary.id,
+        cadence="weekly",
+        review_note="Reviewed the secondary account's week.",
+        priority_action="Keep the same process.",
+        now=now,
+    )
+
+    after = {item.pillar: item for item in FrameworkService(repository).roadmap_status(primary_id, now=now)}
+    assert after["psychology"].can_complete_current_level, "Psychology is trader-wide and should accept any account's period review"
+    assert not after["risk"].can_complete_current_level, "Risk is account-scoped and must not unlock from another account's period review"
 
 
 def test_corrections_archive_complete_prior_assessment(tmp_path) -> None:
@@ -1256,5 +1433,40 @@ def test_post_loss_discipline_uses_the_next_trader_wide_review(tmp_path) -> None
     )
 
     psychology = {item.pillar: item for item in FrameworkService(repository).pillar_scores(primary_id)}["psychology"]
+
+    assert psychology.component_scores[-1] == ("Post-loss discipline", "0")
+
+
+def test_post_loss_discipline_scores_zero_for_a_tagged_reset_even_with_a_passing_grade(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    loss_trade_id = _import_position(
+        repository,
+        account_id,
+        position_id="loss",
+        net_pnl="-20",
+        exit_time="2026-08-10T09:00:00+00:00",
+    )
+    _review(repository, account_id, loss_trade_id, policy, strategy)
+    next_trade_id = _import_position(
+        repository,
+        account_id,
+        position_id="after-loss",
+        net_pnl="20",
+        entry_time="2026-08-10T09:05:00+00:00",
+        exit_time="2026-08-10T10:00:00+00:00",
+    )
+    _review(
+        repository,
+        account_id,
+        next_trade_id,
+        policy,
+        strategy,
+        grades=ALL_PASS,
+        tags=("post_loss_reset",),
+        action="Pause after a loss before the next entry.",
+    )
+
+    psychology = {item.pillar: item for item in FrameworkService(repository).pillar_scores(account_id)}["psychology"]
 
     assert psychology.component_scores[-1] == ("Post-loss discipline", "0")

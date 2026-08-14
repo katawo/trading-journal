@@ -216,7 +216,7 @@ Reason tags also make recurring patterns visible. Psychology critical tags inclu
 
 ## 6. How rolling monitoring is calculated
 
-In **Bearings → Monitor**, choose a 20-, 30-, or 50-trade window. Auto-reviews, approved auto-reviews, and manually reviewed trades enter the window. Needs-approval imports remain outside it until approved or fully assessed.
+In **Bearings → Monitor**, choose a rolling window from 10 to 100 trades (slider, step 5; the Dashboard's compact widget always shows a fixed 20-trade snapshot). Auto-reviews, approved auto-reviews, and manually reviewed trades enter the window. Needs-approval imports remain outside it until approved or fully assessed. A smaller window reaches the repeated-critical-violation Caution threshold sooner than a larger one, since that threshold is a fixed count, not a percentage of the window.
 
 The Monitor computes a second set of period components from the reviewed window. These are not a simple average of the visible per-trade pillar scores; they are designed to reveal repeated behaviour and evidence quality.
 

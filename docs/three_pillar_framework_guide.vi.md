@@ -216,7 +216,7 @@ Thẻ lý do cũng làm mẫu hình lặp lại hiển thị. Thẻ nghiêm tr�
 
 ## 6. Cách tính theo dõi trượt
 
-Trong **Định hướng → Theo dõi**, chọn cửa sổ 20, 30 hoặc 50 giao dịch. Đánh giá tự động, đánh giá tự động đã phê duyệt và giao dịch đánh giá thủ công đều vào cửa sổ. Bản nhập cần phê duyệt nằm ngoài đến khi được phê duyệt hoặc đánh giá đầy đủ.
+Trong **Định hướng → Theo dõi**, chọn cửa sổ trượt từ 10 đến 100 giao dịch (thanh trượt, bước 5; ô xem gọn trên Dashboard luôn hiển thị cửa sổ cố định 20 giao dịch). Đánh giá tự động, đánh giá tự động đã phê duyệt và giao dịch đánh giá thủ công đều vào cửa sổ. Bản nhập cần phê duyệt nằm ngoài đến khi được phê duyệt hoặc đánh giá đầy đủ. Cửa sổ nhỏ hơn sẽ đạt ngưỡng Cảnh báo do vi phạm nghiêm trọng lặp lại sớm hơn cửa sổ lớn hơn, vì ngưỡng này là một số đếm cố định, không phải tỷ lệ phần trăm của cửa sổ.
 
 Theo dõi tính một bộ thành phần giai đoạn thứ hai từ cửa sổ đã đánh giá. Chúng không phải trung bình đơn giản của điểm trụ cột mỗi giao dịch nhìn thấy; chúng được thiết kế để chỉ ra hành vi lặp lại và chất lượng bằng chứng.
 
