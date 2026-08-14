@@ -28,8 +28,14 @@ _RESET_RESTART_BRIDGE = st.components.v2.component(
       const startedAt = Date.now()
       const poll = async () => {
         try {
-          const response = await fetch('/_stcore/health', { cache: 'no-store' })
-          if (state.unavailable && response.ok) {
+          const response = await fetch('/_stcore/health', {
+            cache: 'no-store',
+            signal: AbortSignal.timeout(1000),
+          })
+          // A request can span a very fast server restart without failing. The
+          // reset signal is dispatched before this bridge starts polling, so a
+          // healthy server after this grace period is the restarted instance.
+          if (response.ok && (state.unavailable || Date.now() - startedAt > 5000)) {
             window.location.reload()
             return
           }

@@ -6,7 +6,7 @@ codeFont = "'IBM Plex Mono':https://fonts.googleapis.com/css2?family=IBM+Plex+Mo
 baseFontSize = 16
 baseFontWeight = 400
 headingFontSizes = ["42px", "32px", "25px", "20px", "16px", "14px"]
-headingFontWeights = [650, 650, 650, 650, 650, 650]
+headingFontWeights = [600, 600, 600, 600, 600, 600]
 baseRadius = "medium"
 buttonRadius = "small"
 showWidgetBorder = true

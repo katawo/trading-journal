@@ -395,7 +395,8 @@ class DesktopInstanceLock:
                     continue
                 raise RuntimeError("Trade Compass desktop is already running")
             with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                handle.write(str(os.getpid()))
+                process_id = os.getpid()
+                handle.write(f"{process_id}:{_process_start_identity(process_id) or ''}")
             self._owned = True
             return
         raise RuntimeError("Trade Compass desktop is already running")
@@ -412,10 +413,22 @@ class DesktopInstanceLock:
     def _clear_stale_lock(self) -> bool:
         try:
             value = self._path.read_text(encoding="utf-8").strip()
-            process_id = int(value)
+            process_id_text, separator, recorded_identity = value.partition(":")
+            process_id = int(process_id_text)
         except (OSError, ValueError):
             process_id = -1
-        if process_id > 0 and _process_is_running(process_id):
+            separator = ""
+            recorded_identity = ""
+        current_identity = _process_start_identity(process_id) if process_id > 0 else None
+        lock_is_owned = (
+            process_id > 0
+            and _process_is_running(process_id)
+            and (
+                (bool(separator) and bool(recorded_identity) and recorded_identity == current_identity)
+                or (not separator and _process_looks_like_desktop(process_id))
+            )
+        )
+        if lock_is_owned:
             return False
         try:
             self._path.unlink()
@@ -432,6 +445,32 @@ def _process_is_running(process_id: int) -> bool:
     except PermissionError:
         return True
     return True
+
+
+def _process_start_identity(process_id: int) -> str | None:
+    """Return a Linux process creation marker to prevent PID-reuse lock errors."""
+
+    if not sys.platform.startswith("linux"):
+        return None
+    try:
+        stat = Path(f"/proc/{process_id}/stat").read_text(encoding="utf-8")
+        # The executable name is parenthesized and may contain spaces; field 22
+        # (the start time) is therefore the 20th token after its closing bracket.
+        return f"linux:{stat.rsplit(')', 1)[1].split()[19]}"
+    except (IndexError, OSError):
+        return None
+
+
+def _process_looks_like_desktop(process_id: int) -> bool:
+    """Recognize an active legacy PID-only lock on Linux during the upgrade path."""
+
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        command = Path(f"/proc/{process_id}/cmdline").read_bytes().decode("utf-8", errors="replace")
+    except OSError:
+        return False
+    return "TradeCompass" in command or "trading_journal.desktop" in command
 
 
 def _available_loopback_port() -> int:

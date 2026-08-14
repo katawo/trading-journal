@@ -11,6 +11,7 @@ from streamlit.testing.v1 import AppTest
 
 from trading_journal.application.auto_sync import MT5AutoSyncResult
 from trading_journal.desktop import (
+    DesktopInstanceLock,
     DesktopSyncControl,
     DesktopSyncStatusStore,
     DesktopSyncWorker,
@@ -123,6 +124,34 @@ def test_desktop_server_port_uses_an_optional_explicit_port() -> None:
         desktop_server_port({"TRADING_JOURNAL_DESKTOP_PORT": "not-a-port"})
     with pytest.raises(RuntimeError, match="between 1 and 65535"):
         desktop_server_port({"TRADING_JOURNAL_DESKTOP_PORT": "70000"})
+
+
+def test_desktop_lock_discards_a_legacy_lock_when_its_pid_was_reused(monkeypatch, tmp_path: Path) -> None:
+    from trading_journal import desktop
+
+    lock_path = tmp_path / "desktop.lock"
+    lock_path.write_text("12345", encoding="utf-8")
+    monkeypatch.setattr(desktop, "_process_is_running", lambda process_id: process_id == 12345)
+    monkeypatch.setattr(desktop, "_process_looks_like_desktop", lambda _process_id: False)
+
+    lock = DesktopInstanceLock(lock_path)
+    lock.acquire()
+
+    assert ":" in lock_path.read_text(encoding="utf-8")
+    lock.release()
+    assert not lock_path.exists()
+
+
+def test_desktop_lock_keeps_a_current_process_identity(monkeypatch, tmp_path: Path) -> None:
+    from trading_journal import desktop
+
+    lock_path = tmp_path / "desktop.lock"
+    lock_path.write_text("12345:linux:stable-start-time", encoding="utf-8")
+    monkeypatch.setattr(desktop, "_process_is_running", lambda process_id: process_id == 12345)
+    monkeypatch.setattr(desktop, "_process_start_identity", lambda process_id: "linux:stable-start-time" if process_id == 12345 else None)
+
+    with pytest.raises(RuntimeError, match="already running"):
+        DesktopInstanceLock(lock_path).acquire()
 
 
 def test_desktop_server_disables_the_source_file_watcher(monkeypatch) -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from importlib.metadata import PackageNotFoundError, version
+import tomllib
 from uuid import uuid4
 from decimal import Decimal
 from pathlib import Path
@@ -53,10 +54,14 @@ _CHART_NEGATIVE = "#c73545"
 
 def application_version() -> str:
     """Return the installed application version, including in desktop bundles."""
+    source_manifest = Path(__file__).with_name("pyproject.toml")
+    if source_manifest.is_file():
+        with source_manifest.open("rb") as handle:
+            return str(tomllib.load(handle)["project"]["version"])
     try:
         return version("trading-journal")
     except PackageNotFoundError:
-        return "0.1.0"
+        return "0.1.1"
 
 
 def supported_mt5_schema_versions() -> str:
