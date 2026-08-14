@@ -16,6 +16,8 @@ The journal measures the *quality of a completed trade*, not only its P&L. It is
 
 A profitable trade can be a **Bad Win** when its process failed. A compliant losing trade can be a **Good Loss**. P&L and process quality are intentionally separate.
 
+Trade cards and detail views also show factual direction and outcome tags: **Long** or **Short** comes from the imported MT5 direction, while **Profit**, **Loss**, or **Breakeven** comes from realized net P&L after costs. These labels do not change the independent process classification.
+
 ## Operating loop
 
 ```text

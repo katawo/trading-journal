@@ -162,6 +162,7 @@ class TradeProcessScore:
     setup_snapshot: str | None = None
     session_snapshot: str | None = None
     regime_snapshot: str | None = None
+    direction: str = "long"
 
 
 @dataclass(frozen=True)
@@ -205,6 +206,8 @@ class MonitorAnalysisPoint:
 
     trade_id: int
     closed: str
+    direction: str
+    outcome: str
     review_kind: str
     overall_score: str | None
     psychology_score: str | None
@@ -481,6 +484,8 @@ class FrameworkService:
             MonitorAnalysisPoint(
                 trade_id=item.trade_id,
                 closed=reporting_datetime(item.exit_time, item.server_utc_offset_minutes, self._reporting_time_basis()).isoformat(),
+                direction=item.direction,
+                outcome="profit" if Decimal(item.net_pnl) > 0 else "loss" if Decimal(item.net_pnl) < 0 else "breakeven",
                 review_kind=item.review_kind,
                 overall_score=item.overall_score,
                 psychology_score=item.psychology_score,
@@ -949,6 +954,7 @@ class FrameworkService:
                 None,
                 None,
                 None,
+                direction=trade.direction,
             )
         psychology = self._trade_pillar_score(assessment, "psychology")
         risk = self._trade_pillar_score(assessment, "risk")
@@ -984,6 +990,7 @@ class FrameworkService:
             assessment.setup_snapshot,
             assessment.session_snapshot,
             assessment.regime_snapshot,
+            direction=trade.direction,
         )
 
     @staticmethod

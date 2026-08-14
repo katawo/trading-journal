@@ -27,9 +27,18 @@ from trading_journal.presentation.framework import (
     _risk_evidence_detail,
     _set_pillar_grades_to_pass,
 )
+from trading_journal.presentation.trade_tags import direction_tag, outcome_tag
 
 
 ALL_PASS = {criterion: "pass" for criterion in ASSESSMENT_CRITERIA}
+
+
+def test_trade_tags_keep_direction_and_realized_outcome_separate() -> None:
+    assert direction_tag("long").label == "Long"
+    assert direction_tag("short").label == "Short"
+    assert outcome_tag("20").label == "Profit"
+    assert outcome_tag("-20").label == "Loss"
+    assert outcome_tag("0").label == "Breakeven"
 
 
 def test_marking_a_pillar_as_pass_changes_only_its_criteria() -> None:
@@ -1523,6 +1532,8 @@ def test_monitor_analysis_keeps_review_eligibility_and_joins_standard_r(tmp_path
 
     assert len(report.points) == 2
     assert len(report.reviewed_points) == 2
+    assert {item.direction for item in report.reviewed_points} == {"long"}
+    assert {item.outcome for item in report.reviewed_points} == {"profit", "loss"}
     assert {item.result_r for item in report.reviewed_points} == {"2", "-2"}
     assert {item.label: item.count for item in report.lifecycle} == {"manual_review": 1, "approved_auto_review": 1}
     assert report.issues[0].label == "revenge"

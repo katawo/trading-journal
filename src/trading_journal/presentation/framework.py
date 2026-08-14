@@ -10,6 +10,7 @@ from decimal import Decimal
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+import altair as alt
 
 from trading_journal.application.framework import (
     PILLAR_NAMES,
@@ -32,6 +33,7 @@ from trading_journal.infrastructure.sqlite_repository import (
     SQLiteJournalRepository,
 )
 from trading_journal.presentation.i18n import tr
+from trading_journal.presentation.trade_tags import direction_tag, outcome_tag
 
 
 GRADE_OPTIONS = ("Pass", "Partial", "Fail")
@@ -431,7 +433,11 @@ def _render_bulk_quick_review_dialog(repo: SQLiteJournalRepository, account: Acc
     st.caption(" · ".join(f"{labels.get(state, state)}: {count}" for state, count in sorted(counts.items())))
     st.dataframe(
         pd.DataFrame(
-            [{"Logical trade": f"LT-{trade.id}", "Trade": trade.display_label, "Policy evidence": labels.get(score.risk_policy_state, score.risk_policy_state)} for trade, score in eligible]
+            [{
+                "Logical trade": f"LT-{trade.id}", "Trade": trade.display_label,
+                "Direction": tr(direction_tag(trade.direction).label), "Outcome": tr(outcome_tag(trade.net_pnl).label),
+                "Policy evidence": labels.get(score.risk_policy_state, score.risk_policy_state),
+            } for trade, score in eligible]
         ),
         hide_index=True,
         width="stretch",
@@ -496,6 +502,11 @@ def _begin_logical_trade_disband(repo: SQLiteJournalRepository, account: Account
 
 
 def _render_imported_execution(repo: SQLiteJournalRepository, account: AccountListItem, trade, score: TradeProcessScore) -> None:  # type: ignore[no-untyped-def]
+    direction = direction_tag(trade.direction)
+    outcome = outcome_tag(trade.net_pnl)
+    with st.container(horizontal=True, gap="small"):
+        st.badge(tr(direction.label), color=direction.color, icon=direction.icon)
+        st.badge(tr(outcome.label), color=outcome.color, icon=outcome.icon)
     with st.container(horizontal=True, gap="small"):
         st.metric("Symbol", trade.symbol, border=True)
         st.metric("Positions", str(trade.position_count), border=True)
@@ -1135,8 +1146,12 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
                 )
                 logical_column.markdown(f"**LT-{trade.id}**")
                 trade_column.write(trade.display_label)
+                direction = direction_tag(trade.direction)
+                outcome = outcome_tag(trade.net_pnl)
+                trade_column.badge(tr(direction.label), color=direction.color, icon=direction.icon)
                 positions_column.write(", ".join(f"#{position_id}" for position_id in trade.position_ids))
                 pnl_column.write(f"{Decimal(trade.net_pnl):+.2f}")
+                pnl_column.badge(tr(outcome.label), color=outcome.color, icon=outcome.icon)
                 review_column.write(tr(review))
                 score_column.markdown(f"**{_score_text(score.overall_score)}**")
                 psychology_flag = " ⚠" if score.psychology_hard_block else ""
@@ -1342,9 +1357,31 @@ def _render_monitor_process(service: FrameworkService, account: AccountListItem,
         st.markdown("##### Process quality and outcome")
         points = [item for item in analysis.reviewed_points if item.overall_score is not None and item.result_r is not None]
         if points:
-            frame = pd.DataFrame([{"Process score": float(item.overall_score), "Result R": float(item.result_r), "Review": "Manual" if item.review_kind == "manual_review" else "Auto", "Classification": item.classification} for item in points])
-            st.scatter_chart(frame, x="Process score", y="Result R", color="Review", size=None, width="stretch")
-            st.caption("Only reviewed trades with standard 1R are plotted. A positive result does not prove good process, and a loss does not prove poor process.")
+            outcome_labels = {
+                "profit": tr("Profit"),
+                "loss": tr("Loss"),
+                "breakeven": tr("Breakeven"),
+            }
+            frame = pd.DataFrame([{
+                "Process score": float(item.overall_score), "Result R": float(item.result_r),
+                "Direction key": item.direction.casefold(), "Outcome key": item.outcome,
+                "Direction": tr(direction_tag(item.direction).label), "Outcome": outcome_labels[item.outcome],
+                "Review": "Manual" if item.review_kind == "manual_review" else "Auto", "Closed": item.closed,
+                "Classification": item.classification or "Unclassified",
+            } for item in points])
+            chart = alt.Chart(frame).mark_point(filled=True, size=90).encode(
+                x=alt.X("Process score:Q", scale=alt.Scale(domain=[0, 100])),
+                y=alt.Y("Result R:Q"),
+                color=alt.Color("Outcome key:N", legend=None, scale=alt.Scale(domain=["profit", "loss", "breakeven"], range=["#0e9163", "#c73545", "#6b7280"])),
+                shape=alt.Shape("Direction key:N", legend=None, scale=alt.Scale(domain=["long", "short"], range=["triangle-up", "triangle-down"])),
+                tooltip=["Closed", "Direction", "Outcome", "Review", "Process score", "Result R", "Classification"],
+            ).properties(height=300)
+            st.altair_chart(chart, width="stretch")
+            st.caption(
+                f"Color: {tr('Profit')} / {tr('Loss')} / {tr('Breakeven')} · "
+                f"Shape: {tr('Long')} / {tr('Short')}. Only reviewed trades with standard 1R are plotted. "
+                "A positive result does not prove good process, and a loss does not prove poor process."
+            )
         else:
             st.caption("Approve reviews and configure standard risk to compare process score with outcome R.")
     with right:

@@ -40,6 +40,7 @@ class TradePerformancePoint:
     exit_time: str
     position_id: str | None
     symbol: str
+    direction: str
     net_pnl: str
     result_r: str | None
     strategy: str | None
@@ -197,6 +198,7 @@ class DashboardService:
                     exit_time=reporting_datetime(trade.exit_time, trade.server_utc_offset_minutes, time_basis).isoformat(),
                     position_id=trade.position_id,
                     symbol=trade.symbol,
+                    direction=trade.direction,
                     net_pnl=_decimal_string(trade_pnl),
                     result_r=trade.result_r,
                     strategy=trade.strategy,

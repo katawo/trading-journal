@@ -41,6 +41,11 @@ def test_app_renders_local_mt5_import_entrypoint(monkeypatch, tmp_path):
     assert app.title[0].value == "Trade Compass"
     assert any("Local-first" in item.value for item in app.caption)
 
+    import app as journal_app
+
+    assert journal_app.application_version() == "0.1.0"
+    assert journal_app.supported_mt5_schema_versions() == "5"
+
 
 def test_app_requires_a_reset_for_legacy_monthly_target_data(monkeypatch, tmp_path):
     database_path = tmp_path / "journal.db"

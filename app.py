@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from importlib.metadata import PackageNotFoundError, version
 from uuid import uuid4
 from decimal import Decimal
 from pathlib import Path
@@ -13,6 +14,7 @@ from trading_journal.application.auto_sync import MT5AutoSyncResult, MT5AutoSync
 from trading_journal.application.dashboard import DashboardService
 from trading_journal.application.framework import FrameworkService
 from trading_journal.application.display_time import format_relative_time
+from trading_journal.application.import_mt5 import SUPPORTED_SCHEMA_VERSIONS
 from trading_journal.application.mt5_paths import default_mt5_export_path, find_mt5_common_files
 from trading_journal.desktop import DesktopSyncControl, DesktopSyncStatusStore, desktop_runtime_paths, is_desktop_mode
 from trading_journal.infrastructure.sqlite_repository import AccountListItem, JournalDatabaseResetRequiredError, SQLiteJournalRepository
@@ -31,6 +33,7 @@ from trading_journal.presentation.i18n import (
     install_streamlit_translations,
     tr,
 )
+from trading_journal.presentation.trade_tags import direction_tag, outcome_tag
 
 
 _CURRENCY_SYMBOLS = {"USD": "$", "EUR": "€", "GBP": "£", "JPY": "¥", "AUD": "A$", "CAD": "C$", "CHF": "CHF", "NZD": "NZ$"}
@@ -39,6 +42,18 @@ _FRESHNESS_INTERVAL_SECONDS = 5
 _ANALYTICS_CACHE_TTL_SECONDS = 15
 _CHART_POSITIVE = "#0e9163"
 _CHART_NEGATIVE = "#c73545"
+
+
+def application_version() -> str:
+    """Return the installed application version, including in desktop bundles."""
+    try:
+        return version("trading-journal")
+    except PackageNotFoundError:
+        return "0.1.0"
+
+
+def supported_mt5_schema_versions() -> str:
+    return ", ".join(str(item) for item in sorted(SUPPORTED_SCHEMA_VERSIONS))
 
 
 def format_number(value: str | Decimal, decimal_places: int = 2) -> str:
@@ -91,14 +106,36 @@ def apply_application_style() -> None:
     st.html("""
         <style>
         [data-testid="stAppViewContainer"] > .main .block-container { max-width: 1480px; padding-top: 2.6rem; padding-bottom: 4rem; }
-        [data-testid="stSidebar"] [data-testid="stSidebarNav"] { padding-top: 1.75rem; }
+        [data-testid="stSidebar"] [data-testid="stSidebarNav"] { padding-top: 1.75rem; padding-bottom: 3.4rem; }
         [data-testid="stSidebar"] [data-testid="stSidebarNav"] a { border-radius: 8px; margin: 0.12rem 0.75rem; padding: 0.48rem 0.65rem; font-weight: 600; }
         h1, h2, h3 { letter-spacing: -0.03em; }
         h1 { font-size: 2.8rem !important; margin-bottom: 0.15rem !important; }
         h2 { margin-top: 1.35rem !important; }
         .stButton > button { border-radius: 6px; font-weight: 650; }
+        [data-testid="stSidebar"] .trade-compass-build-info {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            z-index: 1;
+            box-sizing: border-box;
+            width: var(--st-sidebar-width, 21rem);
+            padding: 0.65rem 1rem;
+            border-top: 1px solid var(--border-color);
+            background: var(--secondary-background-color);
+            color: var(--text-color);
+            font-size: 0.78rem;
+            opacity: 0.8;
+        }
         </style>
         """)
+
+
+def render_build_info() -> None:
+    st.sidebar.html(
+        "<div class=\"trade-compass-build-info\">"
+        f"App v{application_version()} · MT5 schema v{supported_mt5_schema_versions()}"
+        "</div>"
+    )
 
 
 @st.cache_data(ttl=_ANALYTICS_CACHE_TTL_SECONDS, max_entries=32, show_spinner=False)
@@ -977,7 +1014,7 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
         [item.__dict__ for item in report.per_trade],
         columns=[
             "sequence", "logical_trade_id", "display_label", "position_ids", "position_count", "exit_time", "position_id",
-            "symbol", "net_pnl", "result_r", "strategy", "cumulative_pnl", "balance", "drawdown", "drawdown_percent",
+            "symbol", "direction", "net_pnl", "result_r", "strategy", "cumulative_pnl", "balance", "drawdown", "drawdown_percent",
         ],
     )
     daily = pd.DataFrame([item.__dict__ for item in report.daily])
@@ -1103,6 +1140,8 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
                     tr("Trade"): per_trade["display_label"],
                     tr("Positions"): [", ".join(f"#{position_id}" for position_id in position_ids) for position_ids in per_trade["position_ids"]],
                     tr("Symbol"): per_trade["symbol"],
+                    tr("Direction"): [tr(direction_tag(value).label) for value in per_trade["direction"]],
+                    tr("Outcome"): [tr(outcome_tag(value).label) for value in per_trade["net_pnl"]],
                     f"P&L ({currency})": [format_currency(value, currency) for value in per_trade["net_pnl"]],
                     tr("Result R"): ["—" if value is None else format_signed(value, "R") for value in per_trade["result_r"]],
                     tr("Post-close drawdown"): [format_currency(-Decimal(value), currency) for value in per_trade["drawdown"]],
@@ -1167,6 +1206,7 @@ def main() -> None:
         )
         st.rerun()
     apply_application_style()
+    render_build_info()
     st.title("Trade Compass")
     st.caption("Local-first trade review, guided by discipline.")
     page = st.navigation(

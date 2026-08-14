@@ -487,6 +487,7 @@ class TradePerformanceItem:
     server_utc_offset_minutes: int
     position_id: str | None
     symbol: str
+    direction: str
     net_pnl: str
     result_r: str | None
     strategy: str | None
@@ -2647,6 +2648,7 @@ class SQLiteJournalRepository:
                         server_utc_offset_minutes=trade.server_utc_offset_minutes,
                         position_id=trade.position_id,
                         symbol=trade.symbol,
+                        direction=trade.direction,
                         net_pnl=trade.net_pnl,
                         result_r=None if effective_risk is None else _decimal_string(Decimal(trade.net_pnl) / Decimal(effective_risk)),
                         strategy=strategy,
