@@ -25,18 +25,13 @@ def test_new_journal_starts_with_a_default_strategy(tmp_path) -> None:
     assert settings.default_strategy_name == "Journal default"
 
 
-def test_strategy_profile_persists_optional_backtest_context(tmp_path) -> None:
+def test_strategy_profile_persists_backtest_verification(tmp_path) -> None:
     repository = _repository(tmp_path)
 
     repository.save_strategy_profile(
         name="Motimoti",
         description="Trend-continuation setup after a pullback.",
-        backtest_start_date="2024-01-01",
-        backtest_end_date="2024-12-31",
-        backtest_trade_count=120,
-        backtest_win_rate="57.5",
-        backtest_expectancy_r="0.42",
-        backtest_net_r="50.4",
+        backtest_verified=True,
         backtest_notes="M15 XAUUSD sample, 1R fixed risk.",
     )
 
@@ -44,28 +39,7 @@ def test_strategy_profile_persists_optional_backtest_context(tmp_path) -> None:
 
     assert profile is not None
     assert profile.name == "Motimoti"
-    assert profile.backtest_period == "2024-01-01 to 2024-12-31"
-    assert profile.backtest_trade_count == 120
-    assert profile.backtest_win_rate == "57.5"
-    assert profile.backtest_expectancy_r == "0.42"
-    assert profile.backtest_net_r == "50.4"
-
-
-def test_strategy_profile_validates_backtest_ranges(tmp_path) -> None:
-    repository = _repository(tmp_path)
-
-    with pytest.raises(ValueError, match="end date"):
-        repository.save_strategy_profile(
-            name="Motimoti",
-            description=None,
-            backtest_start_date="2024-12-31",
-            backtest_end_date="2024-01-01",
-            backtest_trade_count=None,
-            backtest_win_rate=None,
-            backtest_expectancy_r=None,
-            backtest_net_r=None,
-            backtest_notes=None,
-        )
+    assert profile.backtest_verified is True
 
 
 def test_configured_account_creation_is_atomic_and_activates_the_account(tmp_path) -> None:
@@ -92,8 +66,7 @@ def test_configured_account_creation_is_atomic_and_activates_the_account(tmp_pat
 def test_delete_strategy_profile_removes_an_unbound_strategy(tmp_path) -> None:
     repository = _repository(tmp_path)
     profile = repository.save_strategy_profile(
-        name="Unused", description="Not bound to anything.", backtest_start_date=None, backtest_end_date=None,
-        backtest_trade_count=None, backtest_win_rate=None, backtest_expectancy_r=None, backtest_net_r=None, backtest_notes=None,
+        name="Unused", description="Not bound to anything.", backtest_notes=None,
     )
     repository.save_strategy_setup(strategy_profile_id=profile.id, name="London pullback")
 
@@ -105,8 +78,7 @@ def test_delete_strategy_profile_removes_an_unbound_strategy(tmp_path) -> None:
 def test_delete_strategy_profile_rejects_a_strategy_bound_to_an_account(tmp_path) -> None:
     repository = _repository(tmp_path)
     profile = repository.save_strategy_profile(
-        name="Bound", description="desc", backtest_start_date=None, backtest_end_date=None,
-        backtest_trade_count=None, backtest_win_rate=None, backtest_expectancy_r=None, backtest_net_r=None, backtest_notes=None,
+        name="Bound", description="desc", backtest_notes=None,
     )
     repository.register_mt5_account(
         display_name="Primary", login="123456", broker_server="DemoBroker-Live", account_currency="USD",
@@ -139,12 +111,10 @@ def test_configured_account_creation_rolls_back_on_invalid_risk_policy(tmp_path)
 def test_update_mt5_account_can_change_the_bound_strategy_before_trades_import(tmp_path) -> None:
     repository = _repository(tmp_path)
     first = repository.save_strategy_profile(
-        name="Motimoti", description="Trend-continuation setup.", backtest_start_date=None, backtest_end_date=None,
-        backtest_trade_count=None, backtest_win_rate=None, backtest_expectancy_r=None, backtest_net_r=None, backtest_notes=None,
+        name="Motimoti", description="Trend-continuation setup.", backtest_notes=None,
     )
     second = repository.save_strategy_profile(
-        name="Reversal", description="Fade extended moves.", backtest_start_date=None, backtest_end_date=None,
-        backtest_trade_count=None, backtest_win_rate=None, backtest_expectancy_r=None, backtest_net_r=None, backtest_notes=None,
+        name="Reversal", description="Fade extended moves.", backtest_notes=None,
     )
     repository.register_mt5_account(
         display_name="Primary", login="123456", broker_server="DemoBroker-Live", account_currency="USD",
@@ -164,12 +134,10 @@ def test_update_mt5_account_can_change_the_bound_strategy_before_trades_import(t
 def test_update_mt5_account_locks_the_bound_strategy_once_trades_are_imported(tmp_path) -> None:
     repository = _repository(tmp_path)
     first = repository.save_strategy_profile(
-        name="Motimoti", description="Trend-continuation setup.", backtest_start_date=None, backtest_end_date=None,
-        backtest_trade_count=None, backtest_win_rate=None, backtest_expectancy_r=None, backtest_net_r=None, backtest_notes=None,
+        name="Motimoti", description="Trend-continuation setup.", backtest_notes=None,
     )
     second = repository.save_strategy_profile(
-        name="Reversal", description="Fade extended moves.", backtest_start_date=None, backtest_end_date=None,
-        backtest_trade_count=None, backtest_win_rate=None, backtest_expectancy_r=None, backtest_net_r=None, backtest_notes=None,
+        name="Reversal", description="Fade extended moves.", backtest_notes=None,
     )
     repository.register_mt5_account(
         display_name="Primary", login="123456", broker_server="DemoBroker-Live", account_currency="USD",
@@ -213,34 +181,12 @@ def test_update_mt5_account_locks_the_bound_strategy_once_trades_are_imported(tm
     assert repository.get_account_strategy(account.id).name == "Motimoti"
 
 
-def test_strategy_profile_validates_backtest_win_rate_range(tmp_path) -> None:
-    repository = _repository(tmp_path)
-
-    with pytest.raises(ValueError, match="between 0 and 100"):
-        repository.save_strategy_profile(
-            name="Motimoti",
-            description=None,
-            backtest_start_date=None,
-            backtest_end_date=None,
-            backtest_trade_count=10,
-            backtest_win_rate="101",
-            backtest_expectancy_r=None,
-            backtest_net_r=None,
-            backtest_notes=None,
-        )
-
-
 def test_dashboard_links_live_strategy_performance_to_backtest_context(tmp_path) -> None:
     repository = _repository(tmp_path)
     profile = repository.save_strategy_profile(
         name="Motimoti",
         description=None,
-        backtest_start_date=None,
-        backtest_end_date=None,
-        backtest_trade_count=80,
-        backtest_win_rate="55",
-        backtest_expectancy_r="0.3",
-        backtest_net_r="24",
+        backtest_verified=True,
         backtest_notes=None,
     )
     repository.set_default_strategy(profile.id)
@@ -283,10 +229,7 @@ def test_dashboard_links_live_strategy_performance_to_backtest_context(tmp_path)
 
     assert strategy.strategy == "Motimoti"
     assert strategy.net_pnl == "20"
-    assert strategy.backtest_trade_count == 80
-    assert strategy.backtest_win_rate == "55"
-    assert strategy.backtest_expectancy_r == "0.3"
-    assert strategy.backtest_net_r == "24"
+    assert strategy.backtest_verified is True
 
 
 def test_default_strategy_is_inherited_by_every_trade(tmp_path) -> None:
@@ -295,12 +238,6 @@ def test_default_strategy_is_inherited_by_every_trade(tmp_path) -> None:
         repository.save_strategy_profile(
             name=name,
             description=None,
-            backtest_start_date=None,
-            backtest_end_date=None,
-            backtest_trade_count=None,
-            backtest_win_rate=None,
-            backtest_expectancy_r=None,
-            backtest_net_r=None,
             backtest_notes=None,
         )
     repository.set_default_strategy("Motimoti")
@@ -375,12 +312,6 @@ def test_profile_rename_preserves_the_default_strategy_by_id(tmp_path) -> None:
     profile = repository.save_strategy_profile(
         name="Motimoti",
         description=None,
-        backtest_start_date=None,
-        backtest_end_date=None,
-        backtest_trade_count=None,
-        backtest_win_rate=None,
-        backtest_expectancy_r=None,
-        backtest_net_r=None,
         backtest_notes=None,
     )
     repository.set_default_strategy(profile.id)
@@ -423,12 +354,6 @@ def test_profile_rename_preserves_the_default_strategy_by_id(tmp_path) -> None:
         strategy_id=profile.id,
         name="Motimoti Trend",
         description=None,
-        backtest_start_date=None,
-        backtest_end_date=None,
-        backtest_trade_count=None,
-        backtest_win_rate=None,
-        backtest_expectancy_r=None,
-        backtest_net_r=None,
         backtest_notes=None,
     )
 

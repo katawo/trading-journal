@@ -245,8 +245,8 @@ Theo dõi tính một bộ thành phần giai đoạn thứ hai từ cửa sổ 
 | Tính hợp lệ của setup | 20% | Trung bình mức Tính hợp lệ của setup đã đánh giá. |
 | Tuân thủ kế hoạch execution | 20% | Trung bình mức Điểm vào, Vô hiệu hóa và Quản lý/thoát lệnh. |
 | Phù hợp bối cảnh | 15% | Trung bình mức Phù hợp bối cảnh đã đánh giá. |
-| Chất lượng bằng chứng | 20% | 100 khi chiến lược gắn có mô tả, ngày backtest và ít nhất 100 giao dịch backtest; 50 khi đã ghi chép nhưng dưới 100; nếu không là 0. |
-| Bằng chứng edge | 25% | 100 cho ít nhất 100 giao dịch backtest có expectancy dương sau chi phí; 50 cho ít nhất 50 giao dịch expectancy dương; nếu không là 0. |
+| Chất lượng bằng chứng | 20% | 100 khi backtest của chiến lược gắn được đánh dấu đã xác minh; nếu không là 0. |
+| Bằng chứng edge | 25% | 100 khi backtest của chiến lược gắn được đánh dấu đã xác minh; nếu không là 0. |
 
 ### Trạng thái, mức độ đầy đủ và mức sẵn sàng
 
@@ -287,7 +287,7 @@ Ba trụ cột tiến song song:
 | Mức | Cổng |
 |---|---|
 | Xác định | Quy tắc và bằng chứng đã được ghi chép. |
-| Kiểm chứng | Bằng chứng kiểm thử hoặc thực hành đã được ghi chép. Kiểm thử Hệ thống cần hơn 100 giao dịch backtest có expectancy dương sau chi phí. |
+| Kiểm chứng | Bằng chứng kiểm thử hoặc thực hành đã được ghi chép. Kiểm thử Hệ thống cần backtest của chiến lược được đánh dấu đã xác minh. |
 | Thực hiện | 20 đánh giá đầy đủ, điểm ít nhất 70 và không có lỗi cứng đang hoạt động. |
 | Đo lường | 30 đánh giá đầy đủ, một đánh giá tuần hoặc tháng đã lưu cho giai đoạn hoàn tất gần nhất, điểm 30 đánh giá ít nhất 80 và không có lỗi cứng. |
 | Tối ưu | Một giả thuyết, đường cơ sở, kết quả và quyết định giữ/loại đã được ghi lại. |
@@ -299,7 +299,7 @@ Hầu hết các mục trong lộ trình được tự động phát hiện từ
 - Thực hiện và Đo lường (cả ba trụ cột) tự hoàn tất ngay khi đủ điều kiện về số lượng đánh giá/điểm số/lỗi cứng/đánh giá giai đoạn.
 - Tối ưu (cả ba trụ cột) tự hoàn tất khi một Trọng tâm coaching của trụ cột đó đã được giải quyết (hoàn tất hoặc từ bỏ) kèm ghi chú phản ánh.
 - Bước Xác định của Rủi ro tự hoàn tất ngay khi chính sách rủi ro của tài khoản được lưu.
-- Các bước Xác định, Kiểm chứng và backtest của Hệ thống giao dịch tự hoàn tất từ hồ sơ chiến lược gắn với tài khoản đang chọn: có mô tả, một setup có ví dụ minh họa, và bằng chứng backtest (100+ giao dịch, expectancy dương) tương ứng.
+- Các bước Xác định, Kiểm chứng và backtest của Hệ thống giao dịch tự hoàn tất từ hồ sơ chiến lược gắn với tài khoản đang chọn: có mô tả, một setup có ví dụ minh họa, và backtest được đánh dấu đã xác minh tương ứng.
 
 Chỉ những mục không có dữ liệu tương ứng nào trong ứng dụng mới cần tự xác nhận thủ công — bước Xác định và Kiểm chứng của Tâm lý, và bước Kiểm chứng "bằng chứng tính toán/mô phỏng rủi ro" của Rủi ro. Chỉ hoàn tất các mục đó trong **Định hướng → Cải thiện** khi có thể giải thích và xem lại.
 

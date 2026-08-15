@@ -66,7 +66,7 @@ ROADMAP_ITEMS: dict[str, dict[int, tuple[tuple[str, str], ...]]] = {
     },
     "system": {
         1: (("rules", "Define context, entry, invalidation, exit, and no-trade rules"), ("examples", "Document valid and invalid examples")),
-        2: (("backtest", "Record 100+ backtest trades with positive expectancy after costs"),),
+        2: (("backtest", "Mark the strategy's backtest as verified"),),
         3: (("execution", "20 full reviews, score at least 70, no active hard failure"),),
         4: (("measure", "30 full reviews, current period review, score at least 80"),),
         5: (("hypothesis", "Record one system hypothesis, baseline, result, and keep/reject decision"),),
@@ -807,11 +807,8 @@ class FrameworkService:
             return False, None
         if pillar == "system" and item_key == "backtest":
             profile = self._repository.get_account_strategy(account_id)
-            if profile.backtest_trade_count is not None and profile.backtest_trade_count >= 100:
-                expectancy_positive = profile.backtest_expectancy_r is not None and Decimal(profile.backtest_expectancy_r) > 0
-                net_r_positive = profile.backtest_net_r is not None and Decimal(profile.backtest_net_r) > 0
-                if expectancy_positive or net_r_positive:
-                    return True, f"Backtest: {profile.backtest_trade_count} trades, expectancy {profile.backtest_expectancy_r or '—'}R."
+            if profile.backtest_verified:
+                return True, "Backtest verified."
             return False, None
         return None
 
@@ -1051,8 +1048,8 @@ class FrameworkService:
             execution_values.extend(GRADE_VALUES[grades[item.trade_id][key]] for key in ("entry_fidelity", "invalidation_fidelity", "management_exit_fidelity"))
         execution = sum(execution_values, Decimal("0")) / len(execution_values) if execution_values else None
         context = self._average_grade((grades[item.trade_id] for item in sample), "context_alignment")
-        evidence_quality = self._strategy_evidence_component(sample, edge=False)
-        edge = self._strategy_evidence_component(sample, edge=True)
+        evidence_quality = self._strategy_evidence_component(sample)
+        edge = evidence_quality
         return (("Setup validity", setup), ("Execution fidelity", execution), ("Context alignment", context), ("Evidence quality", evidence_quality), ("Edge evidence", edge))
 
     @staticmethod
@@ -1084,20 +1081,14 @@ class FrameworkService:
         return sum(values, Decimal("0")) / len(values) if values else None
 
     @staticmethod
-    def _strategy_evidence_component(sample: list[TradeProcessScore], *, edge: bool) -> Decimal | None:
+    def _strategy_evidence_component(sample: list[TradeProcessScore]) -> Decimal | None:
         values = []
         for item in sample:
             strategy = item.mapped_strategy
             if strategy is None:
                 values.append(Decimal("100") if item.review_kind == "manual_review" else Decimal("50"))
                 continue
-            documented = bool(strategy.description and strategy.backtest_start_date and strategy.backtest_end_date)
-            count = strategy.backtest_trade_count or 0
-            expectancy = Decimal(strategy.backtest_expectancy_r) if strategy.backtest_expectancy_r is not None else None
-            if edge:
-                values.append(Decimal("100") if count >= 100 and expectancy is not None and expectancy > 0 else Decimal("50") if count >= 50 and expectancy is not None and expectancy > 0 else Decimal("0"))
-            else:
-                values.append(Decimal("100") if documented and count >= 100 else Decimal("50") if documented else Decimal("0"))
+            values.append(Decimal("100") if strategy.backtest_verified else Decimal("0"))
         return sum(values, Decimal("0")) / len(values) if values else None
 
     def _review_after_last_critical(self, pillar: str, sample: list[TradeProcessScore]) -> tuple[bool, str | None]:

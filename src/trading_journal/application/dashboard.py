@@ -63,10 +63,7 @@ class StrategyPerformance:
     strategy: str
     net_pnl: str
     total_r: str | None
-    backtest_trade_count: int | None = None
-    backtest_win_rate: str | None = None
-    backtest_expectancy_r: str | None = None
-    backtest_net_r: str | None = None
+    backtest_verified: bool = False
 
 
 @dataclass(frozen=True)
@@ -311,10 +308,7 @@ class DashboardService:
                     strategy,
                     _decimal_string(pnl),
                     None if total_r is None else _decimal_string(total_r),
-                    backtest_trade_count=profiles_by_name[normalize_strategy_name(strategy)].backtest_trade_count if normalize_strategy_name(strategy) in profiles_by_name else None,
-                    backtest_win_rate=profiles_by_name[normalize_strategy_name(strategy)].backtest_win_rate if normalize_strategy_name(strategy) in profiles_by_name else None,
-                    backtest_expectancy_r=profiles_by_name[normalize_strategy_name(strategy)].backtest_expectancy_r if normalize_strategy_name(strategy) in profiles_by_name else None,
-                    backtest_net_r=profiles_by_name[normalize_strategy_name(strategy)].backtest_net_r if normalize_strategy_name(strategy) in profiles_by_name else None,
+                    backtest_verified=profiles_by_name[normalize_strategy_name(strategy)].backtest_verified if normalize_strategy_name(strategy) in profiles_by_name else False,
                 )
                 for strategy, (pnl, total_r) in sorted(strategies.items())
             ],

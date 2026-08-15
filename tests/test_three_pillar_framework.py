@@ -123,12 +123,7 @@ def _strategy(repository: SQLiteJournalRepository):
     profile = repository.save_strategy_profile(
         name="Trend continuation",
         description="Trade a confirmed pullback continuation.",
-        backtest_start_date="2024-01-01",
-        backtest_end_date="2025-01-01",
-        backtest_trade_count=120,
-        backtest_win_rate="52",
-        backtest_expectancy_r="0.25",
-        backtest_net_r="30",
+        backtest_verified=True,
         backtest_notes="Representative sample including modeled costs.",
     )
     repository.save_strategy_setup(
@@ -1003,12 +998,7 @@ def test_editing_a_strategy_later_does_not_change_an_already_reviewed_trades_sco
         strategy_id=strategy.id,
         name=strategy.name,
         description=None,
-        backtest_start_date=None,
-        backtest_end_date=None,
-        backtest_trade_count=None,
-        backtest_win_rate=None,
-        backtest_expectancy_r="-1",
-        backtest_net_r=None,
+        backtest_verified=False,
         backtest_notes=None,
     )
 

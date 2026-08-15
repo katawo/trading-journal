@@ -42,12 +42,7 @@ entity "strategy_profiles" as strategy_profiles {
   name : VARCHAR(100)
   normalized_name : VARCHAR(100) <<UQ>>
   description : VARCHAR(2000)?
-  backtest_start_date : VARCHAR(10)?
-  backtest_end_date : VARCHAR(10)?
-  backtest_trade_count : INTEGER?
-  backtest_win_rate : VARCHAR?
-  backtest_expectancy_r : VARCHAR?
-  backtest_net_r : VARCHAR?
+  backtest_verified : BOOLEAN
   backtest_notes : VARCHAR(2000)?
 }
 

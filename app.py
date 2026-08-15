@@ -65,7 +65,7 @@ def application_version() -> str:
     try:
         return version("trade-compass")
     except PackageNotFoundError:
-        return "0.1.5"
+        return "0.1.6"
 
 
 def supported_mt5_schema_versions() -> str:
@@ -983,12 +983,7 @@ def render_strategy_settings(repo: SQLiteJournalRepository) -> None:
         for name in (
             "name",
             "description",
-            "backtest-start",
-            "backtest-end",
-            "backtest-trades",
-            "backtest-win-rate",
-            "backtest-expectancy",
-            "backtest-net-r",
+            "backtest-verified",
             "backtest-notes",
         ):
             st.session_state.pop(f"strategy-new-{name}", None)
@@ -1019,17 +1014,12 @@ def render_strategy_settings(repo: SQLiteJournalRepository) -> None:
     defaults = {
         "name": selected.name if selected else "",
         "description": selected.description or "" if selected else "",
-        "backtest-start": selected.backtest_start_date or "" if selected else "",
-        "backtest-end": selected.backtest_end_date or "" if selected else "",
-        "backtest-trades": str(selected.backtest_trade_count) if selected and selected.backtest_trade_count is not None else "",
-        "backtest-win-rate": selected.backtest_win_rate or "" if selected else "",
-        "backtest-expectancy": selected.backtest_expectancy_r or "" if selected else "",
-        "backtest-net-r": selected.backtest_net_r or "" if selected else "",
+        "backtest-verified": bool(selected.backtest_verified) if selected else False,
         "backtest-notes": selected.backtest_notes or "" if selected else "",
     }
     for name, value in defaults.items():
         st.session_state.setdefault(field_key(name), value)
-    has_backtest = bool(selected and any(defaults[name] for name in defaults if name.startswith("backtest-")))
+    has_backtest = bool(selected and (selected.backtest_verified or selected.backtest_notes))
 
     with detail:
         strategy_editor = st.container(border=True)
@@ -1043,30 +1033,20 @@ def render_strategy_settings(repo: SQLiteJournalRepository) -> None:
             )
             with st.expander("Add backtest evidence (optional)", expanded=has_backtest):
                 st.caption("Leave this closed unless you want to record the evidence behind this strategy.")
-                first, second = st.columns(2)
-                backtest_start_date = first.text_input("Backtest start date", placeholder="YYYY-MM-DD", key=field_key("backtest-start"))
-                backtest_end_date = second.text_input("Backtest end date", placeholder="YYYY-MM-DD", key=field_key("backtest-end"))
-                first, second = st.columns(2)
-                backtest_trade_count = first.text_input("Backtest sample size", placeholder="e.g. 120", key=field_key("backtest-trades"))
-                backtest_win_rate = second.text_input("Backtest win rate (%)", placeholder="e.g. 57.5", key=field_key("backtest-win-rate"))
-                first, second = st.columns(2)
-                backtest_expectancy_r = first.text_input("Backtest expectancy (R)", placeholder="e.g. 0.42", key=field_key("backtest-expectancy"))
-                backtest_net_r = second.text_input("Backtest net R", placeholder="e.g. 50.4", key=field_key("backtest-net-r"))
+                backtest_verified = st.checkbox(
+                    "Backtest verified",
+                    key=field_key("backtest-verified"),
+                    help="Confirms you have reviewed a trustworthy backtest showing this strategy has a positive edge.",
+                )
                 backtest_notes = st.text_area("Backtest notes", placeholder="Market, timeframe, rules, and any material caveats.", key=field_key("backtest-notes"))
             submitted = st.form_submit_button("Save strategy", type="primary", icon=":material/save:")
         if submitted:
             try:
-                repository_trade_count = int(backtest_trade_count) if backtest_trade_count.strip() else None
                 with st.spinner(tr("Saving…")):
                     profile = repo.save_strategy_profile(
                         name=name,
                         description=description or None,
-                        backtest_start_date=backtest_start_date or None,
-                        backtest_end_date=backtest_end_date or None,
-                        backtest_trade_count=repository_trade_count,
-                        backtest_win_rate=backtest_win_rate or None,
-                        backtest_expectancy_r=backtest_expectancy_r or None,
-                        backtest_net_r=backtest_net_r or None,
+                        backtest_verified=backtest_verified,
                         backtest_notes=backtest_notes or None,
                         strategy_id=selected.id if selected else None,
                     )
@@ -1375,7 +1355,9 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
 
     if chart_view == "Per trade":
         with st.container(border=True):
-            st.markdown("#### Closed-trade detail")
+            with st.container(horizontal=True, vertical_alignment="center", gap="small", width="content"):
+                st.markdown("#### Closed-trade detail")
+                _render_help_popover("This view follows the current logical-trade grouping for review analysis. Account balance and account drawdown remain based on immutable MT5 positions in Daily view.")
             trade_table = pd.DataFrame(
                 {
                     tr("Closed"): per_trade["exit_time"],
@@ -1394,8 +1376,9 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
             _render_help_popover("This view follows the current logical-trade grouping for review analysis. Account balance and account drawdown remain based on immutable MT5 positions in Daily view.")
 
     with st.container(border=True):
-        st.subheader("Concentration (80/20)")
-        _render_help_popover("Use this outcome-only lens to prioritize a review sample. It does not prove cause, system quality, or trading readiness.")
+        with st.container(horizontal=True, vertical_alignment="center", gap="small", width="content"):
+            st.subheader("Concentration (80/20)")
+            _render_help_popover("Use this outcome-only lens to prioritize a review sample. It does not prove cause, system quality, or trading readiness.")
         concentration_options = {
             tr("Symbol"): "symbol",
             tr("Trade"): "trade",

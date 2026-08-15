@@ -258,8 +258,8 @@ The Monitor computes a second set of period components from the reviewed window.
 | Setup validity | 20% | Average reviewed Setup validity grade. |
 | Execution fidelity | 20% | Average of Entry, Invalidation, and Management/exit grades. |
 | Context alignment | 15% | Average reviewed Context alignment grade. |
-| Evidence quality | 20% | 100 when the attached strategy has a description, backtest dates, and at least 100 backtest trades; 50 when it is documented but below 100; otherwise 0. |
-| Edge evidence | 25% | 100 for at least 100 backtest trades with positive expectancy after costs; 50 for at least 50 with positive expectancy; otherwise 0. |
+| Evidence quality | 20% | 100 when the attached strategy's backtest is marked verified; otherwise 0. |
+| Edge evidence | 25% | 100 when the attached strategy's backtest is marked verified; otherwise 0. |
 
 ### Status, completeness, and readiness
 
@@ -306,7 +306,7 @@ The three pillars progress in parallel:
 | Level | Gate |
 |---|---|
 | Define | Rules and evidence are documented. |
-| Test | Testing or practice evidence is documented. System testing requires 100+ backtest trades with positive expectancy after costs. |
+| Test | Testing or practice evidence is documented. System testing requires the strategy's backtest to be marked verified. |
 | Execute | 20 full reviews, score at least 70, and no active hard failure. |
 | Measure | 30 full reviews, a saved weekly or monthly review for the latest completed period, a 30-review score of at least 80, and no active hard failure. |
 | Optimize | A hypothesis, baseline, result, and keep/reject decision are recorded. |
@@ -318,7 +318,7 @@ Most roadmap items are detected automatically from data already saved elsewhere 
 - Execute and Measure (all three pillars) complete themselves the moment their review-count/score/hard-failure/period-review conditions are met.
 - Optimize (all three pillars) completes itself once a Coaching focus for that pillar has been resolved (completed or abandoned) with a reflection note.
 - Risk's Define step completes itself once the account's Risk policy is saved.
-- Trading system's Define, Test, and backtest steps complete themselves from the strategy bound to the selected account: a documented description, a setup with a documented example, and backtest evidence (100+ trades, positive expectancy) respectively.
+- Trading system's Define, Test, and backtest steps complete themselves from the strategy bound to the selected account: a documented description, a setup with a documented example, and a backtest marked verified respectively.
 
 Only the items with no equivalent structured data anywhere in the app stay self-certified — Psychology's Define and Test steps, and Risk's "risk-calculation or simulation evidence" Test step. Complete those in **Bearings → Improve** only when they can be explained and revisited.
 

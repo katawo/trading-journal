@@ -45,7 +45,7 @@ def test_app_renders_local_mt5_import_entrypoint(monkeypatch, tmp_path):
 
     import app as journal_app
 
-    assert journal_app.application_version() == "0.1.5"
+    assert journal_app.application_version() == "0.1.6"
     assert journal_app.supported_mt5_schema_versions() == "5"
 
 
@@ -262,8 +262,7 @@ def test_onboarding_system_step_reflects_mode_after_going_back(monkeypatch, tmp_
     repository = SQLiteJournalRepository(database_path)
     repository.initialize()
     repository.save_strategy_profile(
-        name="aaa", description="desc", backtest_start_date=None, backtest_end_date=None,
-        backtest_trade_count=None, backtest_win_rate=None, backtest_expectancy_r=None, backtest_net_r=None, backtest_notes=None,
+        name="aaa", description="desc", backtest_notes=None,
     )
     monkeypatch.setenv("TRADING_JOURNAL_DB", str(database_path))
 
@@ -350,12 +349,10 @@ def test_settings_can_change_an_unlocked_accounts_strategy(monkeypatch, tmp_path
     repository = SQLiteJournalRepository(database_path)
     repository.initialize()
     first = repository.save_strategy_profile(
-        name="Motimoti", description="Trend-continuation setup.", backtest_start_date=None, backtest_end_date=None,
-        backtest_trade_count=None, backtest_win_rate=None, backtest_expectancy_r=None, backtest_net_r=None, backtest_notes=None,
+        name="Motimoti", description="Trend-continuation setup.", backtest_notes=None,
     )
     second = repository.save_strategy_profile(
-        name="Reversal", description="Fade extended moves.", backtest_start_date=None, backtest_end_date=None,
-        backtest_trade_count=None, backtest_win_rate=None, backtest_expectancy_r=None, backtest_net_r=None, backtest_notes=None,
+        name="Reversal", description="Fade extended moves.", backtest_notes=None,
     )
     repository.register_mt5_account(
         display_name="Primary", login="123456", broker_server="DemoBroker-Live", account_currency="USD",
@@ -498,9 +495,7 @@ def test_settings_can_switch_the_active_mt5_account(monkeypatch, tmp_path):
     repository = SQLiteJournalRepository(database_path)
     repository.initialize()
     strategy = repository.save_strategy_profile(
-        name="Trend", description="Rules", backtest_start_date=None, backtest_end_date=None,
-        backtest_trade_count=None, backtest_win_rate=None, backtest_expectancy_r=None,
-        backtest_net_r=None, backtest_notes=None,
+        name="Trend", description="Rules", backtest_notes=None,
     )
     repository.register_mt5_account(
         display_name="Primary",
@@ -582,12 +577,7 @@ def test_improve_tab_shows_auto_detected_and_manual_roadmap_items(monkeypatch, t
     strategy = repository.save_strategy_profile(
         name="Trend continuation",
         description="Trade a confirmed pullback continuation.",
-        backtest_start_date="2024-01-01",
-        backtest_end_date="2025-01-01",
-        backtest_trade_count=120,
-        backtest_win_rate="52",
-        backtest_expectancy_r="0.25",
-        backtest_net_r="30",
+        backtest_verified=True,
         backtest_notes="Representative sample including modeled costs.",
     )
     repository.save_strategy_setup(
@@ -609,7 +599,7 @@ def test_improve_tab_shows_auto_detected_and_manual_roadmap_items(monkeypatch, t
     assert "Risk 1%/trade, max 1%, daily 2R, weekly 4R." in markdown_text
     # An unrelated profile cannot advance this account's system roadmap.
     assert "**▶ Define**" in markdown_text
-    assert "Backtest: 120 trades, expectancy 0.25R." not in markdown_text
+    assert "Backtest verified." not in markdown_text
     # Psychology has no structured equivalent, so both level-1 items stay manual.
     assert sum(1 for item in app.checkbox if item.label == "I completed this step") >= 2
     # Risk's still-manual "test" item also renders as a form, not auto-detected.
@@ -739,12 +729,6 @@ def test_monitor_tab_shows_early_estimate_not_incomplete_for_a_partial_sample(mo
     strategy = repository.save_strategy_profile(
         name="Trend continuation",
         description=None,
-        backtest_start_date=None,
-        backtest_end_date=None,
-        backtest_trade_count=None,
-        backtest_win_rate=None,
-        backtest_expectancy_r=None,
-        backtest_net_r=None,
         backtest_notes=None,
     )
     all_pass = {
@@ -831,12 +815,6 @@ def test_monitor_tab_explains_why_a_pillar_is_capped(monkeypatch, tmp_path):
     strategy = repository.save_strategy_profile(
         name="Trend continuation",
         description=None,
-        backtest_start_date=None,
-        backtest_end_date=None,
-        backtest_trade_count=None,
-        backtest_win_rate=None,
-        backtest_expectancy_r=None,
-        backtest_net_r=None,
         backtest_notes=None,
     )
     all_pass = {
@@ -914,12 +892,6 @@ def test_register_flags_the_specific_hard_blocked_pillar(monkeypatch, tmp_path):
     strategy = repository.save_strategy_profile(
         name="Trend continuation",
         description=None,
-        backtest_start_date=None,
-        backtest_end_date=None,
-        backtest_trade_count=None,
-        backtest_win_rate=None,
-        backtest_expectancy_r=None,
-        backtest_net_r=None,
         backtest_notes=None,
     )
     all_pass = {
@@ -1007,12 +979,7 @@ def test_framework_renders_a_filtered_review_register(monkeypatch, tmp_path):
     repository.save_strategy_profile(
         name="Trend continuation",
         description="Confirmed pullback continuation.",
-        backtest_start_date="2024-01-01",
-        backtest_end_date="2025-01-01",
-        backtest_trade_count=120,
-        backtest_win_rate="52",
-        backtest_expectancy_r="0.2",
-        backtest_net_r="24",
+        backtest_verified=True,
         backtest_notes=None,
     )
     repository.upsert_mt5_positions(
@@ -1276,12 +1243,6 @@ def test_reopening_review_after_upgrading_an_auto_review_does_not_crash(monkeypa
     repository.save_strategy_profile(
         name="Trend continuation",
         description=None,
-        backtest_start_date=None,
-        backtest_end_date=None,
-        backtest_trade_count=None,
-        backtest_win_rate=None,
-        backtest_expectancy_r=None,
-        backtest_net_r=None,
         backtest_notes=None,
     )
     repository.upsert_mt5_positions(
@@ -1652,7 +1613,7 @@ def test_dashboard_switches_to_per_trade_view(monkeypatch, tmp_path):
     assert any("current logical-trade grouping" in item.value for item in app.caption)
 
 
-def test_settings_strategies_tab_renders_optional_backtest_fields(monkeypatch, tmp_path):
+def test_settings_strategies_tab_renders_optional_backtest_verification(monkeypatch, tmp_path):
     monkeypatch.setenv("TRADING_JOURNAL_DB", str(tmp_path / "journal.db"))
 
     # Cold Streamlit startup on the Windows CI runner can exceed AppTest's
@@ -1663,7 +1624,7 @@ def test_settings_strategies_tab_renders_optional_backtest_fields(monkeypatch, t
     assert not app.exception
     assert [tab.label for tab in app.tabs] == ["Account & risk", "Strategies", "Review context", "Review rules"]
     assert any(item.value == "Strategy library" for item in app.subheader)
-    assert any(item.label == "Backtest sample size" for item in app.text_input)
+    assert any(item.label == "Backtest verified" for item in app.checkbox)
 
 
 def test_saving_a_new_strategy_immediately_shows_up_in_the_list(monkeypatch, tmp_path):

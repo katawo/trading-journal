@@ -93,8 +93,8 @@ COMPONENT_DEFINITIONS = {
     "Setup validity": "Average reviewed Setup validity grade.",
     "Execution fidelity": "Average of Entry, Invalidation, and Management/exit grades.",
     "Context alignment": "Average reviewed Context alignment grade.",
-    "Evidence quality": "100 when the attached strategy is documented with 100 or more backtest trades; 50 when documented with fewer; otherwise 0.",
-    "Edge evidence": "100 for 100 or more backtest trades with positive expectancy after costs; 50 for 50 or more; otherwise 0.",
+    "Evidence quality": "100 when the attached strategy's backtest is marked verified; otherwise 0.",
+    "Edge evidence": "100 when the attached strategy's backtest is marked verified; otherwise 0.",
 }
 
 
@@ -256,17 +256,18 @@ def _render_pillar_radar(scores: tuple[PillarScore, ...]) -> None:
     )
     st.plotly_chart(figure, width="stretch", config={"displayModeBar": False})
     sample_line = "  ·  ".join(f"{tr(PILLAR_NAMES[score.pillar])} {score.sample_size}" for score in scores)
-    st.caption(tr("Sample size: {sample_line}", sample_line=sample_line))
-    if any(blocked) or any(capped) or any(score.score is None for score in scores):
-        with st.popover("?", icon=":material/help:", width="content"):
-            if any(blocked) and any(capped):
-                st.caption("Pillars marked ✕ in red have an active hard-rule failure; pillars marked ◆ in amber are capped by repeated critical violations — neither score reflects readiness.")
-            elif any(blocked):
-                st.caption("Pillars marked ✕ in red have an active hard-rule failure — their score does not reflect readiness.")
-            elif any(capped):
-                st.caption("Pillars marked ◆ in amber are capped at 59 by repeated critical violations — see the detail below the score card.")
-            elif any(score.score is None for score in scores):
-                st.caption("Pillars without a scored sample yet show as 0 on this chart.")
+    with st.container(horizontal=True, vertical_alignment="center", gap="small", width="content"):
+        st.caption(tr("Sample size: {sample_line}", sample_line=sample_line))
+        if any(blocked) or any(capped) or any(score.score is None for score in scores):
+            with st.popover("?", icon=":material/help:", width="content"):
+                if any(blocked) and any(capped):
+                    st.caption("Pillars marked ✕ in red have an active hard-rule failure; pillars marked ◆ in amber are capped by repeated critical violations — neither score reflects readiness.")
+                elif any(blocked):
+                    st.caption("Pillars marked ✕ in red have an active hard-rule failure — their score does not reflect readiness.")
+                elif any(capped):
+                    st.caption("Pillars marked ◆ in amber are capped at 59 by repeated critical violations — see the detail below the score card.")
+                elif any(score.score is None for score in scores):
+                    st.caption("Pillars without a scored sample yet show as 0 on this chart.")
 
 
 def _render_risk_configuration_notice(service: FrameworkService, account_id: int) -> None:
@@ -1119,10 +1120,6 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
         else:
             st.info(tr("No {status} trades for this account.", status=status_text))
     else:
-        _render_help_popover(
-            "P = Psychology · R = Risk management · S = Trading system. This is each trade's own 13-criterion score — the Monitor tab's rolling pillar scores use a different calculation and can show a different number.",
-            "Classification below: first word = process quality (Good/Needs improvement/Bad), second word = P&L outcome (Win/Loss/Breakeven) — independent of each other.",
-        )
         position_by_id = {trade.id: index for index, (trade, _) in enumerate(visible)}
         start = (current_page - 1) * REVIEW_PAGE_SIZE
         page_items = visible[start : start + REVIEW_PAGE_SIZE]
@@ -1132,7 +1129,16 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
             ("Select", "Logical trade", "Trade", "Positions", "P&L", "Review", "Score", "Hard rules", "Actions"),
             strict=True,
         ):
-            column.caption(tr(label))
+            if label == "Score":
+                with column:
+                    with st.container(horizontal=True, vertical_alignment="center", gap="small", width="content"):
+                        st.caption(tr(label))
+                        _render_help_popover(
+                            "P = Psychology · R = Risk management · S = Trading system. This is each trade's own 13-criterion score — the Monitor tab's rolling pillar scores use a different calculation and can show a different number.",
+                            "Classification below: first word = process quality (Good/Needs improvement/Bad), second word = P&L outcome (Win/Loss/Breakeven) — independent of each other.",
+                        )
+            else:
+                column.caption(tr(label))
         for trade, score in page_items:
             review = {
                 "needs_approval": "Requires review",
@@ -1319,12 +1325,12 @@ def _render_monitor(repo: SQLiteJournalRepository, account: AccountListItem) -> 
     _render_framework_focus(repo, account, service, scores)
     st.metric(tr("Overall readiness"), _score_text(readiness.score), tr(readiness.status.capitalize()), border=True)
     st.caption(readiness.detail)
-    with st.container(horizontal=True, gap="small"):
+    with st.container(horizontal=True, gap="small", vertical_alignment="center"):
         st.metric("Risk checks", f"{coverage.approved}/{coverage.total}", "approved evidence", border=True)
         st.metric("Risk pending", str(coverage.pending), border=True)
         st.metric("Over policy", str(coverage.over_policy), border=True)
         st.metric("Risk unavailable", str(coverage.unavailable), border=True)
-    _render_help_popover("Approved Quick Risk Checks and Manual Reviews both feed pillar scores, readiness, and roadmap gates.")
+        _render_help_popover("Approved Quick Risk Checks and Manual Reviews both feed pillar scores, readiness, and roadmap gates.")
     _render_score_cards(scores, account)
     _render_pillar_radar(scores)
     component_rows = [
@@ -1332,13 +1338,14 @@ def _render_monitor(repo: SQLiteJournalRepository, account: AccountListItem) -> 
         for score in scores for name, value in score.component_scores
     ]
     if component_rows:
-        st.markdown("##### What drives the current scores")
-        st.dataframe(pd.DataFrame(component_rows), hide_index=True, width="stretch")
         present_names = {name for score in scores for name, _ in score.component_scores}
-        with st.popover(tr("What do these mean?"), icon=":material/help:", width="content"):
-            for name in COMPONENT_DEFINITIONS:
-                if name in present_names:
-                    st.caption(f"**{tr(name)}** — {tr(COMPONENT_DEFINITIONS[name])}")
+        with st.container(horizontal=True, vertical_alignment="center", gap="small", width="content"):
+            st.markdown("##### What drives the current scores")
+            with st.popover(tr("What do these mean?"), icon=":material/help:", width="content"):
+                for name in COMPONENT_DEFINITIONS:
+                    if name in present_names:
+                        st.caption(f"**{tr(name)}** — {tr(COMPONENT_DEFINITIONS[name])}")
+        st.dataframe(pd.DataFrame(component_rows), hide_index=True, width="stretch")
     _render_monitor_insights(analysis)
     process_tab, risk_tab, system_tab = st.tabs(["Process & outcomes", "Risk", "System & context"])
     with process_tab:
@@ -1362,9 +1369,11 @@ def _render_monitor_insights(analysis: MonitorAnalysisReport) -> None:
 def _render_monitor_process(service: FrameworkService, account: AccountListItem, analysis: MonitorAnalysisReport, window: int) -> None:
     trend = [row for row in service.rolling_score_trend(account.id, window=window) if analysis.start_date <= row[0][:10] <= analysis.end_date]
     if trend:
+        with st.container(horizontal=True, vertical_alignment="center", gap="small", width="content"):
+            st.markdown("##### Score trend")
+            _render_help_popover("Each point keeps the same approved-review scoring rules as the score cards. Psychology is trader-wide; Risk and System are selected-account only.")
         frame = pd.DataFrame(trend, columns=["Closed", "Psychology", "Risk management", "Trading system"]).set_index("Closed")
         st.line_chart(frame, width="stretch")
-        _render_help_popover("Each point keeps the same approved-review scoring rules as the score cards. Psychology is trader-wide; Risk and System are selected-account only.")
     else:
         st.info("No approved review trend exists in this analysis period.")
     left, right = st.columns(2)
@@ -1530,7 +1539,7 @@ def render_dashboard_coaching_focus(repo: SQLiteJournalRepository, account: Acco
     )
     service = FrameworkService(repo)
     scores = service.pillar_scores(account.id)
-    with st.expander(tr("🎯 Today's coaching action"), expanded=True, key="dashboard-coaching-focus"):
+    with st.expander(tr("🎯 Today's coaching action"), expanded=False, key="dashboard-coaching-focus"):
         _render_framework_focus(repo, account, service, scores, compact=True, show_heading=False)
 
 
@@ -1569,8 +1578,9 @@ def _render_period_reviews(repo: SQLiteJournalRepository, account: AccountListIt
 def _render_roadmap(repo: SQLiteJournalRepository, account: AccountListItem) -> None:
     service = FrameworkService(repo)
     statuses = {item.pillar: item for item in service.roadmap_status(account.id)}
-    st.markdown("#### Readiness roadmap")
-    _render_help_popover("Define, Test, Execute, Measure, then Optimize. Most steps are detected automatically as you use the journal — only a few still need your own note.")
+    with st.container(horizontal=True, vertical_alignment="center", gap="small", width="content"):
+        st.markdown("#### Readiness roadmap")
+        _render_help_popover("Define, Test, Execute, Measure, then Optimize. Most steps are detected automatically as you use the journal — only a few still need your own note.")
 
     pillar_tabs = st.tabs([tr(name) for name in PILLAR_NAMES.values()])
     for (pillar, name), tab in zip(PILLAR_NAMES.items(), pillar_tabs, strict=True):

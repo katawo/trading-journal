@@ -114,12 +114,7 @@ class StrategyProfile(Base):
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     normalized_name: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
     description: Mapped[str | None] = mapped_column(String(2000), nullable=True)
-    backtest_start_date: Mapped[str | None] = mapped_column(String(10), nullable=True)
-    backtest_end_date: Mapped[str | None] = mapped_column(String(10), nullable=True)
-    backtest_trade_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    backtest_win_rate: Mapped[str | None] = mapped_column(String, nullable=True)
-    backtest_expectancy_r: Mapped[str | None] = mapped_column(String, nullable=True)
-    backtest_net_r: Mapped[str | None] = mapped_column(String, nullable=True)
+    backtest_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     backtest_notes: Mapped[str | None] = mapped_column(String(2000), nullable=True)
 
 
@@ -443,20 +438,9 @@ class StrategyProfileView:
     id: int
     name: str
     description: str | None
-    backtest_start_date: str | None
-    backtest_end_date: str | None
-    backtest_trade_count: int | None
-    backtest_win_rate: str | None
-    backtest_expectancy_r: str | None
-    backtest_net_r: str | None
+    backtest_verified: bool
     backtest_notes: str | None
     magic_numbers: tuple[str, ...]
-
-    @property
-    def backtest_period(self) -> str | None:
-        if self.backtest_start_date is None:
-            return None
-        return f"{self.backtest_start_date} to {self.backtest_end_date}"
 
 
 @dataclass(frozen=True)
@@ -533,12 +517,7 @@ class StrategyEvidenceSnapshot:
     profile_id: int
     name: str
     description: str | None
-    backtest_start_date: str | None
-    backtest_end_date: str | None
-    backtest_trade_count: int | None
-    backtest_win_rate: str | None
-    backtest_expectancy_r: str | None
-    backtest_net_r: str | None
+    backtest_verified: bool
     backtest_notes: str | None
 
 
@@ -781,6 +760,9 @@ class SQLiteJournalRepository:
             for column_name, column_type in (("source", "VARCHAR(16) NOT NULL DEFAULT 'manual'"), ("coach_reason", "TEXT")):
                 if column_name not in focus_columns:
                     connection.exec_driver_sql(f"ALTER TABLE framework_focuses ADD COLUMN {column_name} {column_type}")
+            strategy_columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(strategy_profiles)")}
+            if "backtest_verified" not in strategy_columns:
+                connection.exec_driver_sql("ALTER TABLE strategy_profiles ADD COLUMN backtest_verified BOOLEAN NOT NULL DEFAULT 0")
             # create_all does not add newly-declared indexes to an existing table.
             for statement in (
                 "CREATE INDEX IF NOT EXISTS ix_trades_account_exit ON trades (mt5_account_id, exit_time, id)",
@@ -2207,13 +2189,8 @@ class SQLiteJournalRepository:
         *,
         name: str,
         description: str | None,
-        backtest_start_date: str | None,
-        backtest_end_date: str | None,
-        backtest_trade_count: int | None,
-        backtest_win_rate: str | None,
-        backtest_expectancy_r: str | None,
-        backtest_net_r: str | None,
-        backtest_notes: str | None,
+        backtest_verified: bool = False,
+        backtest_notes: str | None = None,
         magic_numbers: str | None | object = _UNSET,
         strategy_id: int | None = None,
     ) -> StrategyProfileView:
@@ -2223,18 +2200,6 @@ class SQLiteJournalRepository:
         if len(clean_name) > 100:
             raise ValueError("Strategy name must be 100 characters or fewer")
 
-        start_date = self._validated_optional_date(backtest_start_date, "Backtest start date")
-        end_date = self._validated_optional_date(backtest_end_date, "Backtest end date")
-        if (start_date is None) != (end_date is None):
-            raise ValueError("Backtest start and end dates must be provided together")
-        if start_date and end_date and start_date > end_date:
-            raise ValueError("Backtest end date must not be before the start date")
-        if backtest_trade_count is not None and backtest_trade_count <= 0:
-            raise ValueError("Backtest sample size must be greater than zero")
-
-        win_rate = self._validated_optional_decimal(backtest_win_rate, "Backtest win rate", minimum=Decimal("0"), maximum=Decimal("100"))
-        expectancy_r = self._validated_optional_decimal(backtest_expectancy_r, "Backtest expectancy R")
-        net_r = self._validated_optional_decimal(backtest_net_r, "Backtest net R")
         normalized_name = normalize_strategy_name(clean_name)
 
         with self._sessions.begin() as session:
@@ -2255,12 +2220,7 @@ class SQLiteJournalRepository:
             )
             profile.name = clean_name
             profile.description = self._optional_text(description)
-            profile.backtest_start_date = None if start_date is None else start_date.isoformat()
-            profile.backtest_end_date = None if end_date is None else end_date.isoformat()
-            profile.backtest_trade_count = backtest_trade_count
-            profile.backtest_win_rate = win_rate
-            profile.backtest_expectancy_r = expectancy_r
-            profile.backtest_net_r = net_r
+            profile.backtest_verified = backtest_verified
             profile.backtest_notes = self._optional_text(backtest_notes)
             conflicts = session.scalars(
                 select(StrategyMagicNumber).where(StrategyMagicNumber.magic_number.in_(parsed_magic_numbers))
@@ -2449,42 +2409,12 @@ class SQLiteJournalRepository:
         return decimal_value
 
     @staticmethod
-    def _validated_optional_date(value: str | None, label: str) -> date | None:
-        clean_value = SQLiteJournalRepository._optional_text(value)
-        if clean_value is None:
-            return None
-        try:
-            return date.fromisoformat(clean_value)
-        except ValueError as error:
-            raise ValueError(f"{label} must use YYYY-MM-DD") from error
-
-    @staticmethod
-    def _validated_optional_decimal(value: str | None, label: str, minimum: Decimal | None = None, maximum: Decimal | None = None) -> str | None:
-        clean_value = SQLiteJournalRepository._optional_text(value)
-        if clean_value is None:
-            return None
-        try:
-            decimal_value = Decimal(clean_value)
-        except ArithmeticError as error:
-            raise ValueError(f"{label} must be a number") from error
-        if not decimal_value.is_finite():
-            raise ValueError(f"{label} must be a finite number")
-        if minimum is not None and maximum is not None and not minimum <= decimal_value <= maximum:
-            raise ValueError(f"{label} must be between {minimum} and {maximum}")
-        return _decimal_string(decimal_value)
-
-    @staticmethod
     def _to_strategy_profile_view(profile: StrategyProfile, magic_numbers: tuple[str, ...] = ()) -> StrategyProfileView:
         return StrategyProfileView(
             id=profile.id,
             name=profile.name,
             description=profile.description,
-            backtest_start_date=profile.backtest_start_date,
-            backtest_end_date=profile.backtest_end_date,
-            backtest_trade_count=profile.backtest_trade_count,
-            backtest_win_rate=profile.backtest_win_rate,
-            backtest_expectancy_r=profile.backtest_expectancy_r,
-            backtest_net_r=profile.backtest_net_r,
+            backtest_verified=profile.backtest_verified,
             backtest_notes=profile.backtest_notes,
             magic_numbers=magic_numbers,
         )
@@ -2714,12 +2644,7 @@ class SQLiteJournalRepository:
                 "profile_id": profile.id,
                 "name": profile.name,
                 "description": profile.description,
-                "backtest_start_date": profile.backtest_start_date,
-                "backtest_end_date": profile.backtest_end_date,
-                "backtest_trade_count": profile.backtest_trade_count,
-                "backtest_win_rate": profile.backtest_win_rate,
-                "backtest_expectancy_r": profile.backtest_expectancy_r,
-                "backtest_net_r": profile.backtest_net_r,
+                "backtest_verified": profile.backtest_verified,
                 "backtest_notes": profile.backtest_notes,
             },
             sort_keys=True,
@@ -2732,12 +2657,7 @@ class SQLiteJournalRepository:
             profile_id=payload["profile_id"],
             name=payload["name"],
             description=payload.get("description"),
-            backtest_start_date=payload.get("backtest_start_date"),
-            backtest_end_date=payload.get("backtest_end_date"),
-            backtest_trade_count=payload.get("backtest_trade_count"),
-            backtest_win_rate=payload.get("backtest_win_rate"),
-            backtest_expectancy_r=payload.get("backtest_expectancy_r"),
-            backtest_net_r=payload.get("backtest_net_r"),
+            backtest_verified=bool(payload.get("backtest_verified")),
             backtest_notes=payload.get("backtest_notes"),
         )
 
