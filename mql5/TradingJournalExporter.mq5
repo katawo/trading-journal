@@ -1,5 +1,10 @@
 #property script_show_inputs
 #property strict
+#property version   "5.00"
+
+// Must match trading_journal/domain/models.py's MT5PositionExport.schema_version
+// and the versions listed in SUPPORTED_SCHEMA_VERSIONS (application/import_mt5.py).
+#define TRADING_JOURNAL_SCHEMA_VERSION 5
 
 input string CommonFilesSubfolder = "trading_journal";
 

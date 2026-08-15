@@ -16,6 +16,7 @@ from pathlib import Path
 import socket
 import subprocess
 import sys
+import threading
 import time
 from typing import Any
 from urllib.error import URLError
@@ -545,11 +546,31 @@ def reset_desktop_database(paths: DesktopRuntimePaths) -> None:
             pass
 
 
-def run_streamlit_server(port: int) -> None:
+def _watch_parent_process(parent_process_id: int, *, poll_seconds: float = 2.0) -> None:
+    """Hard-exit this child if its launching supervisor is gone.
+
+    A force-killed supervisor (Task Manager "End Task", SIGKILL) skips its own
+    cleanup, so without this a server or window child keeps running forever as
+    an orphan holding its port and touching the shared data directory.
+    """
+    while _process_is_running(parent_process_id):
+        time.sleep(poll_seconds)
+    os._exit(1)
+
+
+def _start_parent_watchdog(parent_process_id: int | None) -> None:
+    if parent_process_id is None:
+        return
+    threading.Thread(target=_watch_parent_process, args=(parent_process_id,), daemon=True).start()
+
+
+def run_streamlit_server(port: int, parent_process_id: int | None = None) -> None:
     """Run Streamlit in a child process with no externally reachable socket."""
 
     from streamlit import config
     from streamlit.web import bootstrap
+
+    _start_parent_watchdog(parent_process_id)
 
     entrypoint = application_entrypoint()
     if not entrypoint.is_file():
@@ -580,10 +601,12 @@ def run_streamlit_server(port: int) -> None:
     )
 
 
-def run_desktop_window(url: str) -> None:
+def run_desktop_window(url: str, parent_process_id: int | None = None) -> None:
     """Open the local app in a native window instead of an external browser."""
 
     import webview
+
+    _start_parent_watchdog(parent_process_id)
 
     webview.create_window(
         DISPLAY_NAME,
@@ -660,13 +683,15 @@ def start_desktop_application() -> int:
                         ),
                         env=environment,
                         cwd=application_resource_root(),
+                        stdin=subprocess.DEVNULL,
                         stdout=log_handle,
                         stderr=subprocess.STDOUT,
                     )
                 server_process = subprocess.Popen(
-                    _child_command("--run-server", "--port", str(port)),
+                    _child_command("--run-server", "--port", str(port), "--parent-pid", str(os.getpid())),
                     env=environment,
                     cwd=application_resource_root(),
+                    stdin=subprocess.DEVNULL,
                     stdout=log_handle,
                     stderr=subprocess.STDOUT,
                 )
@@ -674,15 +699,17 @@ def start_desktop_application() -> int:
                     raise RuntimeError(f"Trade Compass could not start. See {paths.log_path}")
                 if desktop_window_enabled() and window_process is None:
                     window_process = subprocess.Popen(
-                        _child_command("--desktop-window", "--url", url),
+                        _child_command("--desktop-window", "--url", url, "--parent-pid", str(os.getpid())),
                         env=environment,
                         cwd=application_resource_root(),
+                        stdin=subprocess.DEVNULL,
                         stdout=log_handle,
                         stderr=subprocess.STDOUT,
                     )
                 elif not desktop_headless() and not browser_opened:
                     webbrowser.open(url, new=1)
                     browser_opened = True
+                worker_death_logged = False
                 while server_process.poll() is None and not control.shutdown_requested() and not control.consume_reset_request():
                     if window_process is not None and window_process.poll() is not None:
                         if window_process.returncode == 0:
@@ -693,6 +720,10 @@ def start_desktop_application() -> int:
                         if not browser_opened:
                             webbrowser.open(url, new=1)
                             browser_opened = True
+                    if worker_process is not None and worker_process.poll() is not None and not worker_death_logged:
+                        log_handle.write(f"MT5 sync worker exited unexpectedly (code {worker_process.returncode}); automatic MT5 sync is unavailable until Trade Compass restarts.\n")
+                        log_handle.flush()
+                        worker_death_logged = True
                     time.sleep(0.25)
                 if control.shutdown_requested():
                     return 0
@@ -751,12 +782,12 @@ def main(argv: list[str] | None = None) -> int:
     if arguments.run_server:
         if arguments.port is None:
             raise SystemExit("--run-server requires --port")
-        run_streamlit_server(arguments.port)
+        run_streamlit_server(arguments.port, arguments.parent_pid)
         return 0
     if arguments.desktop_window:
         if not arguments.url:
             raise SystemExit("--desktop-window requires --url")
-        run_desktop_window(arguments.url)
+        run_desktop_window(arguments.url, arguments.parent_pid)
         return 0
     if arguments.sync_worker:
         required = (arguments.database, arguments.status, arguments.request, arguments.shutdown_request)

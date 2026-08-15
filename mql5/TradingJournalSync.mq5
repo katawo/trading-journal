@@ -1,8 +1,16 @@
 #property strict
+#property version   "5.00"
+
+// Must match trading_journal/domain/models.py's MT5PositionExport.schema_version
+// and the versions listed in SUPPORTED_SCHEMA_VERSIONS (application/import_mt5.py).
+#define TRADING_JOURNAL_SCHEMA_VERSION 5
 
 // Relative to MT5 Common Files. Each account receives its own CSV filename.
 input string CommonFilesSubfolder = "trading_journal";
 input int InpSafetyExportSeconds = 60;
+
+int    g_last_export_count=-1;
+string g_last_export_time="";
 
 string ExportFileName()
   {
@@ -214,7 +222,7 @@ bool ExportPosition(const ulong position_id,const int handle,const double accoun
          initial_reward=MathAbs(calculated);
      }
    FileWrite(handle,
-             5,
+             TRADING_JOURNAL_SCHEMA_VERSION,
              (string)AccountInfoInteger(ACCOUNT_LOGIN),
              AccountInfoString(ACCOUNT_SERVER),
              AccountInfoString(ACCOUNT_CURRENCY),
@@ -243,6 +251,14 @@ bool ExportPosition(const ulong position_id,const int handle,const double accoun
              DoubleToString(account_balance,2),
              has_pretrade_balance ? DoubleToString(pretrade_balance,2) : "");
    return true;
+  }
+
+void ShowStatusComment()
+  {
+   Comment(StringFormat("Trading Journal Sync — schema v%d\nLast export: %s · %d completed positions",
+                         TRADING_JOURNAL_SCHEMA_VERSION,
+                         g_last_export_time,
+                         MathMax(g_last_export_count,0)));
   }
 
 bool ExportCompletedPositions()
@@ -293,6 +309,9 @@ bool ExportCompletedPositions()
    if(exported==0)
      {
       FileDelete(temporary_name,FILE_COMMON);
+      g_last_export_count=0;
+      g_last_export_time=ServerTime(TimeCurrent());
+      ShowStatusComment();
       return true;
      }
 
@@ -302,6 +321,9 @@ bool ExportCompletedPositions()
       return false;
      }
    PrintFormat("Trading Journal export complete: %d completed positions",exported);
+   g_last_export_count=exported;
+   g_last_export_time=ServerTime(TimeCurrent());
+   ShowStatusComment();
    return true;
   }
 
@@ -309,6 +331,7 @@ int OnInit()
   {
    int seconds=(InpSafetyExportSeconds<1 ? 1 : InpSafetyExportSeconds);
    EventSetTimer(seconds);
+   PrintFormat("Trading Journal Sync starting — schema version %d",TRADING_JOURNAL_SCHEMA_VERSION);
    ExportCompletedPositions();
    return INIT_SUCCEEDED;
   }
@@ -316,6 +339,7 @@ int OnInit()
 void OnDeinit(const int reason)
   {
    EventKillTimer();
+   Comment("");
   }
 
 void OnTimer()

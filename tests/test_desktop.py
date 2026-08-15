@@ -225,6 +225,57 @@ def test_desktop_window_opens_the_local_server_in_a_native_webview(monkeypatch) 
     assert calls["started"] is True
 
 
+def test_parent_watchdog_exits_once_the_launching_supervisor_is_gone(monkeypatch) -> None:
+    from trading_journal import desktop
+
+    monkeypatch.setattr(desktop, "_process_is_running", lambda process_id: False)
+    exit_calls: list[int] = []
+    monkeypatch.setattr(desktop.os, "_exit", exit_calls.append)
+
+    desktop._watch_parent_process(12345, poll_seconds=0)
+
+    assert exit_calls == [1]
+
+
+def test_parent_watchdog_is_not_started_without_a_parent_pid(monkeypatch) -> None:
+    from trading_journal import desktop
+
+    def fail_if_constructed(*_args, **_kwargs):
+        raise AssertionError("no watchdog thread should be started without a parent pid")
+
+    monkeypatch.setattr(desktop.threading, "Thread", fail_if_constructed)
+
+    desktop._start_parent_watchdog(None)
+
+
+def test_run_streamlit_server_starts_a_parent_watchdog(monkeypatch) -> None:
+    from streamlit.web import bootstrap
+    from trading_journal import desktop
+
+    watchdog_calls: list[int | None] = []
+    monkeypatch.setattr(desktop, "application_entrypoint", lambda: Path(__file__))
+    monkeypatch.setattr(desktop, "_start_parent_watchdog", watchdog_calls.append)
+    monkeypatch.setattr(bootstrap, "load_config_options", lambda *, flag_options: None)
+    monkeypatch.setattr(bootstrap, "run", lambda *_args, **_kwargs: None)
+
+    desktop.run_streamlit_server(18501, 4242)
+
+    assert watchdog_calls == [4242]
+
+
+def test_run_desktop_window_starts_a_parent_watchdog(monkeypatch) -> None:
+    from trading_journal import desktop
+
+    watchdog_calls: list[int | None] = []
+    monkeypatch.setattr(desktop, "_start_parent_watchdog", watchdog_calls.append)
+    webview = SimpleNamespace(create_window=lambda *args, **kwargs: None, start=lambda: None)
+    monkeypatch.setitem(sys.modules, "webview", webview)
+
+    desktop.run_desktop_window("http://127.0.0.1:18501", 4242)
+
+    assert watchdog_calls == [4242]
+
+
 def test_desktop_termination_reaps_a_forcibly_killed_child() -> None:
     class UnresponsiveProcess:
         def __init__(self) -> None:

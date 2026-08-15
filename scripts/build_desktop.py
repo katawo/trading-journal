@@ -64,6 +64,14 @@ def main() -> int:
     command.append(str(PROJECT_ROOT / "desktop_launcher.py"))
     subprocess.run(command, cwd=PROJECT_ROOT, check=True)
 
+    if system != "windows":
+        # Top-level, next to the executable, not under _internal: lets users
+        # clear stuck/orphaned desktop processes and a stale instance lock
+        # without hunting for this repo. See the script's header comment.
+        reset_script = DIST_ROOT / APPLICATION_NAME / "reset_desktop_instances.sh"
+        shutil.copy2(PROJECT_ROOT / "scripts" / "reset_desktop_instances.sh", reset_script)
+        reset_script.chmod(0o755)
+
     RELEASE_ROOT.mkdir(parents=True, exist_ok=True)
     archive_stem = RELEASE_ROOT / f"trading-journal-{system}-x86_64"
     if system == "windows":
