@@ -102,6 +102,13 @@ def _account_label(account: AccountListItem) -> str:
     return f"{account.display_name} · {account.login} · {account.broker_server}"
 
 
+def _render_help_popover(*captions: str, icon: str = ":material/help:") -> None:
+    """A compact on-demand help trigger, keeping page content focused."""
+    with st.popover("?", icon=icon, width="content"):
+        for text in captions:
+            st.caption(text)
+
+
 def _score_text(value: str | None) -> str:
     return "—" if value is None else format_score(value)
 
@@ -250,14 +257,16 @@ def _render_pillar_radar(scores: tuple[PillarScore, ...]) -> None:
     st.plotly_chart(figure, width="stretch", config={"displayModeBar": False})
     sample_line = "  ·  ".join(f"{tr(PILLAR_NAMES[score.pillar])} {score.sample_size}" for score in scores)
     st.caption(tr("Sample size: {sample_line}", sample_line=sample_line))
-    if any(blocked) and any(capped):
-        st.caption("Pillars marked ✕ in red have an active hard-rule failure; pillars marked ◆ in amber are capped by repeated critical violations — neither score reflects readiness.")
-    elif any(blocked):
-        st.caption("Pillars marked ✕ in red have an active hard-rule failure — their score does not reflect readiness.")
-    elif any(capped):
-        st.caption("Pillars marked ◆ in amber are capped at 59 by repeated critical violations — see the detail below the score card.")
-    elif any(score.score is None for score in scores):
-        st.caption("Pillars without a scored sample yet show as 0 on this chart.")
+    if any(blocked) or any(capped) or any(score.score is None for score in scores):
+        with st.popover("?", icon=":material/help:", width="content"):
+            if any(blocked) and any(capped):
+                st.caption("Pillars marked ✕ in red have an active hard-rule failure; pillars marked ◆ in amber are capped by repeated critical violations — neither score reflects readiness.")
+            elif any(blocked):
+                st.caption("Pillars marked ✕ in red have an active hard-rule failure — their score does not reflect readiness.")
+            elif any(capped):
+                st.caption("Pillars marked ◆ in amber are capped at 59 by repeated critical violations — see the detail below the score card.")
+            elif any(score.score is None for score in scores):
+                st.caption("Pillars without a scored sample yet show as 0 on this chart.")
 
 
 def _render_risk_configuration_notice(service: FrameworkService, account_id: int) -> None:
@@ -273,7 +282,6 @@ def render_framework_dashboard(repo: SQLiteJournalRepository, account: AccountLi
     snapshot = service.risk_snapshot(account.id)
     scores = service.pillar_scores(account.id)
     readiness = service.readiness(account.id)
-    _render_framework_focus(repo, account, service, scores, compact=True)
     st.markdown("#### Three-pillar monitor")
     st.caption(tr("Psychology is trader-wide. Risk and System are scoped to {account}.", account=_account_label(account)))
     st.caption(tr("This compact view always uses a fixed 20-trade window. Open Bearings → Monitor to adjust the rolling sample."))
@@ -288,7 +296,7 @@ def render_framework_dashboard(repo: SQLiteJournalRepository, account: AccountLi
     st.caption(tr(readiness.detail))
 
 
-def render_framework_page(repo: SQLiteJournalRepository) -> None:
+def _render_framework_page_header(repo: SQLiteJournalRepository) -> AccountListItem | None:
     st.markdown('<div class="dashboard-kicker">POST-TRADE JOURNAL</div>', unsafe_allow_html=True)
     st.subheader("Three-pillar framework")
     st.caption("Use completed MT5 trades to assess execution. Alerts are advisory; this journal never sends, blocks, or changes MT5 orders.")
@@ -296,22 +304,30 @@ def render_framework_page(repo: SQLiteJournalRepository) -> None:
     if account is None:
         st.info("Add an approved MT5 account in Settings before using the framework.")
         st.page_link("app_pages/settings.py", label=tr("Go to Settings"), icon=":material/settings:")
-        return
+        return None
     st.caption(tr("Reviewing {account}. Change the active account in Settings → Approved MT5 accounts.", account=_account_label(account)))
-    review_tab, monitor_tab, improve_tab = st.tabs(
-        ["Review", "Monitor", "Improve"],
-        key="framework-tab",
-        on_change="rerun",
-    )
-    if review_tab.open:
-        with review_tab:
-            _render_post_trade_review(repo, account)
-    if monitor_tab.open:
-        with monitor_tab:
-            _render_monitor(repo, account)
-    if improve_tab.open:
-        with improve_tab:
-            _render_roadmap(repo, account)
+    return account
+
+
+def render_framework_review_page(repo: SQLiteJournalRepository) -> None:
+    account = _render_framework_page_header(repo)
+    if account is None:
+        return
+    _render_post_trade_review(repo, account)
+
+
+def render_framework_monitor_page(repo: SQLiteJournalRepository) -> None:
+    account = _render_framework_page_header(repo)
+    if account is None:
+        return
+    _render_monitor(repo, account)
+
+
+def render_framework_improve_page(repo: SQLiteJournalRepository) -> None:
+    account = _render_framework_page_header(repo)
+    if account is None:
+        return
+    _render_roadmap(repo, account)
 
 
 def _render_post_trade_review(repo: SQLiteJournalRepository, account: AccountListItem) -> None:
@@ -1103,8 +1119,10 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
         else:
             st.info(tr("No {status} trades for this account.", status=status_text))
     else:
-        st.caption("P = Psychology · R = Risk management · S = Trading system. This is each trade's own 13-criterion score — the Monitor tab's rolling pillar scores use a different calculation and can show a different number.")
-        st.caption("Classification below: first word = process quality (Good/Needs improvement/Bad), second word = P&L outcome (Win/Loss/Breakeven) — independent of each other.")
+        _render_help_popover(
+            "P = Psychology · R = Risk management · S = Trading system. This is each trade's own 13-criterion score — the Monitor tab's rolling pillar scores use a different calculation and can show a different number.",
+            "Classification below: first word = process quality (Good/Needs improvement/Bad), second word = P&L outcome (Win/Loss/Breakeven) — independent of each other.",
+        )
         position_by_id = {trade.id: index for index, (trade, _) in enumerate(visible)}
         start = (current_page - 1) * REVIEW_PAGE_SIZE
         page_items = visible[start : start + REVIEW_PAGE_SIZE]
@@ -1306,7 +1324,7 @@ def _render_monitor(repo: SQLiteJournalRepository, account: AccountListItem) -> 
         st.metric("Risk pending", str(coverage.pending), border=True)
         st.metric("Over policy", str(coverage.over_policy), border=True)
         st.metric("Risk unavailable", str(coverage.unavailable), border=True)
-    st.caption("Approved Quick Risk Checks and Manual Reviews both feed pillar scores, readiness, and roadmap gates.")
+    _render_help_popover("Approved Quick Risk Checks and Manual Reviews both feed pillar scores, readiness, and roadmap gates.")
     _render_score_cards(scores, account)
     _render_pillar_radar(scores)
     component_rows = [
@@ -1317,7 +1335,7 @@ def _render_monitor(repo: SQLiteJournalRepository, account: AccountListItem) -> 
         st.markdown("##### What drives the current scores")
         st.dataframe(pd.DataFrame(component_rows), hide_index=True, width="stretch")
         present_names = {name for score in scores for name, _ in score.component_scores}
-        with st.expander(tr("What do these mean?")):
+        with st.popover(tr("What do these mean?"), icon=":material/help:", width="content"):
             for name in COMPONENT_DEFINITIONS:
                 if name in present_names:
                     st.caption(f"**{tr(name)}** — {tr(COMPONENT_DEFINITIONS[name])}")
@@ -1346,7 +1364,7 @@ def _render_monitor_process(service: FrameworkService, account: AccountListItem,
     if trend:
         frame = pd.DataFrame(trend, columns=["Closed", "Psychology", "Risk management", "Trading system"]).set_index("Closed")
         st.line_chart(frame, width="stretch")
-        st.caption("Each point keeps the same approved-review scoring rules as the score cards. Psychology is trader-wide; Risk and System are selected-account only.")
+        _render_help_popover("Each point keeps the same approved-review scoring rules as the score cards. Psychology is trader-wide; Risk and System are selected-account only.")
     else:
         st.info("No approved review trend exists in this analysis period.")
     left, right = st.columns(2)
@@ -1437,11 +1455,13 @@ def _render_monitor_system(analysis: MonitorAnalysisReport) -> None:
             st.dataframe(frame, hide_index=True, width="stretch", column_config={"Process score": st.column_config.NumberColumn(format="%.0f"), "Win rate": st.column_config.NumberColumn(format="%.1f%%"), "Average R": st.column_config.NumberColumn(format="%+.2fR")})
 
 
-def _render_framework_focus(repo: SQLiteJournalRepository, account: AccountListItem, service: FrameworkService, scores: tuple[PillarScore, ...], *, compact: bool = False) -> None:
+def _render_framework_focus(repo: SQLiteJournalRepository, account: AccountListItem, service: FrameworkService, scores: tuple[PillarScore, ...], *, compact: bool = False, show_heading: bool = True) -> None:
     service.ensure_coaching_focus(account.id)
     focus, progress = service.focus_progress(account.id)
-    focus_heading = "Today's coaching action" if compact else "Coaching focus"
-    st.markdown(f"##### {tr(focus_heading)}")
+    if show_heading:
+        heading = tr("🎯 Today's coaching action") if compact else tr("Coaching focus")
+        st.markdown(f"##### {heading}")
+
     if focus is not None and focus.pillar in {"risk", "system"} and focus.account_id != account.id:
         st.info(tr("An active {pillar} coaching focus applies to another account. Select that account in Settings to review it.", pillar=tr(PILLAR_NAMES[focus.pillar])))
         return
@@ -1452,12 +1472,15 @@ def _render_framework_focus(repo: SQLiteJournalRepository, account: AccountListI
             st.write(tr(focus.action_text))
             st.caption(f"{tr('Why now:')} {tr(focus.coach_reason or focus.hypothesis)}")
             current = "—" if progress.current_value is None else progress.current_value
-            st.metric(tr("Reviewed trades collected"), f"{progress.reviews_completed}/{progress.target_reviews}", f"{tr('Current metric:')} {current}", border=True)
+            display_completed = min(progress.reviews_completed, progress.target_reviews)
+            metric_delta = tr("Target reached") if progress.reviews_completed >= progress.target_reviews else f"{tr('Current metric:')} {current}"
+            st.metric(tr("Reviewed trades collected"), f"{display_completed}/{progress.target_reviews}", metric_delta, border=True)
             st.caption(f"{tr('Baseline:')} {focus.baseline_value or '—'} · {tr('Target:')} {focus.target_value}")
             with st.form(f"edit-framework-focus-{focus.id}", border=False):
                 action = st.text_area(tr("Tailor the next-trade action"), value=focus.action_text)
                 if st.form_submit_button(tr("Save action")):
                     repo.update_framework_focus_action(focus_id=focus.id, action_text=action)
+                    queue_toast(tr("Coaching action saved."))
                     st.rerun()
             if progress.ready_to_evaluate:
                 with st.form(f"resolve-framework-focus-{focus.id}"):
@@ -1480,6 +1503,35 @@ def _render_framework_focus(repo: SQLiteJournalRepository, account: AccountListI
                             st.caption(item.resolution_note)
         return
     st.success(tr("On track: no coaching intervention is required from the current reviewed evidence."))
+
+
+def render_dashboard_coaching_focus(repo: SQLiteJournalRepository, account: AccountListItem) -> None:
+    """Collapsible coaching nudge fixed in the Dashboard's top-right corner, always visible above scrolled content."""
+    theme_type = st.context.theme.type or "light"
+    background = st.get_option(f"theme.{theme_type}.secondaryBackgroundColor") or ("#141a18" if theme_type == "dark" else "#eeeee7")
+    st.markdown(
+        f"""
+        <style>
+        div.st-key-dashboard-coaching-focus {{
+            position: fixed;
+            top: 4.75rem;
+            right: 1.5rem;
+            z-index: 998;
+            width: min(24rem, 90vw);
+            max-height: 80vh;
+            overflow-y: auto;
+            background-color: {background};
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15);
+            border-radius: 0.5rem;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    service = FrameworkService(repo)
+    scores = service.pillar_scores(account.id)
+    with st.expander(tr("🎯 Today's coaching action"), expanded=True, key="dashboard-coaching-focus"):
+        _render_framework_focus(repo, account, service, scores, compact=True, show_heading=False)
 
 
 def _render_period_reviews(repo: SQLiteJournalRepository, account: AccountListItem, service: FrameworkService) -> None:
@@ -1518,12 +1570,12 @@ def _render_roadmap(repo: SQLiteJournalRepository, account: AccountListItem) -> 
     service = FrameworkService(repo)
     statuses = {item.pillar: item for item in service.roadmap_status(account.id)}
     st.markdown("#### Readiness roadmap")
-    st.caption("Define, Test, Execute, Measure, then Optimize. Most steps are detected automatically as you use the journal — only a few still need your own note.")
+    _render_help_popover("Define, Test, Execute, Measure, then Optimize. Most steps are detected automatically as you use the journal — only a few still need your own note.")
 
-    for pillar, name in PILLAR_NAMES.items():
+    pillar_tabs = st.tabs([tr(name) for name in PILLAR_NAMES.values()])
+    for (pillar, name), tab in zip(PILLAR_NAMES.items(), pillar_tabs, strict=True):
         status = statuses[pillar]
-        with st.container(border=True):
-            st.markdown(f"##### {tr(name)}")
+        with tab:
             for level, column in zip(range(1, 6), st.columns(5), strict=True):
                 with column:
                     level_name = tr(ROADMAP_LEVEL_NAMES[level])

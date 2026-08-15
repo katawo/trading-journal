@@ -540,11 +540,10 @@ def test_framework_workspace_renders_account_scoped_post_trade_journal(monkeypat
     monkeypatch.setenv("TRADING_JOURNAL_DB", str(database_path))
 
     app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
-    app.switch_page("app_pages/framework.py").run()
+    app.switch_page("app_pages/bearings_review.py").run()
 
     assert not app.exception
     assert app.subheader[0].value == "Three-pillar framework"
-    assert [tab.label for tab in app.tabs] == ["Review", "Monitor", "Improve"]
     assert any("No completed MT5 positions" in item.value for item in app.info)
     assert not any(item.label == "Roadmap pillar" for item in app.segmented_control)
 
@@ -596,8 +595,7 @@ def test_improve_tab_shows_auto_detected_and_manual_roadmap_items(monkeypatch, t
     monkeypatch.setenv("TRADING_JOURNAL_DB", str(database_path))
 
     app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
-    app.switch_page("app_pages/framework.py").run()
-    app.session_state["framework-tab"] = "Improve"
+    app.switch_page("app_pages/bearings_improve.py").run()
     app.run()
 
     assert not app.exception
@@ -711,7 +709,7 @@ def test_review_tab_surfaces_the_last_saved_periods_priority_action(monkeypatch,
     monkeypatch.setenv("TRADING_JOURNAL_DB", str(database_path))
 
     app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
-    app.switch_page("app_pages/framework.py").run()
+    app.switch_page("app_pages/bearings_review.py").run()
 
     assert not app.exception
     assert any("Wait for the written setup before entering." in item.value for item in app.info)
@@ -793,8 +791,7 @@ def test_monitor_tab_shows_early_estimate_not_incomplete_for_a_partial_sample(mo
     monkeypatch.setenv("TRADING_JOURNAL_DB", str(database_path))
 
     app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
-    app.switch_page("app_pages/framework.py").run()
-    app.session_state["framework-tab"] = "Monitor"
+    app.switch_page("app_pages/bearings_monitor.py").run()
     app.run()
 
     assert not app.exception
@@ -887,8 +884,7 @@ def test_monitor_tab_explains_why_a_pillar_is_capped(monkeypatch, tmp_path):
     monkeypatch.setenv("TRADING_JOURNAL_DB", str(database_path))
 
     app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
-    app.switch_page("app_pages/framework.py").run()
-    app.session_state["framework-tab"] = "Monitor"
+    app.switch_page("app_pages/bearings_monitor.py").run()
     app.run()
 
     assert not app.exception
@@ -970,7 +966,7 @@ def test_register_flags_the_specific_hard_blocked_pillar(monkeypatch, tmp_path):
     monkeypatch.setenv("TRADING_JOURNAL_DB", str(database_path))
 
     app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
-    app.switch_page("app_pages/framework.py").run()
+    app.switch_page("app_pages/bearings_review.py").run()
     next(item for item in app.segmented_control if item.label == "Review status").set_value("all").run()
 
     assert not app.exception
@@ -1045,10 +1041,9 @@ def test_framework_renders_a_filtered_review_register(monkeypatch, tmp_path):
     monkeypatch.setenv("TRADING_JOURNAL_DB", str(database_path))
 
     app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
-    app.switch_page("app_pages/framework.py").run()
+    app.switch_page("app_pages/bearings_review.py").run()
 
     assert not app.exception
-    assert [tab.label for tab in app.tabs] == ["Review", "Monitor", "Improve"]
     review_filter = next(item for item in app.segmented_control if item.label == "Review status")
     assert review_filter.value == "needs_approval"
     assert review_filter.options == ["Requires review (1)", "Auto-reviewed (0)", "Reviewed (0)", "All (1)"]
@@ -1153,7 +1148,7 @@ def test_approving_within_policy_evidence_moves_the_trade_from_auto_reviewed_to_
     monkeypatch.setenv("TRADING_JOURNAL_DB", str(database_path))
 
     app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
-    app.switch_page("app_pages/framework.py").run()
+    app.switch_page("app_pages/bearings_review.py").run()
     next(item for item in app.segmented_control if item.label == "Review status").set_value("all").run()
 
     review_filter = next(item for item in app.segmented_control if item.label == "Review status")
@@ -1227,7 +1222,7 @@ def test_bulk_quick_reviewing_selected_trades_requires_confirmation(monkeypatch,
     monkeypatch.setenv("TRADING_JOURNAL_DB", str(database_path))
 
     app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
-    app.switch_page("app_pages/framework.py").run()
+    app.switch_page("app_pages/bearings_review.py").run()
     next(item for item in app.segmented_control if item.label == "Review status").set_value("auto_reviewed").run()
 
     review_filter = next(item for item in app.segmented_control if item.label == "Review status")
@@ -1317,7 +1312,7 @@ def test_reopening_review_after_upgrading_an_auto_review_does_not_crash(monkeypa
     monkeypatch.setenv("TRADING_JOURNAL_DB", str(database_path))
 
     app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
-    app.switch_page("app_pages/framework.py").run()
+    app.switch_page("app_pages/bearings_review.py").run()
     next(item for item in app.segmented_control if item.label == "Review status").set_value("all").run()
     next(item for item in app.button if item.label == "Approve").click().run()
 
@@ -1382,7 +1377,7 @@ def test_save_and_review_next_skips_a_stale_queue_entry_instead_of_dropping_the_
     monkeypatch.setenv("TRADING_JOURNAL_DB", str(database_path))
 
     app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
-    app.switch_page("app_pages/framework.py").run()
+    app.switch_page("app_pages/bearings_review.py").run()
     stale_trade_id = 999999
     app.session_state["post-trade-review-trade-id"] = stale_trade_id
     app.session_state["post-trade-review-queue"] = (real_trade_id,)
@@ -1434,7 +1429,7 @@ def test_framework_groups_positions_through_a_confirmation_step(monkeypatch, tmp
     monkeypatch.setenv("TRADING_JOURNAL_DB", str(database_path))
 
     app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
-    app.switch_page("app_pages/framework.py").run()
+    app.switch_page("app_pages/bearings_review.py").run()
     assert len([item for item in app.checkbox if item.label.startswith("Select LT-")]) == 25
     next(item for item in app.checkbox if item.label.startswith("Select LT-")).set_value(True).run()
     next(item for item in app.button if item.label == "Next").click().run()

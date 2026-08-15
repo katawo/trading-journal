@@ -22,9 +22,10 @@ from trading_journal.desktop import DesktopSyncControl, DesktopSyncStatusStore, 
 from trading_journal.infrastructure.sqlite_repository import AccountListItem, JournalDatabaseResetRequiredError, SQLiteJournalRepository
 from trading_journal.presentation.framework import (
     _render_framework_rules,
+    _render_help_popover,
     _render_risk_policy,
+    render_dashboard_coaching_focus,
     render_framework_dashboard,
-    render_framework_page,
 )
 from trading_journal.presentation.global_alert_bubble import GlobalAlertItem, render_global_alert_bubble
 from trading_journal.presentation.desktop_reset_restart import render_desktop_reset_restart_bridge
@@ -216,6 +217,23 @@ def _cached_global_framework_alerts(database_path: str, database_mtime_ns: int) 
         for account in repo.list_mt5_accounts()
         for alert in FrameworkService(repo).framework_alerts(account.id)
     )
+
+
+@st.cache_data(ttl=_ANALYTICS_CACHE_TTL_SECONDS, max_entries=32, show_spinner=False)
+def _cached_review_queue_count(database_path: str, database_mtime_ns: int, account_id: int) -> int:
+    """Cache the active account's pending-review count until the local database changes."""
+    del database_mtime_ns
+    repo = SQLiteJournalRepository(database_path)
+    return sum(score.review_kind == "needs_approval" for score in FrameworkService(repo).trade_process_scores(account_id))
+
+
+@st.cache_data(ttl=_ANALYTICS_CACHE_TTL_SECONDS, max_entries=32, show_spinner=False)
+def _cached_focus_ready_to_evaluate(database_path: str, database_mtime_ns: int, account_id: int) -> bool:
+    """Cache whether the active account's coaching focus is ready to resolve."""
+    del database_mtime_ns
+    repo = SQLiteJournalRepository(database_path)
+    _, progress = FrameworkService(repo).focus_progress(account_id)
+    return bool(progress and progress.ready_to_evaluate)
 
 
 def _database_mtime_ns(database_path: Path) -> int:
@@ -1150,19 +1168,27 @@ def render_strategy_settings(repo: SQLiteJournalRepository) -> None:
 
 
 def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
-    st.markdown('<div class="dashboard-kicker">CLOSED-TRADE REVIEW</div>', unsafe_allow_html=True)
-    st.subheader("Performance dashboard")
+    def render_title() -> None:
+        st.markdown('<div class="dashboard-kicker">CLOSED-TRADE REVIEW</div>', unsafe_allow_html=True)
+        st.subheader("Performance dashboard")
+
     try:
         settings = repo.get_journal_settings()
     except RuntimeError:
+        render_title()
         st.info("Configure journal settings before viewing reports.")
         return
 
     account = repo.get_active_mt5_account()
     if account is None:
+        render_title()
         st.info("Add an approved MT5 account in Settings before viewing reports.")
         st.page_link("app_pages/settings.py", label=tr("Go to Settings"), icon=":material/settings:")
         return
+
+    render_dashboard_coaching_focus(repo, account)
+    render_title()
+
     render_manual_sync_button(repo, key="dashboard-manual-sync")
     with st.container(border=True):
         st.markdown("**Report scope**")
@@ -1365,11 +1391,11 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
                 }
             )
             st.dataframe(trade_table, hide_index=True, width="stretch")
-            st.caption("This view follows the current logical-trade grouping for review analysis. Account balance and account drawdown remain based on immutable MT5 positions in Daily view.")
+            _render_help_popover("This view follows the current logical-trade grouping for review analysis. Account balance and account drawdown remain based on immutable MT5 positions in Daily view.")
 
     with st.container(border=True):
         st.subheader("Concentration (80/20)")
-        st.caption("Use this outcome-only lens to prioritize a review sample. It does not prove cause, system quality, or trading readiness.")
+        _render_help_popover("Use this outcome-only lens to prioritize a review sample. It does not prove cause, system quality, or trading readiness.")
         concentration_options = {
             tr("Symbol"): "symbol",
             tr("Trade"): "trade",
@@ -1491,16 +1517,36 @@ def main() -> None:
     render_build_info()
     st.title("Trade Compass")
     st.caption("Local-first trade review, guided by discipline.")
+
+    review_count = 0
+    monitor_alert_count = 0
+    focus_ready = False
+    active_account = repo.get_active_mt5_account()
+    database_path = getattr(repo, "database_path", None)
+    if active_account is not None and database_path is not None:
+        mtime = _database_mtime_ns(database_path)
+        review_count = _cached_review_queue_count(str(database_path), mtime, active_account.id)
+        monitor_alert_count = sum(
+            account.id == active_account.id and alert.severity in {"critical", "warning"}
+            for account, alert in _cached_global_framework_alerts(str(database_path), mtime)
+        )
+        focus_ready = _cached_focus_ready_to_evaluate(str(database_path), mtime, active_account.id)
+    review_title = f"{tr('Review')} ({review_count})" if review_count else tr("Review")
+    monitor_title = f"{tr('Monitor')} ({monitor_alert_count})" if monitor_alert_count else tr("Monitor")
+    improve_title = f"{tr('Improve')} (1)" if focus_ready else tr("Improve")
+
     page = st.navigation(
         {
             "Workspace": [
                 st.Page("app_pages/dashboard.py", title=tr("Dashboard"), icon=":material/dashboard:", default=True),
                 # Analytics is not the current focus — hidden from the nav for now.
                 # Re-add the line above (see app_pages/analytics.py / render_strategy_analytics) when it's prioritized.
-                st.Page("app_pages/framework.py", title=tr("Bearings"), icon=":material/explore:"),
+                st.Page("app_pages/bearings_review.py", title=review_title, icon=":material/rate_review:"),
+                st.Page("app_pages/bearings_monitor.py", title=monitor_title, icon=":material/monitoring:"),
+                st.Page("app_pages/bearings_improve.py", title=improve_title, icon=":material/trending_up:"),
                 st.Page("app_pages/settings.py", title=tr("Settings"), icon=":material/settings:"),
                 st.Page("app_pages/guidance.py", title=tr("Guide"), icon=":material/menu_book:"),
-            ]
+            ],
         },
         position="sidebar",
     )
