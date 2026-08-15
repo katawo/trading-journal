@@ -34,7 +34,10 @@ def write_auto_export(path: Path) -> None:
 def test_app_renders_local_mt5_import_entrypoint(monkeypatch, tmp_path):
     monkeypatch.setenv("TRADING_JOURNAL_DB", str(tmp_path / "journal.db"))
 
-    app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
+    # First AppTest run in the suite pays the one-time cold-start cost of
+    # importing streamlit/pandas/plotly/etc.; the default ~3s timeout can be
+    # too tight on a cold Windows CI runner.
+    app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run(timeout=10)
 
     assert not app.exception
     assert app.title[0].value == "Trade Compass"
