@@ -438,7 +438,32 @@ class DesktopInstanceLock:
         return True
 
 
-def _process_is_running(process_id: int) -> bool:
+def _process_is_running(process_id: int, *, platform: str | None = None) -> bool:
+    resolved_platform = sys.platform if platform is None else platform
+    if resolved_platform.startswith("win"):
+        # os.kill(pid, 0) is NOT a liveness probe on Windows: signal 0 is
+        # CTRL_C_EVENT, sent via GenerateConsoleCtrlEvent, which only accepts
+        # the caller's own console/process-group id — it fails with an OSError
+        # for an arbitrary unrelated pid whether or not that pid is alive.
+        # That previously made every parent-liveness check below report
+        # "not running" immediately, even for a healthy parent. Use the real
+        # Win32 liveness check instead: OpenProcess + GetExitCodeProcess.
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, process_id)
+        if not handle:
+            return False
+        try:
+            exit_code = wintypes.DWORD()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return False
+            return exit_code.value == STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
     try:
         os.kill(process_id, 0)
     except ProcessLookupError:
@@ -446,9 +471,6 @@ def _process_is_running(process_id: int) -> bool:
     except PermissionError:
         return True
     except OSError:
-        # On Windows, probing an exited parent can raise WinError 6 ("The
-        # handle is invalid") rather than ProcessLookupError.  The sync worker
-        # should stop quietly when its launcher is no longer available.
         return False
     return True
 

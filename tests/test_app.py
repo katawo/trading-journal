@@ -42,7 +42,7 @@ def test_app_renders_local_mt5_import_entrypoint(monkeypatch, tmp_path):
 
     import app as journal_app
 
-    assert journal_app.application_version() == "0.1.3"
+    assert journal_app.application_version() == "0.1.4"
     assert journal_app.supported_mt5_schema_versions() == "5"
 
 

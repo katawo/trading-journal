@@ -165,6 +165,55 @@ def test_process_probe_treats_an_invalid_windows_handle_as_not_running(monkeypat
     assert desktop._process_is_running(12345) is False
 
 
+def _fake_win32_process_probe(monkeypatch, *, open_succeeds: bool, exit_code: int, get_exit_code_succeeds: bool = True):
+    import ctypes
+
+    calls: dict[str, object] = {}
+
+    class FakeKernel32:
+        def OpenProcess(self, _access, _inherit, process_id):
+            calls["opened_pid"] = process_id
+            return 1 if open_succeeds else 0
+
+        def GetExitCodeProcess(self, _handle, exit_code_ref):
+            if not get_exit_code_succeeds:
+                return 0
+            exit_code_ref._obj.value = exit_code
+            return 1
+
+        def CloseHandle(self, _handle):
+            calls["closed"] = True
+
+    monkeypatch.setattr(ctypes, "windll", SimpleNamespace(kernel32=FakeKernel32()), raising=False)
+    return calls
+
+
+def test_process_probe_uses_win32_liveness_check_when_process_is_still_active(monkeypatch) -> None:
+    from trading_journal import desktop
+
+    STILL_ACTIVE = 259
+    calls = _fake_win32_process_probe(monkeypatch, open_succeeds=True, exit_code=STILL_ACTIVE)
+
+    assert desktop._process_is_running(4242, platform="win32") is True
+    assert calls == {"opened_pid": 4242, "closed": True}
+
+
+def test_process_probe_uses_win32_liveness_check_when_process_has_exited(monkeypatch) -> None:
+    from trading_journal import desktop
+
+    _fake_win32_process_probe(monkeypatch, open_succeeds=True, exit_code=0)
+
+    assert desktop._process_is_running(4242, platform="win32") is False
+
+
+def test_process_probe_treats_a_failed_open_process_as_not_running_on_windows(monkeypatch) -> None:
+    from trading_journal import desktop
+
+    _fake_win32_process_probe(monkeypatch, open_succeeds=False, exit_code=0)
+
+    assert desktop._process_is_running(4242, platform="win32") is False
+
+
 def test_desktop_server_disables_the_source_file_watcher(monkeypatch) -> None:
     from streamlit.web import bootstrap
     from trading_journal import desktop

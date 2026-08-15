@@ -65,7 +65,7 @@ def application_version() -> str:
     try:
         return version("trade-compass")
     except PackageNotFoundError:
-        return "0.1.3"
+        return "0.1.4"
 
 
 def supported_mt5_schema_versions() -> str:
