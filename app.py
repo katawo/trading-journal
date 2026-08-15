@@ -63,9 +63,9 @@ def application_version() -> str:
         with source_manifest.open("rb") as handle:
             return str(tomllib.load(handle)["project"]["version"])
     try:
-        return version("trading-journal")
+        return version("trade-compass")
     except PackageNotFoundError:
-        return "0.1.1"
+        return "0.1.2"
 
 
 def supported_mt5_schema_versions() -> str:
