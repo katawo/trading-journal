@@ -41,7 +41,7 @@ The **Dashboard** reports one selected MT5 account at a time, in that account's 
 
 ## Strategies and backtests
 
-Use **Settings → Strategies** to maintain each strategy’s description and optional backtest period, sample size, win rate, expectancy, net R, and notes. Select one saved profile as the journal default; every imported trade inherits it dynamically. Optionally add comma-separated MT5 magic numbers to map EA trades to a strategy automatically. The default uses a stable ID, so a profile can be renamed without breaking the journal assignment. The dashboard shows the live result beside that strategy’s backtest context; backtest data is informational and never changes live P&L or R.
+Use **Settings → Strategies** to maintain reusable system definitions and their optional backtest period, sample size, win rate, expectancy, net R, and notes. Each MT5 account is bound to one saved strategy when it is created, so imported trades, reviews, the Dashboard, and Bearings always use that account’s system. The binding can still be changed in Settings until the account has imported trades, after which it locks. A strategy can be deliberately shared by multiple accounts. Use **Analytics** to compare accounts that share a strategy; monetary results remain separate by currency. Backtest data is informational and never changes live P&L or R.
 
 ## Trading framework
 

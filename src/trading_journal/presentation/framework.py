@@ -31,7 +31,7 @@ from trading_journal.infrastructure.sqlite_repository import (
     ReviewContextSelection,
     SQLiteJournalRepository,
 )
-from trading_journal.presentation.i18n import tr
+from trading_journal.presentation.i18n import queue_toast, tr
 from trading_journal.presentation.formatting import format_currency, format_percent, format_r, format_score
 from trading_journal.presentation.trade_tags import direction_tag, outcome_tag
 
@@ -295,6 +295,7 @@ def render_framework_page(repo: SQLiteJournalRepository) -> None:
     account = repo.get_active_mt5_account()
     if account is None:
         st.info("Add an approved MT5 account in Settings before using the framework.")
+        st.page_link("app_pages/settings.py", label=tr("Go to Settings"), icon=":material/settings:")
         return
     st.caption(tr("Reviewing {account}. Change the active account in Settings → Approved MT5 accounts.", account=_account_label(account)))
     review_tab, monitor_tab, improve_tab = st.tabs(
@@ -316,13 +317,11 @@ def render_framework_page(repo: SQLiteJournalRepository) -> None:
 def _render_post_trade_review(repo: SQLiteJournalRepository, account: AccountListItem) -> None:
     service = FrameworkService(repo)
     st.markdown("#### Closed-trade reviews")
+    profiles = [repo.get_account_strategy(account.id)]
     trades = repo.list_closed_trades_for_review(account.id)
     if not trades:
         st.info("No completed MT5 positions have been imported for this account yet.")
         return
-    profiles = repo.list_strategy_profiles()
-    if not profiles:
-        st.warning("Create or select a strategy in Settings → Strategies before saving a full three-pillar review.", icon=":material/info:")
     score_items = service.trade_process_scores(account.id)
     snapshot = service.risk_snapshot(account.id)
     st.caption(f"{tr('Risk state:')} {_state_label(snapshot)} · {tr(snapshot.message)}")
@@ -482,7 +481,7 @@ def _render_bulk_quick_review_dialog(repo: SQLiteJournalRepository, account: Acc
     st.session_state["post-trade-review-notice"] = message
     _clear_bulk_quick_review(account.id)
     _defer_logical_trade_selection_reset(account.id)
-    st.toast(message)
+    queue_toast(message)
     st.rerun()
 
 
@@ -605,9 +604,7 @@ def _render_post_trade_review_dialog(repo: SQLiteJournalRepository, account: Acc
         st.rerun()
     if existing is not None:
         st.caption("Changing member positions supersedes this assessment and requires a new review. Changing only the label keeps it active.")
-    if not profiles:
-        st.warning("A Strategy profile is required for a full post-trade assessment.")
-        return
+    strategy = repo.get_account_strategy(account.id)
     policy = repo.get_active_risk_policy(account.id)
     rule_settings = repo.get_framework_rule_settings()
     enabled_hard_rules = {
@@ -624,12 +621,10 @@ def _render_post_trade_review_dialog(repo: SQLiteJournalRepository, account: Acc
     available_hard_rules = [
         code for code in HARD_RULE_LABELS if code in enabled_hard_rules or code in existing_hard_rules
     ]
-    default_id = existing_manual.strategy_profile_id if existing_manual else score.mapped_strategy.id if score.mapped_strategy else _default_strategy_id(repo)
-    strategy_index = next((index for index, item in enumerate(profiles) if item.id == default_id), 0)
     st.markdown("##### Assessment")
+    st.caption(f"Trading system: **{strategy.name}** (bound to this account)")
     st.caption("\\* Required")
     with st.form(f"post-trade-assessment-{trade.id}"):
-        strategy = st.selectbox(f"{tr('Strategy')} *", profiles, index=strategy_index, format_func=lambda item: item.name)
         setup_options = [None, *repo.list_strategy_setups(strategy.id)]
         session_options = [None, *repo.list_review_context_tags("session")]
         regime_options = [None, *repo.list_review_context_tags("regime")]
@@ -765,7 +760,7 @@ def _render_post_trade_review_dialog(repo: SQLiteJournalRepository, account: Acc
         st.error(str(error))
     else:
         st.session_state["post-trade-review-notice"] = "Post-trade assessment saved."
-        st.toast(tr("Post-trade assessment saved."))
+        queue_toast(tr("Post-trade assessment saved."))
         if submit_and_next:
             next_id, remaining = _advance_review_queue(queue)
             st.session_state["post-trade-review-trade-id"] = next_id
@@ -799,13 +794,6 @@ def _render_review_history(repo: SQLiteJournalRepository, account_id: int, trade
             st.caption(tr("Assessed {positions} · {reason}", positions=positions, reason=reason))
             if assessment.post_review_note:
                 st.write(assessment.post_review_note)
-
-
-def _default_strategy_id(repo: SQLiteJournalRepository) -> int | None:
-    try:
-        return repo.get_journal_settings().default_strategy_profile_id
-    except RuntimeError:
-        return None
 
 
 @st.dialog("Manage logical-trade positions", width="large", on_dismiss=_clear_group_dialog)
@@ -956,7 +944,7 @@ def _render_logical_trade_regroup_confirmation(repo: SQLiteJournalRepository, ac
         st.error(str(error))
         return
     st.session_state["post-trade-review-notice"] = notice
-    st.toast(tr(notice))
+    queue_toast(tr(notice))
     _defer_logical_trade_selection_reset(account.id)
     _clear_group_dialog()
     st.rerun()
@@ -1070,7 +1058,7 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
         if skipped_count:
             message += " " + tr("{count} could not be approved and were skipped.", count=skipped_count)
         st.session_state["post-trade-review-notice"] = message
-        st.toast(message)
+        queue_toast(message)
         st.rerun()
     if bulk_selected:
         st.session_state[_bulk_quick_review_key(account.id)] = {
@@ -1216,7 +1204,7 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
                             st.error(str(error))
                         else:
                             st.session_state["post-trade-review-notice"] = "Automatic risk evidence approved."
-                            st.toast(tr("Automatic risk evidence approved."))
+                            queue_toast(tr("Automatic risk evidence approved."))
                             st.rerun()
                 if trade.is_group and actions_column.button(
                     "Ungroup",
@@ -1266,7 +1254,7 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
         if selected is not None:
             item = next(((trade, score) for trade, score in [(trade, scores[trade.id]) for trade in ordered] if trade.id == selected), None)
     if skipped_stale:
-        st.toast(tr("A queued trade could no longer be reviewed (its logical trade changed) and was skipped."))
+        st.toast(tr("A queued trade could no longer be reviewed (its logical trade changed) and was skipped."), icon=":material/info:")
     if item is None:
         _clear_review_dialog()
         return
@@ -1481,7 +1469,7 @@ def _render_framework_focus(repo: SQLiteJournalRepository, account: AccountListI
                         except ValueError as error:
                             st.error(str(error))
                         else:
-                            st.toast("Framework focus resolved.")
+                            queue_toast("Framework focus resolved.")
                             st.rerun()
             history = [item for item in repo.list_framework_focuses() if item.status != "active"]
             if history and not compact:
@@ -1514,7 +1502,7 @@ def _render_period_reviews(repo: SQLiteJournalRepository, account: AccountListIt
             except ValueError as error:
                 st.error(str(error))
             else:
-                st.toast(tr("Period review saved."))
+                queue_toast(tr("Period review saved."))
                 st.success("Period review saved.")
                 st.rerun()
     reviews = repo.list_framework_period_reviews(account.id)
@@ -1587,7 +1575,7 @@ def _render_roadmap(repo: SQLiteJournalRepository, account: AccountListItem) -> 
                                 st.error(str(error))
                             else:
                                 completed_message = tr("{name} roadmap item completed.", name=tr(name))
-                                st.toast(completed_message)
+                                queue_toast(completed_message)
                                 st.success(completed_message)
                                 st.rerun()
 
@@ -1640,7 +1628,7 @@ def _render_risk_policy(repo: SQLiteJournalRepository, account: AccountListItem)
         except ValueError as error:
             st.error(str(error))
         else:
-            st.toast(tr("Risk policy saved as a new version."))
+            queue_toast(tr("Risk policy saved as a new version."))
             st.success("Risk policy saved as a new version.")
             st.rerun()
 
@@ -1666,6 +1654,6 @@ def _render_framework_rules(repo: SQLiteJournalRepository) -> None:
         except ValueError as error:
             st.error(str(error))
         else:
-            st.toast(tr("Review rules saved."))
+            queue_toast(tr("Review rules saved."))
             st.success("Review rules saved.")
             st.rerun()

@@ -50,16 +50,18 @@ VI: dict[str, str] = {
     "Review rules": "Quy tắc đánh giá",
     "Reporting calendar": "Lịch báo cáo",
     "Save calendar": "Lưu lịch",
+    "Go to Settings": "Đến Cài đặt",
     "Approved MT5 accounts": "Tài khoản MT5 đã phê duyệt",
     "New account": "Tài khoản mới",
     "Account name": "Tên tài khoản",
     "MT5 account ID": "ID tài khoản MT5",
     "Broker server": "Máy chủ môi giới",
-    "Funded capital (optional)": "Funded capital (không bắt buộc)",
+    "Funded capital": "Funded capital",
     "Save account": "Lưu tài khoản",
     "Update account": "Cập nhật tài khoản",
     "Deactivate account": "Ngừng kích hoạt tài khoản",
     "Active": "Đang hoạt động",
+    "Inactive": "Ngừng hoạt động",
     "Set as active account": "Đặt làm tài khoản đang hoạt động",
     "{account} is now the active account.": "{account} hiện là tài khoản đang hoạt động.",
     "Saving…": "Đang lưu…",
@@ -179,6 +181,11 @@ VI: dict[str, str] = {
     "Custom export path (optional)": "Đường dẫn tệp xuất tùy chỉnh (không bắt buộc)",
     "Add account": "Thêm tài khoản",
     "Delete account": "Xóa tài khoản",
+    "Delete strategy": "Xóa chiến lược",
+    "Strategy maintenance": "Quản lý chiến lược",
+    "Strategy deleted.": "Đã xóa chiến lược.",
+    "I understand this permanently deletes this unused strategy": "Tôi hiểu thao tác này xóa vĩnh viễn chiến lược chưa dùng này",
+    "This strategy has no accounts bound to it. Deleting it permanently removes its definition and any setups.": "Chiến lược này chưa gắn với tài khoản nào. Xóa sẽ xóa vĩnh viễn định nghĩa của nó và mọi setup liên quan.",
     "Quit desktop journal": "Thoát nhật ký desktop",
     "Reset local database": "Đặt lại cơ sở dữ liệu cục bộ",
     "This permanently removes all local accounts, imports, reviews, policies, strategies, and framework evidence. MT5 export files and desktop logs are kept.": "Thao tác này xóa vĩnh viễn mọi tài khoản cục bộ, dữ liệu nhập, đánh giá, chính sách, chiến lược và bằng chứng Framework. Tệp xuất MT5 và nhật ký desktop vẫn được giữ lại.",
@@ -691,3 +698,21 @@ def install_streamlit_translations() -> None:
     for function in ("title", "subheader", "header", "markdown", "caption", "info", "warning", "error", "success", "button", "form_submit_button", "checkbox", "text_area", "text_input", "number_input", "selectbox", "segmented_control", "expander", "metric", "tabs"):
         wrap(function)
     st._trading_journal_i18n_installed = True
+
+
+def queue_toast(message: str, *, icon: str | None = ":material/check_circle:") -> None:
+    """Stash a toast to show on the next script run.
+
+    st.toast() called immediately before st.rerun() never reaches the browser
+    — Streamlit aborts the script before the toast is flushed. Callers that
+    toast-then-rerun in the same handler must use this instead of st.toast().
+    """
+    st.session_state["pending-toast"] = message
+    st.session_state["pending-toast-icon"] = icon
+
+
+def render_pending_toast() -> None:
+    message = st.session_state.pop("pending-toast", None)
+    if message:
+        icon = st.session_state.pop("pending-toast-icon", None)
+        st.toast(message, icon=icon)

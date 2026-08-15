@@ -759,7 +759,7 @@ def test_regrouping_reviewed_trades_supersedes_scores_and_keeps_member_audit(tmp
     assert archived[0].assessed_trade_label == "Initial scale-in"
     assert archived[0].superseded_reason == "Logical-trade membership changed"
     assert len(repository.list_post_trade_assessment_outcomes(account_id)) == 0
-    assert all(item.strategy == "Journal default" for item in repository.list_trade_performance(account_id))
+    assert all(item.strategy == "Trend continuation" for item in repository.list_trade_performance(account_id))
     assert report.trade_count == 2
     assert report.net_pnl == "24"
 
@@ -1307,7 +1307,7 @@ def test_roadmap_risk_policy_and_sizing_is_auto_detected_from_active_policy(tmp_
     assert "%/trade" in after_item.evidence_summary
 
 
-def test_roadmap_system_items_are_auto_detected_from_the_strategy_profile(tmp_path) -> None:
+def test_roadmap_system_items_ignore_an_unbound_strategy_profile(tmp_path) -> None:
     repository, account_id = _repository(tmp_path)
     service = FrameworkService(repository)
     before = next(item for item in service.roadmap_status(account_id) if item.pillar == "system").items
@@ -1321,7 +1321,7 @@ def test_roadmap_system_items_are_auto_detected_from_the_strategy_profile(tmp_pa
     after = next(item for item in service.roadmap_status(account_id) if item.pillar == "system").items
     for key in ("rules", "examples", "backtest"):
         item = next(entry for entry in after if entry.item_key == key)
-        assert item.completed, key
+        assert not item.completed, key
 
 
 def test_roadmap_hypothesis_is_auto_detected_from_a_resolved_framework_focus(tmp_path) -> None:

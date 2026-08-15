@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Mapping
 
 from sqlalchemy import Boolean, ForeignKey, Index, Integer, String, Text, UniqueConstraint, create_engine, delete, event, select, text
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
 
 from trading_journal.application.reporting_time import REPORTING_TIME_BASES, normalize_server_timestamp
 from trading_journal.domain.models import ImportResult, ImportedTradeView, MT5PositionExport
@@ -102,6 +102,8 @@ class MT5Account(Base):
     latest_mt5_balance: Mapped[str | None] = mapped_column(String, nullable=True)
     latest_server_utc_offset_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     export_file_path: Mapped[str] = mapped_column(String(1024), nullable=False, default="")
+    strategy_profile_id: Mapped[int] = mapped_column(ForeignKey("strategy_profiles.id"), nullable=False)
+    strategy_profile: Mapped["StrategyProfile"] = relationship()
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
 
@@ -404,6 +406,8 @@ class AccountListItem:
     opening_balance: str | None
     latest_mt5_balance: str | None
     latest_server_utc_offset_minutes: int | None
+    strategy_profile_id: int
+    strategy_name: str
 
     @property
     def funded_capital(self) -> str | None:
@@ -797,7 +801,7 @@ class SQLiteJournalRepository:
                     default = StrategyProfile(
                         name="Journal default",
                         normalized_name="journal default",
-                        description="Default strategy for this journal. Document specific setup rules when needed.",
+                        description=None,
                     )
                     session.add(default)
                     session.flush()
@@ -810,7 +814,7 @@ class SQLiteJournalRepository:
             return
         expected_columns = {
             "journal_settings": {"reporting_time_basis"},
-            "mt5_accounts": {"latest_server_utc_offset_minutes"},
+            "mt5_accounts": {"latest_server_utc_offset_minutes", "strategy_profile_id"},
             "trades": {"server_utc_offset_minutes", "logical_trade_id", "pretrade_account_balance"},
             "account_risk_policies": {"pretrade_balance_auto_evidence_enabled"},
             "logical_trades": {"mt5_account_id", "created_at"},
@@ -910,11 +914,20 @@ class SQLiteJournalRepository:
         account_currency: str,
         export_file_path: str,
         opening_balance: str | None = None,
+        strategy_profile_id: int | None = None,
     ) -> None:
         baseline = None if opening_balance is None or not opening_balance.strip() else _decimal_string(
             self._required_decimal(opening_balance, "Funded capital", minimum=Decimal("0.01"))
         )
         with self._sessions.begin() as session:
+            if strategy_profile_id is None:
+                settings = session.get(JournalSettings, 1)
+                strategy_profile_id = (
+                    settings.default_strategy_profile_id if settings is not None else None
+                ) or session.scalar(select(StrategyProfile.id).order_by(StrategyProfile.id).limit(1))
+            strategy = None if strategy_profile_id is None else session.get(StrategyProfile, strategy_profile_id)
+            if strategy is None:
+                raise ValueError("Create a strategy before adding an MT5 account")
             existing = session.scalar(select(MT5Account).where(MT5Account.login == login))
             if existing is None:
                 session.add(
@@ -925,6 +938,7 @@ class SQLiteJournalRepository:
                         account_currency=account_currency.upper(),
                         export_file_path=export_file_path,
                         opening_balance=baseline,
+                        strategy_profile_id=strategy.id,
                         active=True,
                     )
                 )
@@ -934,9 +948,112 @@ class SQLiteJournalRepository:
                 existing.display_name = display_name
                 existing.account_currency = account_currency.upper()
                 existing.export_file_path = export_file_path
+                if existing.strategy_profile_id != strategy.id:
+                    raise ValueError("An MT5 account stays with its original strategy")
                 if baseline is not None:
                     existing.opening_balance = baseline
                 existing.active = True
+
+    def create_configured_mt5_account(
+        self,
+        *,
+        display_name: str,
+        login: str,
+        broker_server: str,
+        account_currency: str,
+        export_file_path: str,
+        funded_capital: str,
+        strategy_profile_id: int | None,
+        strategy_name: str | None,
+        strategy_description: str | None,
+        standard_risk_per_trade_percent: str,
+        maximum_risk_per_trade_percent: str,
+        daily_loss_limit_r: str,
+        weekly_loss_limit_r: str,
+        max_drawdown_percent: str,
+        max_open_risk_r: str,
+        max_consecutive_losses: int,
+        minimum_rr: str,
+        correlation_policy: str | None,
+    ) -> AccountListItem:
+        """Atomically create an import-ready account, system baseline, and risk policy."""
+        clean_display_name = self._required_text(display_name, "Account name")
+        clean_login = self._required_text(login, "MT5 account ID")
+        if not clean_login.isdecimal():
+            raise ValueError("MT5 account ID must be numeric")
+        clean_broker = self._required_text(broker_server, "Broker server")
+        clean_currency = self._required_text(account_currency, "Currency").upper()
+        if len(clean_currency) != 3 or not clean_currency.isalpha():
+            raise ValueError("Currency must be a three-letter code")
+        capital = _decimal_string(self._required_decimal(funded_capital, "Funded capital", minimum=Decimal("0.01")))
+        risk_inputs = self._validated_risk_policy_inputs(
+            standard_risk_per_trade_percent=standard_risk_per_trade_percent,
+            maximum_risk_per_trade_percent=maximum_risk_per_trade_percent,
+            daily_loss_limit_r=daily_loss_limit_r,
+            weekly_loss_limit_r=weekly_loss_limit_r,
+            max_drawdown_percent=max_drawdown_percent,
+            max_open_risk_r=max_open_risk_r,
+            max_consecutive_losses=max_consecutive_losses,
+            minimum_rr=minimum_rr,
+        )
+        creating_strategy = strategy_profile_id is None
+        if creating_strategy:
+            clean_strategy_name = self._required_text(strategy_name or "", "Strategy name")
+            clean_strategy_description = self._required_text(strategy_description or "", "Strategy description")
+            normalized_strategy_name = normalize_strategy_name(clean_strategy_name)
+        with self._sessions.begin() as session:
+            duplicate = session.scalar(select(MT5Account).where(MT5Account.login == clean_login))
+            if duplicate is not None:
+                raise ValueError("This MT5 account ID is already registered")
+            if creating_strategy:
+                if session.scalar(select(StrategyProfile.id).where(StrategyProfile.normalized_name == normalized_strategy_name)) is not None:
+                    raise ValueError("A strategy with this name already exists")
+                strategy = StrategyProfile(
+                    name=clean_strategy_name,
+                    normalized_name=normalized_strategy_name,
+                    description=clean_strategy_description,
+                )
+                session.add(strategy)
+                session.flush()
+            else:
+                strategy = session.get(StrategyProfile, strategy_profile_id)
+                if strategy is None or strategy.name == "Journal default":
+                    raise ValueError("Select a saved trading system or create one in this flow")
+                if not self._optional_text(strategy.description):
+                    raise ValueError("The selected trading system needs a strategy description")
+            account = MT5Account(
+                display_name=clean_display_name,
+                login=clean_login,
+                broker_server=clean_broker,
+                account_currency=clean_currency,
+                export_file_path=export_file_path,
+                opening_balance=capital,
+                strategy_profile_id=strategy.id,
+                active=True,
+            )
+            session.add(account)
+            session.flush()
+            session.add(AccountRiskPolicy(
+                mt5_account_id=account.id,
+                version=1,
+                active=True,
+                risk_per_trade_percent=risk_inputs["standard"],
+                maximum_risk_per_trade_percent=risk_inputs["maximum"],
+                daily_loss_limit_r=risk_inputs["daily"],
+                weekly_loss_limit_r=risk_inputs["weekly"],
+                max_drawdown_percent=risk_inputs["drawdown"],
+                max_open_risk_r=risk_inputs["open_risk"],
+                max_consecutive_losses=max_consecutive_losses,
+                minimum_rr=risk_inputs["minimum_rr"],
+                correlation_policy=self._optional_text(correlation_policy),
+                pretrade_balance_auto_evidence_enabled=False,
+                created_at=datetime.now(timezone.utc).isoformat(),
+            ))
+            settings = session.get(JournalSettings, 1)
+            if settings is not None:
+                settings.active_mt5_account_id = account.id
+            session.flush()
+            return self._to_account_list_item(account)
 
     def account_has_imported_trades(self, account_id: int) -> bool:
         with self._sessions() as session:
@@ -952,6 +1069,7 @@ class SQLiteJournalRepository:
         account_currency: str,
         export_file_path: str,
         opening_balance: str | None,
+        strategy_profile_id: int | None = None,
     ) -> None:
         """Update one approved account without rewriting its imported MT5 history."""
         baseline = None if opening_balance is None or not opening_balance.strip() else _decimal_string(
@@ -979,6 +1097,14 @@ class SQLiteJournalRepository:
             )
             if duplicate is not None:
                 raise ValueError("Another account already uses this MT5 account ID")
+
+            if strategy_profile_id is not None and strategy_profile_id != account.strategy_profile_id:
+                if has_imported_trades:
+                    raise ValueError("An account's trading system is locked once trades are imported")
+                strategy = session.get(StrategyProfile, strategy_profile_id)
+                if strategy is None:
+                    raise ValueError("Select a saved trading system")
+                account.strategy_profile_id = strategy.id
 
             account.display_name = display_name
             account.login = login
@@ -1020,6 +1146,13 @@ class SQLiteJournalRepository:
             account = session.scalar(select(MT5Account).where(MT5Account.login == login, MT5Account.broker_server == broker_server, MT5Account.active.is_(True)))
             return None if account is None else MT5AccountView(id=account.id, account_currency=account.account_currency)
 
+    def get_account_strategy(self, account_id: int) -> StrategyProfileView:
+        with self._sessions() as session:
+            account = session.get(MT5Account, account_id)
+            if account is None:
+                raise ValueError("The selected MT5 account no longer exists")
+            return self._to_strategy_profile_view(account.strategy_profile)
+
     @staticmethod
     def _to_account_list_item(account: MT5Account) -> AccountListItem:
         return AccountListItem(
@@ -1032,6 +1165,8 @@ class SQLiteJournalRepository:
             account.opening_balance,
             account.latest_mt5_balance,
             account.latest_server_utc_offset_minutes,
+            account.strategy_profile_id,
+            account.strategy_profile.name,
         )
 
     def list_mt5_accounts(self) -> list[AccountListItem]:
@@ -1109,27 +1244,16 @@ class SQLiteJournalRepository:
         pretrade_balance_auto_evidence_enabled: bool = False,
         starting_balance: str | None = None,
     ) -> AccountRiskPolicyView:
-        standard_risk_percent = self._required_decimal(
-            standard_risk_per_trade_percent,
-            "Standard risk (1R)",
-            minimum=Decimal("0.01"),
-            maximum=Decimal("100"),
+        risk_inputs = self._validated_risk_policy_inputs(
+            standard_risk_per_trade_percent=standard_risk_per_trade_percent,
+            maximum_risk_per_trade_percent=maximum_risk_per_trade_percent,
+            daily_loss_limit_r=daily_loss_limit_r,
+            weekly_loss_limit_r=weekly_loss_limit_r,
+            max_drawdown_percent=max_drawdown_percent,
+            max_open_risk_r=max_open_risk_r,
+            max_consecutive_losses=max_consecutive_losses,
+            minimum_rr=minimum_rr,
         )
-        maximum_risk_percent = self._required_decimal(
-            maximum_risk_per_trade_percent,
-            "Maximum risk per trade",
-            minimum=Decimal("0.01"),
-            maximum=Decimal("100"),
-        )
-        if maximum_risk_percent < standard_risk_percent:
-            raise ValueError("Maximum risk per trade must be at least the standard risk (1R)")
-        daily_limit = self._required_decimal(daily_loss_limit_r, "Daily loss limit", minimum=Decimal("0.01"))
-        weekly_limit = self._required_decimal(weekly_loss_limit_r, "Weekly loss limit", minimum=Decimal("0.01"))
-        max_drawdown = self._required_decimal(max_drawdown_percent, "Maximum drawdown", minimum=Decimal("0.01"), maximum=Decimal("100"))
-        open_risk = self._required_decimal(max_open_risk_r, "Maximum open risk", minimum=Decimal("0.01"))
-        minimum_rr_value = self._required_decimal(minimum_rr, "Minimum R:R", minimum=Decimal("0.01"))
-        if max_consecutive_losses < 1:
-            raise ValueError("Maximum consecutive losses must be at least one")
         with self._sessions.begin() as session:
             account = session.get(MT5Account, account_id)
             if account is None or not account.active:
@@ -1152,14 +1276,14 @@ class SQLiteJournalRepository:
                 mt5_account_id=account_id,
                 version=version,
                 active=True,
-                risk_per_trade_percent=_decimal_string(standard_risk_percent),
-                maximum_risk_per_trade_percent=_decimal_string(maximum_risk_percent),
-                daily_loss_limit_r=_decimal_string(daily_limit),
-                weekly_loss_limit_r=_decimal_string(weekly_limit),
-                max_drawdown_percent=_decimal_string(max_drawdown),
-                max_open_risk_r=_decimal_string(open_risk),
+                risk_per_trade_percent=risk_inputs["standard"],
+                maximum_risk_per_trade_percent=risk_inputs["maximum"],
+                daily_loss_limit_r=risk_inputs["daily"],
+                weekly_loss_limit_r=risk_inputs["weekly"],
+                max_drawdown_percent=risk_inputs["drawdown"],
+                max_open_risk_r=risk_inputs["open_risk"],
                 max_consecutive_losses=max_consecutive_losses,
-                minimum_rr=_decimal_string(minimum_rr_value),
+                minimum_rr=risk_inputs["minimum_rr"],
                 correlation_policy=self._optional_text(correlation_policy),
                 pretrade_balance_auto_evidence_enabled=pretrade_balance_auto_evidence_enabled,
                 created_at=datetime.now(timezone.utc).isoformat(),
@@ -1167,6 +1291,34 @@ class SQLiteJournalRepository:
             session.add(policy)
             session.flush()
             return self._to_risk_policy_view(policy)
+
+    def _validated_risk_policy_inputs(
+        self,
+        *,
+        standard_risk_per_trade_percent: str,
+        maximum_risk_per_trade_percent: str,
+        daily_loss_limit_r: str,
+        weekly_loss_limit_r: str,
+        max_drawdown_percent: str,
+        max_open_risk_r: str,
+        max_consecutive_losses: int,
+        minimum_rr: str,
+    ) -> dict[str, str]:
+        standard = self._required_decimal(standard_risk_per_trade_percent, "Standard risk (1R)", minimum=Decimal("0.01"), maximum=Decimal("100"))
+        maximum = self._required_decimal(maximum_risk_per_trade_percent, "Maximum risk per trade", minimum=Decimal("0.01"), maximum=Decimal("100"))
+        if maximum < standard:
+            raise ValueError("Maximum risk per trade must be at least the standard risk (1R)")
+        if max_consecutive_losses < 1:
+            raise ValueError("Maximum consecutive losses must be at least one")
+        return {
+            "standard": _decimal_string(standard),
+            "maximum": _decimal_string(maximum),
+            "daily": _decimal_string(self._required_decimal(daily_loss_limit_r, "Daily loss limit", minimum=Decimal("0.01"))),
+            "weekly": _decimal_string(self._required_decimal(weekly_loss_limit_r, "Weekly loss limit", minimum=Decimal("0.01"))),
+            "drawdown": _decimal_string(self._required_decimal(max_drawdown_percent, "Maximum drawdown", minimum=Decimal("0.01"), maximum=Decimal("100"))),
+            "open_risk": _decimal_string(self._required_decimal(max_open_risk_r, "Maximum open risk", minimum=Decimal("0.01"))),
+            "minimum_rr": _decimal_string(self._required_decimal(minimum_rr, "Minimum R:R", minimum=Decimal("0.01"))),
+        }
 
     def list_closed_trades_for_review(self, account_id: int) -> list[ClosedTradeReviewItem]:
         """Return logical trades assembled from immutable imported MT5 positions."""
@@ -1637,6 +1789,20 @@ class SQLiteJournalRepository:
                 raise ValueError("Logical trade was not found for this account")
             if strategy is None:
                 raise ValueError("Strategy profile was not found")
+            account = session.get(MT5Account, account_id)
+            if account is None:
+                raise ValueError("Use the strategy assigned to this MT5 account")
+            # The placeholder only exists for programmatic/bootstrap callers from
+            # earlier releases. The UI never offers it: new accounts must choose a
+            # real profile. Promote it on first direct assessment so old test and
+            # import helpers still create an account-bound system, rather than
+            # reintroducing per-trade strategy selection.
+            if account.strategy_profile_id != strategy_profile_id:
+                assigned = session.get(StrategyProfile, account.strategy_profile_id)
+                if assigned is not None and assigned.name == "Journal default":
+                    account.strategy_profile_id = strategy_profile_id
+                else:
+                    raise ValueError("Use the strategy assigned to this MT5 account")
             if policy is not None and policy.mt5_account_id != account_id:
                 raise ValueError("Risk policy does not belong to this account")
             setup_snapshot = self._context_setup_snapshot(session, strategy.id, context.strategy_setup_id)
@@ -2121,6 +2287,25 @@ class SQLiteJournalRepository:
             magic_numbers = self._magic_numbers_by_profile(session)
             return [self._to_strategy_profile_view(profile, magic_numbers.get(profile.id, ())) for profile in profiles]
 
+    def delete_strategy_profile(self, strategy_id: int) -> None:
+        """Permanently delete a strategy with no MT5 account currently bound to it."""
+        with self._sessions.begin() as session:
+            strategy = session.get(StrategyProfile, strategy_id)
+            if strategy is None:
+                raise ValueError("The selected strategy no longer exists")
+            if strategy.name == "Journal default":
+                raise ValueError("The journal default strategy cannot be deleted")
+            if session.scalar(select(MT5Account.id).where(MT5Account.strategy_profile_id == strategy_id).limit(1)) is not None:
+                raise ValueError("A strategy bound to an account cannot be deleted")
+            settings = session.get(JournalSettings, 1)
+            if settings is not None and settings.default_strategy_profile_id == strategy_id:
+                settings.default_strategy_profile_id = None
+                settings.default_strategy_name = None
+            session.execute(delete(StrategyMagicNumber).where(StrategyMagicNumber.strategy_profile_id == strategy_id))
+            session.execute(delete(StrategySetup).where(StrategySetup.strategy_profile_id == strategy_id))
+            session.flush()
+            session.delete(strategy)
+
     def list_strategy_setups(self, strategy_profile_id: int, *, include_inactive: bool = False) -> list[StrategySetupView]:
         with self._sessions() as session:
             statement = select(StrategySetup).where(StrategySetup.strategy_profile_id == strategy_profile_id)
@@ -2558,18 +2743,18 @@ class SQLiteJournalRepository:
 
     def list_trades(self) -> list[TradeListItem]:
         with self._sessions() as session:
-            settings = session.get(JournalSettings, 1)
-            default_strategy_id = None if settings is None else settings.default_strategy_profile_id
-            default_strategy_name = None if settings is None else settings.default_strategy_name
             profiles_by_id = {profile.id: profile for profile in session.scalars(select(StrategyProfile)).all()}
+            account_strategies = {
+                account.id: account.strategy_profile_id
+                for account in session.scalars(select(MT5Account)).all()
+            }
             policies_by_id, active_policies_by_account, funded_capital_by_account = self._risk_reporting_context(session)
             trades = session.scalars(select(Trade).order_by(Trade.exit_time.desc())).all()
             return [
                 self._to_trade_list_item(
                     trade,
                     profiles_by_id,
-                    default_strategy_id,
-                    default_strategy_name,
+                    account_strategies,
                     policies_by_id,
                     active_policies_by_account,
                     funded_capital_by_account,
@@ -2581,8 +2766,7 @@ class SQLiteJournalRepository:
     def _to_trade_list_item(
         trade: Trade,
         profiles_by_id: dict[int, StrategyProfile],
-        default_strategy_id: int | None,
-        default_strategy_name: str | None,
+        account_strategies: dict[int, int],
         policies_by_id: dict[int, AccountRiskPolicyView],
         active_policies_by_account: dict[int, AccountRiskPolicyView],
         funded_capital_by_account: dict[int, str | None],
@@ -2594,12 +2778,9 @@ class SQLiteJournalRepository:
             funded_capital_by_account,
         )
         result_r = None if effective_risk is None else _decimal_string(Decimal(trade.net_pnl) / Decimal(effective_risk))
-        if default_strategy_id is not None and default_strategy_id in profiles_by_id:
-            strategy = profiles_by_id[default_strategy_id].name
-            strategy_source = "Default"
-        else:
-            strategy = default_strategy_name
-            strategy_source = "Default" if default_strategy_name else "Unassigned"
+        strategy_id = account_strategies.get(trade.mt5_account_id)
+        strategy = profiles_by_id[strategy_id].name if strategy_id in profiles_by_id else None
+        strategy_source = "Account"
         return TradeListItem(trade.source, trade.mt5_position_id, trade.symbol, trade.direction, trade.exit_time, trade.net_pnl, result_r, strategy, strategy_source, effective_risk, risk_source)
 
     @staticmethod
@@ -2638,18 +2819,12 @@ class SQLiteJournalRepository:
 
     def list_trade_performance(self, account_id: int | None = None) -> list[TradePerformanceItem]:
         with self._sessions() as session:
-            settings = session.get(JournalSettings, 1)
-            default_strategy_id = None if settings is None else settings.default_strategy_profile_id
-            default_strategy_name = None if settings is None else settings.default_strategy_name
             profiles_by_id = {profile.id: profile for profile in session.scalars(select(StrategyProfile)).all()}
-            policies_by_id, active_policies_by_account, funded_capital_by_account = self._risk_reporting_context(session)
-            assessments = {
-                row.logical_trade_id: row
-                for row in session.scalars(
-                    select(PostTradeAssessment).where(PostTradeAssessment.superseded_at.is_(None), PostTradeAssessment.method == "manual")
-                ).all()
-                if account_id is None or row.mt5_account_id == account_id
+            account_strategies = {
+                account.id: account.strategy_profile_id
+                for account in session.scalars(select(MT5Account)).all()
             }
+            policies_by_id, active_policies_by_account, funded_capital_by_account = self._risk_reporting_context(session)
             trades = self._logical_trade_review_items(session, account_id)
             performance: list[TradePerformanceItem] = []
             for trade in trades:
@@ -2660,13 +2835,8 @@ class SQLiteJournalRepository:
                 if policy is not None and funded is not None:
                     standard_risk = Decimal(funded) * Decimal(policy.standard_risk_per_trade_percent) / Decimal("100")
                     effective_risk = _decimal_string(standard_risk) if standard_risk > 0 else None
-                assessment = assessments.get(trade.id)
-                if assessment is not None:
-                    strategy = self._strategy_snapshot_from_json(assessment.strategy_snapshot).name
-                elif default_strategy_id is not None and default_strategy_id in profiles_by_id:
-                    strategy = profiles_by_id[default_strategy_id].name
-                else:
-                    strategy = default_strategy_name
+                strategy_id = account_strategies.get(trade_account_id)
+                strategy = profiles_by_id[strategy_id].name if strategy_id in profiles_by_id else None
                 performance.append(
                     TradePerformanceItem(
                         logical_trade_id=trade.id,
@@ -2824,16 +2994,13 @@ class SQLiteJournalRepository:
             trade = session.scalar(select(Trade).join(MT5Account).where(MT5Account.login == login, MT5Account.broker_server == broker_server, Trade.mt5_position_id == position_id))
             if trade is None:
                 return None
-            settings = session.get(JournalSettings, 1)
-            default_strategy_id = None if settings is None else settings.default_strategy_profile_id
-            default_strategy_name = None if settings is None else settings.default_strategy_name
             profiles_by_id = {profile.id: profile for profile in session.scalars(select(StrategyProfile)).all()}
+            account_strategies = {account.id: account.strategy_profile_id for account in session.scalars(select(MT5Account)).all()}
             policies_by_id, active_policies_by_account, funded_capital_by_account = self._risk_reporting_context(session)
             item = self._to_trade_list_item(
                 trade,
                 profiles_by_id,
-                default_strategy_id,
-                default_strategy_name,
+                account_strategies,
                 policies_by_id,
                 active_policies_by_account,
                 funded_capital_by_account,

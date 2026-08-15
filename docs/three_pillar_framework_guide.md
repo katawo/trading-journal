@@ -318,7 +318,7 @@ Most roadmap items are detected automatically from data already saved elsewhere 
 - Execute and Measure (all three pillars) complete themselves the moment their review-count/score/hard-failure/period-review conditions are met.
 - Optimize (all three pillars) completes itself once a Coaching focus for that pillar has been resolved (completed or abandoned) with a reflection note.
 - Risk's Define step completes itself once the account's Risk policy is saved.
-- Trading system's Define, Test, and backtest steps complete themselves once a strategy profile has a documented description, a setup with a documented example, and backtest evidence (100+ trades, positive expectancy) respectively.
+- Trading system's Define, Test, and backtest steps complete themselves from the strategy bound to the selected account: a documented description, a setup with a documented example, and backtest evidence (100+ trades, positive expectancy) respectively.
 
 Only the items with no equivalent structured data anywhere in the app stay self-certified — Psychology's Define and Test steps, and Risk's "risk-calculation or simulation evidence" Test step. Complete those in **Bearings → Improve** only when they can be explained and revisited.
 

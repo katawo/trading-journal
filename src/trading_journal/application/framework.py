@@ -741,10 +741,6 @@ class FrameworkService:
         action = actions.get(metric_code, f"Before the next trade, verify {label} against the written plan and stand aside if it is not met.")
         return CoachingRecommendation(pillar, metric_kind, metric_code, f"Practising {label} consistently will improve {PILLAR_NAMES[pillar]}.", action, None, target_value, target_reviews, reason, safety)
 
-    def _user_strategy_profiles(self) -> list[StrategyProfileView]:
-        """Strategy profiles the trader created, excluding the placeholder auto-created for a new journal."""
-        return [profile for profile in self._repository.list_strategy_profiles() if profile.name != "Journal default"]
-
     def _auto_roadmap_item_evaluation(
         self,
         pillar: str,
@@ -800,19 +796,18 @@ class FrameworkService:
                 f"daily {policy.daily_loss_limit_r}R, weekly {policy.weekly_loss_limit_r}R."
             )
         if pillar == "system" and item_key == "rules":
-            profiles = [profile for profile in self._user_strategy_profiles() if (profile.description or "").strip()]
-            if not profiles:
+            profile = self._repository.get_account_strategy(account_id)
+            if not (profile.description or "").strip():
                 return False, None
-            return True, f"{len(profiles)} strategy profile(s) with documented rules."
+            return True, f"{profile.name} has documented rules."
         if pillar == "system" and item_key == "examples":
-            for profile in self._user_strategy_profiles():
-                if any((setup.description or "").strip() for setup in self._repository.list_strategy_setups(profile.id)):
-                    return True, "At least one documented strategy setup example."
+            profile = self._repository.get_account_strategy(account_id)
+            if any((setup.description or "").strip() for setup in self._repository.list_strategy_setups(profile.id)):
+                return True, f"{profile.name} has a documented setup example."
             return False, None
         if pillar == "system" and item_key == "backtest":
-            for profile in self._user_strategy_profiles():
-                if profile.backtest_trade_count is None or profile.backtest_trade_count < 100:
-                    continue
+            profile = self._repository.get_account_strategy(account_id)
+            if profile.backtest_trade_count is not None and profile.backtest_trade_count >= 100:
                 expectancy_positive = profile.backtest_expectancy_r is not None and Decimal(profile.backtest_expectancy_r) > 0
                 net_r_positive = profile.backtest_net_r is not None and Decimal(profile.backtest_net_r) > 0
                 if expectancy_positive or net_r_positive:
@@ -959,7 +954,7 @@ class FrameworkService:
         policies = self._policies_for(raw_positions, assessments, account_id)
         active_policy = self._repository.get_active_risk_policy(account_id)
         funded = self._repository.get_account_funded_capital(account_id)
-        strategies = {magic: profile for profile in self._repository.list_strategy_profiles() for magic in profile.magic_numbers}
+        account_strategy = self._repository.get_account_strategy(account_id)
         raw_events = self._historical_risk_events(account_id)
         events = {
             trade.id: self._combine_member_risk_events(trade, raw_events)
@@ -971,7 +966,7 @@ class FrameworkService:
                 trade,
                 assessments.get(trade.id),
                 policies,
-                strategies,
+                account_strategy,
                 funded,
                 active_policy,
                 tuple(events[trade.id]["events"]),
@@ -1131,7 +1126,7 @@ class FrameworkService:
         trade: ClosedTradeReviewItem,
         assessment: PostTradeAssessmentView | None,
         policies: dict[int, AccountRiskPolicyView],
-        strategies_by_magic: dict[str, StrategyProfileView],
+        account_strategy: StrategyProfileView,
         funded: str | None,
         active_policy: AccountRiskPolicyView | None,
         automatic_risk_events: tuple[str, ...],
@@ -1146,7 +1141,7 @@ class FrameworkService:
         actual_risk = manual_declared_risk if manual_declared_risk else auto_risk.source_amount
         risk_evidence_source = "reviewed_actual_risk" if manual_declared_risk else auto_risk.risk_basis
         risk_policy_state = self._risk_policy_state(actual_risk, policy_risk)
-        mapped = strategies_by_magic.get(trade.entry_magic_number or "")
+        mapped = account_strategy
         if assessment is None or assessment.method == "auto":
             if assessment is not None:
                 state, kind, grades = "reviewed", "approved_auto_review", assessment.criterion_grades

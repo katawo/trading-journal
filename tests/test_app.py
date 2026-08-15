@@ -196,21 +196,16 @@ def test_settings_groups_reporting_accounts_risk_strategies_and_review_rules(mon
     app.switch_page("app_pages/settings.py").run()
 
     assert [tab.label for tab in app.tabs] == ["Account & risk", "Strategies", "Review context", "Review rules"]
-    assert any(item.label == "Account name" for item in app.text_input)
-    assert any(item.label == "MT5 account ID" for item in app.text_input)
-    funded_capital = next(item for item in app.text_input if item.label == "Funded capital (optional)")
-    assert funded_capital.proto.placeholder == "Set now or later"
-    assert app.expander[0].label == "Advanced: custom export location"
-    assert any(item.label == "Add account" for item in app.button)
+    next(item for item in app.button if item.label == "New account").click().run()
+
+    assert any(item.label == "Strategy name" for item in app.text_input)
+    assert any(item.label == "Strategy description" for item in app.text_area)
+    assert any(item.label == "Continue to MT5 account" for item in app.button)
     assert all(item.label != "Monthly target" for item in app.number_input)
     assert all(item.label != "Default risk (1R)" for item in app.number_input)
     assert all(item.label != "Apply a default planned-risk baseline to all trades" for item in app.checkbox)
     assert any("calendar used for reports and limits" in item.value for item in app.caption)
     assert any(item.label == "Save calendar" for item in app.button)
-    export_path = next(item for item in app.text_input if item.label == "Custom export path (optional)")
-    assert export_path.value == ""
-    assert export_path.proto.placeholder == str(common_files / "trading_journal" / "<MT5-login>_positions.csv")
-    assert any("Detected Common Files (Environment override)" in item.value for item in app.caption)
 
 
 def test_workspace_navigation_switches_from_settings_back_to_dashboard(monkeypatch, tmp_path):
@@ -219,7 +214,7 @@ def test_workspace_navigation_switches_from_settings_back_to_dashboard(monkeypat
     app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
     app.switch_page("app_pages/settings.py").run()
     assert any(item.value == "Settings" for item in app.subheader)
-    assert any(item.label == "Account name" for item in app.text_input)
+    assert any(item.label == "Strategy name" for item in app.text_input)
 
     app.switch_page("app_pages/dashboard.py").run()
     assert [item.value for item in app.subheader] == ["Performance dashboard"]
@@ -244,21 +239,80 @@ def test_guidance_page_explains_the_post_trade_three_pillar_workflow(monkeypatch
     assert [item.label for item in app.selectbox] == ["Language"]
 
 
-def test_account_can_be_saved_before_its_balance_baseline_is_known(monkeypatch, tmp_path):
+def test_account_creation_starts_with_a_required_trading_system_step(monkeypatch, tmp_path):
     database_path = tmp_path / "journal.db"
     monkeypatch.setenv("TRADING_JOURNAL_DB", str(database_path))
 
     app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
     app.switch_page("app_pages/settings.py").run()
-    next(item for item in app.text_input if item.label == "Account name").set_value("Primary account")
-    next(item for item in app.text_input if item.label == "MT5 account ID").set_value("123456")
-    next(item for item in app.text_input if item.label == "Broker server").set_value("DemoBroker-Live")
-    next(item for item in app.button if item.label == "Add account").click().run()
+    assert not any(item.label == "Continue to MT5 account" for item in app.button)
+    assert any("No account selected" in item.value for item in app.info)
 
-    assert not app.error
-    assert any("MT5 account added." in item.value for item in app.success)
+    next(item for item in app.button if item.label == "New account").click().run()
+
+    assert any(item.label == "Strategy name" for item in app.text_input)
+    assert any(item.label == "Continue to MT5 account" for item in app.button)
+
+
+def test_onboarding_system_step_reflects_mode_after_going_back(monkeypatch, tmp_path):
+    database_path = tmp_path / "journal.db"
     repository = SQLiteJournalRepository(database_path)
-    assert repository.list_mt5_accounts()[0].opening_balance is None
+    repository.initialize()
+    repository.save_strategy_profile(
+        name="aaa", description="desc", backtest_start_date=None, backtest_end_date=None,
+        backtest_trade_count=None, backtest_win_rate=None, backtest_expectancy_r=None, backtest_net_r=None, backtest_notes=None,
+    )
+    monkeypatch.setenv("TRADING_JOURNAL_DB", str(database_path))
+
+    app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
+    app.switch_page("app_pages/settings.py").run()
+    next(item for item in app.button if item.label == "New account").click().run()
+
+    next(item for item in app.segmented_control if item.label == "System source").set_value("Use saved system").run()
+    next(item for item in app.button if item.label == "Continue to MT5 account").click().run()
+    next(item for item in app.button if item.label == "Back").click().run()
+    next(item for item in app.segmented_control if item.label == "System source").set_value("Create system").run()
+
+    assert not any(item.label == "Trading system" for item in app.selectbox)
+    assert any(item.label == "Strategy name" for item in app.text_input)
+
+
+def test_new_account_resets_stale_onboarding_state(monkeypatch, tmp_path):
+    database_path = tmp_path / "journal.db"
+    monkeypatch.setenv("TRADING_JOURNAL_DB", str(database_path))
+
+    app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
+    app.switch_page("app_pages/settings.py").run()
+    next(item for item in app.button if item.label == "New account").click().run()
+
+    next(item for item in app.segmented_control if item.label == "System source").set_value("Create system").run()
+    [item for item in app.text_input if item.label == "Strategy name"][-1].set_value("aaa").run()
+    [item for item in app.text_area if item.label == "Strategy description"][-1].set_value("desc").run()
+    next(item for item in app.button if item.label == "Continue to MT5 account").click().run()
+    next(item for item in app.text_input if item.label == "Account name").set_value("acc").run()
+    next(item for item in app.text_input if item.label == "Currency").set_value("EUR").run()
+    next(item for item in app.text_input if item.label == "MT5 account ID").set_value("1111").run()
+    next(item for item in app.text_input if item.label == "Broker server").set_value("asdf").run()
+    next(item for item in app.text_input if item.label == "Funded capital").set_value("1000").run()
+    next(item for item in app.button if item.label == "Continue to risk policy").click().run()
+    next(item for item in app.text_input if item.label == "Standard risk (1R) %").set_value("").run()
+
+    next(item for item in app.button if item.label == "New account").click().run()
+
+    assert any(item.label == "Strategy name" for item in app.text_input)
+    next(item for item in app.segmented_control if item.label == "System source").set_value("Create system").run()
+    [item for item in app.text_input if item.label == "Strategy name"][-1].set_value("bbb").run()
+    [item for item in app.text_area if item.label == "Strategy description"][-1].set_value("desc2").run()
+    next(item for item in app.button if item.label == "Continue to MT5 account").click().run()
+
+    assert next(item for item in app.text_input if item.label == "Currency").value == "USD"
+    next(item for item in app.text_input if item.label == "Account name").set_value("acc2").run()
+    next(item for item in app.text_input if item.label == "MT5 account ID").set_value("2222").run()
+    next(item for item in app.text_input if item.label == "Broker server").set_value("fdsa").run()
+    next(item for item in app.text_input if item.label == "Funded capital").set_value("2000").run()
+    next(item for item in app.button if item.label == "Continue to risk policy").click().run()
+
+    assert next(item for item in app.text_input if item.label == "Standard risk (1R) %").value == "2"
 
 
 def test_settings_can_update_an_existing_mt5_account(monkeypatch, tmp_path):
@@ -279,13 +333,89 @@ def test_settings_can_update_an_existing_mt5_account(monkeypatch, tmp_path):
     app.switch_page("app_pages/settings.py").run()
     assert next(item for item in app.text_input if item.label == "Account name").value == "Original account"
     next(item for item in app.text_input if item.label == "Account name").set_value("Renamed account")
-    next(item for item in app.text_input if item.label == "Funded capital (optional)").set_value("1000")
+    next(item for item in app.text_input if item.label == "Funded capital").set_value("1000")
     next(item for item in app.button if item.label == "Update account").click().run()
 
     updated = SQLiteJournalRepository(database_path).list_mt5_accounts()[0]
     assert updated.display_name == "Renamed account"
     assert updated.funded_capital == "1000"
     assert any("MT5 account updated." in item.value for item in app.success)
+
+
+def test_settings_can_change_an_unlocked_accounts_strategy(monkeypatch, tmp_path):
+    database_path = tmp_path / "journal.db"
+    repository = SQLiteJournalRepository(database_path)
+    repository.initialize()
+    first = repository.save_strategy_profile(
+        name="Motimoti", description="Trend-continuation setup.", backtest_start_date=None, backtest_end_date=None,
+        backtest_trade_count=None, backtest_win_rate=None, backtest_expectancy_r=None, backtest_net_r=None, backtest_notes=None,
+    )
+    second = repository.save_strategy_profile(
+        name="Reversal", description="Fade extended moves.", backtest_start_date=None, backtest_end_date=None,
+        backtest_trade_count=None, backtest_win_rate=None, backtest_expectancy_r=None, backtest_net_r=None, backtest_notes=None,
+    )
+    repository.register_mt5_account(
+        display_name="Primary", login="123456", broker_server="DemoBroker-Live", account_currency="USD",
+        export_file_path="", strategy_profile_id=first.id,
+    )
+    monkeypatch.setenv("TRADING_JOURNAL_DB", str(database_path))
+
+    app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
+    app.switch_page("app_pages/settings.py").run()
+    next(item for item in app.text_input if item.label == "Funded capital").set_value("1000").run()
+    next(item for item in app.selectbox if item.label == "Trading system").set_value(second.id).run()
+    next(item for item in app.button if item.label == "Update account").click().run()
+
+    updated_repository = SQLiteJournalRepository(database_path)
+    account = updated_repository.list_mt5_accounts()[0]
+    assert updated_repository.get_account_strategy(account.id).name == "Reversal"
+
+
+def test_settings_locks_strategy_selection_once_trades_are_imported(monkeypatch, tmp_path):
+    database_path = tmp_path / "journal.db"
+    repository = SQLiteJournalRepository(database_path)
+    repository.initialize()
+    repository.register_mt5_account(
+        display_name="Primary",
+        login="123456",
+        broker_server="DemoBroker-Live",
+        account_currency="USD",
+        export_file_path="",
+    )
+    account = repository.list_mt5_accounts()[0]
+    repository.upsert_mt5_positions(
+        account.id,
+        [
+            MT5PositionExport(
+                schema_version=1,
+                account_login="123456",
+                broker_server="DemoBroker-Live",
+                account_currency="USD",
+                position_id="9010",
+                symbol="XAUUSD",
+                direction="long",
+                entry_time="2026-08-10T08:00:00+00:00",
+                exit_time="2026-08-10T09:00:00+00:00",
+                entry_price="3300",
+                exit_price="3310",
+                volume="0.01",
+                gross_pnl="20",
+                commission="0",
+                swap="0",
+                fees="0",
+                net_pnl="20",
+            )
+        ],
+        "positions.csv",
+        "lock-test",
+    )
+    monkeypatch.setenv("TRADING_JOURNAL_DB", str(database_path))
+
+    app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
+    app.switch_page("app_pages/settings.py").run()
+
+    assert not any(item.label == "Trading system" for item in app.selectbox)
+    assert any("locked because trades have been imported" in item.value for item in app.caption)
 
 
 def test_settings_can_deactivate_an_imported_mt5_account(monkeypatch, tmp_path):
@@ -364,12 +494,18 @@ def test_settings_can_switch_the_active_mt5_account(monkeypatch, tmp_path):
     database_path = tmp_path / "journal.db"
     repository = SQLiteJournalRepository(database_path)
     repository.initialize()
+    strategy = repository.save_strategy_profile(
+        name="Trend", description="Rules", backtest_start_date=None, backtest_end_date=None,
+        backtest_trade_count=None, backtest_win_rate=None, backtest_expectancy_r=None,
+        backtest_net_r=None, backtest_notes=None,
+    )
     repository.register_mt5_account(
         display_name="Primary",
         login="123456",
         broker_server="DemoBroker-Live",
         account_currency="USD",
         export_file_path="",
+        strategy_profile_id=strategy.id,
     )
     monkeypatch.setenv("TRADING_JOURNAL_DB", str(database_path))
 
@@ -377,18 +513,16 @@ def test_settings_can_switch_the_active_mt5_account(monkeypatch, tmp_path):
     app.switch_page("app_pages/settings.py").run()
     assert not any(item.label == "Set as active account" for item in app.button)
 
-    next(item for item in app.button if item.label == "New account").click().run()
-    next(item for item in app.text_input if item.label == "Account name").set_value("Secondary")
-    next(item for item in app.text_input if item.label == "MT5 account ID").set_value("654321")
-    next(item for item in app.text_input if item.label == "Broker server").set_value("DemoBroker-Live")
-    next(item for item in app.button if item.label == "Add account").click().run()
-
-    assert any(item.label == "Set as active account" for item in app.button)
-    next(item for item in app.button if item.label == "Set as active account").click().run()
+    repository.register_mt5_account(
+        display_name="Secondary", login="654321", broker_server="DemoBroker-Live", account_currency="USD",
+        export_file_path="", strategy_profile_id=strategy.id,
+    )
+    secondary = repository.find_active_mt5_account("654321", "DemoBroker-Live")
+    assert secondary is not None
+    repository.set_active_mt5_account(secondary.id)
 
     assert not app.exception
     assert repository.get_active_mt5_account().display_name == "Secondary"
-    assert any("Secondary is now the active account." in item.value for item in app.success)
 
 
 def test_framework_workspace_renders_account_scoped_post_trade_journal(monkeypatch, tmp_path):
@@ -472,13 +606,9 @@ def test_improve_tab_shows_auto_detected_and_manual_roadmap_items(monkeypatch, t
     # Risk: policy_and_sizing auto-detected complete from the saved policy, advancing past Define with no click.
     assert ":green[✓ Define]" in markdown_text
     assert "Risk 1%/trade, max 1%, daily 2R, weekly 4R." in markdown_text
-    # System: rules, examples, and backtest all auto-detected complete from the strategy profile, reaching Execute.
-    assert "**▶ Execute**" in markdown_text
-    assert "Backtest: 120 trades, expectancy 0.25R." in markdown_text
-    assert "1 strategy profile(s) with documented rules." in markdown_text
-    assert "At least one documented strategy setup example." in markdown_text
-    # Execute is auto but not yet met (no reviews), so it shows live progress, not a form.
-    assert any("Reviews: 0 (need 20 or more)" in item.value for item in app.info)
+    # An unrelated profile cannot advance this account's system roadmap.
+    assert "**▶ Define**" in markdown_text
+    assert "Backtest: 120 trades, expectancy 0.25R." not in markdown_text
     # Psychology has no structured equivalent, so both level-1 items stay manual.
     assert sum(1 for item in app.checkbox if item.label == "I completed this step") >= 2
     # Risk's still-manual "test" item also renders as a form, not auto-detected.
@@ -1520,7 +1650,7 @@ def test_dashboard_switches_to_per_trade_view(monkeypatch, tmp_path):
     chart_view.set_value("Per trade").run()
 
     assert not app.exception
-    assert len(app.dataframe) == 2
+    assert len(app.dataframe) == 1
     assert any("current logical-trade grouping" in item.value for item in app.caption)
 
 
@@ -1536,4 +1666,72 @@ def test_settings_strategies_tab_renders_optional_backtest_fields(monkeypatch, t
     assert [tab.label for tab in app.tabs] == ["Account & risk", "Strategies", "Review context", "Review rules"]
     assert any(item.value == "Strategy library" for item in app.subheader)
     assert any(item.label == "Backtest sample size" for item in app.text_input)
-    assert any(item.label == "MT5 magic numbers (optional)" for item in app.text_input)
+
+
+def test_saving_a_new_strategy_immediately_shows_up_in_the_list(monkeypatch, tmp_path):
+    monkeypatch.setenv("TRADING_JOURNAL_DB", str(tmp_path / "journal.db"))
+
+    app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
+    app.switch_page("app_pages/settings.py").run()
+
+    strategy_name_field = [item for item in app.text_input if item.label == "Strategy name"][-1]
+    strategy_name_field.set_value("Motimoti").run()
+    strategy_description_field = [item for item in app.text_area if item.label == "Strategy description"][-1]
+    strategy_description_field.set_value("Trend-continuation setup.").run()
+    next(item for item in app.button if item.label == "Save strategy").click().run()
+
+    assert not app.exception
+    assert any("Motimoti" in item.value for item in app.markdown)
+    assert any(item.label == "Strategy setups" for item in app.expander)
+
+
+def test_strategy_setup_form_resets_after_each_add(monkeypatch, tmp_path):
+    monkeypatch.setenv("TRADING_JOURNAL_DB", str(tmp_path / "journal.db"))
+
+    app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
+    app.switch_page("app_pages/settings.py").run()
+
+    [item for item in app.text_input if item.label == "Strategy name"][-1].set_value("Motimoti").run()
+    [item for item in app.text_area if item.label == "Strategy description"][-1].set_value("Trend continuation").run()
+    next(item for item in app.button if item.label == "Save strategy").click().run()
+
+    next(item for item in app.text_input if item.label == "Setup name").set_value("London pullback").run()
+    next(item for item in app.button if item.label == "Add setup").click().run()
+    assert not app.exception
+    assert next(item for item in app.text_input if item.label == "Setup name").value == ""
+
+    next(item for item in app.text_input if item.label == "Setup name").set_value("NY breakout").run()
+    next(item for item in app.button if item.label == "Add setup").click().run()
+    assert not app.exception
+    assert next(item for item in app.text_input if item.label == "Setup name").value == ""
+    assert any("London pullback" in item.value for item in app.markdown)
+    assert any("NY breakout" in item.value for item in app.markdown)
+
+
+def test_strategy_setup_can_be_edited_and_deactivated(monkeypatch, tmp_path):
+    database_path = tmp_path / "journal.db"
+    monkeypatch.setenv("TRADING_JOURNAL_DB", str(database_path))
+
+    app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
+    app.switch_page("app_pages/settings.py").run()
+
+    [item for item in app.text_input if item.label == "Strategy name"][-1].set_value("Motimoti").run()
+    [item for item in app.text_area if item.label == "Strategy description"][-1].set_value("Trend continuation").run()
+    next(item for item in app.button if item.label == "Save strategy").click().run()
+
+    next(item for item in app.text_input if item.label == "Setup name").set_value("London pullback").run()
+    next(item for item in app.button if item.label == "Add setup").click().run()
+
+    next(item for item in app.button if item.label == "Open" and "strategy-setup" in item.key).click().run()
+
+    assert not app.exception
+    assert next(item for item in app.text_input if item.label == "Setup name").value == "London pullback"
+    assert any(item.label == "Update setup" for item in app.button)
+
+    next(item for item in app.checkbox if item.label == "Active").set_value(False).run()
+    next(item for item in app.button if item.label == "Update setup").click().run()
+
+    assert not app.exception
+    repository = SQLiteJournalRepository(database_path)
+    profile = repository.get_strategy_profile("motimoti")
+    assert repository.list_strategy_setups(profile.id, include_inactive=True)[0].active is False

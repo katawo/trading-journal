@@ -299,7 +299,7 @@ Hầu hết các mục trong lộ trình được tự động phát hiện từ
 - Thực hiện và Đo lường (cả ba trụ cột) tự hoàn tất ngay khi đủ điều kiện về số lượng đánh giá/điểm số/lỗi cứng/đánh giá giai đoạn.
 - Tối ưu (cả ba trụ cột) tự hoàn tất khi một Trọng tâm coaching của trụ cột đó đã được giải quyết (hoàn tất hoặc từ bỏ) kèm ghi chú phản ánh.
 - Bước Xác định của Rủi ro tự hoàn tất ngay khi chính sách rủi ro của tài khoản được lưu.
-- Các bước Xác định, Kiểm chứng và backtest của Hệ thống giao dịch tự hoàn tất khi hồ sơ chiến lược có mô tả, một setup có ví dụ minh họa, và bằng chứng backtest (100+ giao dịch, expectancy dương) tương ứng.
+- Các bước Xác định, Kiểm chứng và backtest của Hệ thống giao dịch tự hoàn tất từ hồ sơ chiến lược gắn với tài khoản đang chọn: có mô tả, một setup có ví dụ minh họa, và bằng chứng backtest (100+ giao dịch, expectancy dương) tương ứng.
 
 Chỉ những mục không có dữ liệu tương ứng nào trong ứng dụng mới cần tự xác nhận thủ công — bước Xác định và Kiểm chứng của Tâm lý, và bước Kiểm chứng "bằng chứng tính toán/mô phỏng rủi ro" của Rủi ro. Chỉ hoàn tất các mục đó trong **Định hướng → Cải thiện** khi có thể giải thích và xem lại.
 
