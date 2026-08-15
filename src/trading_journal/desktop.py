@@ -444,6 +444,11 @@ def _process_is_running(process_id: int) -> bool:
         return False
     except PermissionError:
         return True
+    except OSError:
+        # On Windows, probing an exited parent can raise WinError 6 ("The
+        # handle is invalid") rather than ProcessLookupError.  The sync worker
+        # should stop quietly when its launcher is no longer available.
+        return False
     return True
 
 

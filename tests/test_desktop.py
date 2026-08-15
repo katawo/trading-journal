@@ -154,6 +154,17 @@ def test_desktop_lock_keeps_a_current_process_identity(monkeypatch, tmp_path: Pa
         DesktopInstanceLock(lock_path).acquire()
 
 
+def test_process_probe_treats_an_invalid_windows_handle_as_not_running(monkeypatch) -> None:
+    from trading_journal import desktop
+
+    def invalid_handle(_process_id: int, _signal: int) -> None:
+        raise OSError(6, "The handle is invalid")
+
+    monkeypatch.setattr(desktop.os, "kill", invalid_handle)
+
+    assert desktop._process_is_running(12345) is False
+
+
 def test_desktop_server_disables_the_source_file_watcher(monkeypatch) -> None:
     from streamlit.web import bootstrap
     from trading_journal import desktop
