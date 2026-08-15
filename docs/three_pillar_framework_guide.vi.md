@@ -292,7 +292,16 @@ Ba trụ cột tiến song song:
 | Đo lường | 30 đánh giá đầy đủ, một đánh giá tuần hoặc tháng đã lưu cho giai đoạn hoàn tất gần nhất, điểm 30 đánh giá ít nhất 80 và không có lỗi cứng. |
 | Tối ưu | Một giả thuyết, đường cơ sở, kết quả và quyết định giữ/loại đã được ghi lại. |
 
-Lộ trình sẵn sàng tiến song song ở cả ba trụ cột. Bằng chứng **Tâm lý** tập trung vào hành vi; **Quản lý rủi ro** là bằng chứng chính sách và khối lượng theo tài khoản; **Hệ thống giao dịch** là quy tắc chiến lược, ví dụ và bằng chứng backtest. Chỉ hoàn tất bằng chứng trong **Định hướng → Cải thiện** khi có thể giải thích và xem lại.
+Lộ trình sẵn sàng tiến song song ở cả ba trụ cột. Bằng chứng **Tâm lý** tập trung vào hành vi; **Quản lý rủi ro** là bằng chứng chính sách và khối lượng theo tài khoản; **Hệ thống giao dịch** là quy tắc chiến lược, ví dụ và bằng chứng backtest.
+
+Hầu hết các mục trong lộ trình được tự động phát hiện từ dữ liệu đã lưu sẵn ở nơi khác trong nhật ký, không cần thao tác thủ công:
+
+- Thực hiện và Đo lường (cả ba trụ cột) tự hoàn tất ngay khi đủ điều kiện về số lượng đánh giá/điểm số/lỗi cứng/đánh giá giai đoạn.
+- Tối ưu (cả ba trụ cột) tự hoàn tất khi một Trọng tâm coaching của trụ cột đó đã được giải quyết (hoàn tất hoặc từ bỏ) kèm ghi chú phản ánh.
+- Bước Xác định của Rủi ro tự hoàn tất ngay khi chính sách rủi ro của tài khoản được lưu.
+- Các bước Xác định, Kiểm chứng và backtest của Hệ thống giao dịch tự hoàn tất khi hồ sơ chiến lược có mô tả, một setup có ví dụ minh họa, và bằng chứng backtest (100+ giao dịch, expectancy dương) tương ứng.
+
+Chỉ những mục không có dữ liệu tương ứng nào trong ứng dụng mới cần tự xác nhận thủ công — bước Xác định và Kiểm chứng của Tâm lý, và bước Kiểm chứng "bằng chứng tính toán/mô phỏng rủi ro" của Rủi ro. Chỉ hoàn tất các mục đó trong **Định hướng → Cải thiện** khi có thể giải thích và xem lại.
 
 ## 9. Giới hạn dữ liệu
 

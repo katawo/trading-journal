@@ -58,7 +58,7 @@ ROADMAP_ITEMS: dict[str, dict[int, tuple[tuple[str, str], ...]]] = {
         5: (("hypothesis", "Record one behavioural hypothesis, baseline, result, and keep/reject decision"),),
     },
     "risk": {
-        1: (("policy", "Define account risk policy and hard limits"), ("sizing", "Document the position-sizing method")),
+        1: (("policy_and_sizing", "Define account risk policy, hard limits, and position sizing"),),
         2: (("test", "Record risk-calculation or simulation evidence"),),
         3: (("execution", "20 full reviews, score at least 70, no active hard failure"),),
         4: (("measure", "30 full reviews, current period review, score at least 80"),),
@@ -72,6 +72,11 @@ ROADMAP_ITEMS: dict[str, dict[int, tuple[tuple[str, str], ...]]] = {
         5: (("hypothesis", "Record one system hypothesis, baseline, result, and keep/reject decision"),),
     },
 }
+
+ROADMAP_LEVEL_NAMES: dict[int, str] = {1: "Define", 2: "Test", 3: "Execute", 4: "Measure", 5: "Optimize"}
+
+# Items with no equivalent structured data anywhere in the app; the trader must self-certify these.
+_MANUAL_ROADMAP_ITEM_KEYS = frozenset({"triggers", "behaviour_rules", "practice", "test"})
 
 
 def _decimal_text(value: Decimal) -> str:
@@ -307,13 +312,24 @@ class PeriodReviewStatus:
 
 
 @dataclass(frozen=True)
+class RoadmapItemStatus:
+    item_key: str
+    label: str
+    level: int
+    is_auto: bool
+    completed: bool
+    # Auto items: a live-computed description of the detected evidence (or None if not yet detected).
+    # Manual items: the saved evidence note (or None if never saved).
+    evidence_summary: str | None
+
+
+@dataclass(frozen=True)
 class PillarRoadmapStatus:
     pillar: str
     completed_items: int
     total_items: int
     current_level: int
-    can_complete_current_level: bool
-    gate: str
+    items: tuple[RoadmapItemStatus, ...]
 
 
 class FrameworkService:
@@ -725,6 +741,85 @@ class FrameworkService:
         action = actions.get(metric_code, f"Before the next trade, verify {label} against the written plan and stand aside if it is not met.")
         return CoachingRecommendation(pillar, metric_kind, metric_code, f"Practising {label} consistently will improve {PILLAR_NAMES[pillar]}.", action, None, target_value, target_reviews, reason, safety)
 
+    def _user_strategy_profiles(self) -> list[StrategyProfileView]:
+        """Strategy profiles the trader created, excluding the placeholder auto-created for a new journal."""
+        return [profile for profile in self._repository.list_strategy_profiles() if profile.name != "Journal default"]
+
+    def _auto_roadmap_item_evaluation(
+        self,
+        pillar: str,
+        item_key: str,
+        account_id: int,
+        *,
+        current_period_review_account: bool = False,
+        current_period_review_trader_wide: bool = False,
+    ) -> tuple[bool, str | None] | None:
+        """Live-computed completion for an auto-detected roadmap item, or None if this item is manual."""
+        if item_key in _MANUAL_ROADMAP_ITEM_KEYS:
+            return None
+        if item_key == "execution":
+            score = {item.pillar: item for item in self.pillar_scores(account_id, window=20)}[pillar]
+            reviews_ok = score.reviewed_total >= 20
+            score_ok = score.score is not None and Decimal(score.score) >= 70
+            no_hard_block = not score.hard_block
+            summary = "\n".join((
+                f"- Reviews: {score.reviewed_total} (need 20 or more) {'✓' if reviews_ok else '✗'}",
+                f"- Score: {_rounded_score_text(score.score)} (need 70 or more) {'✓' if score_ok else '✗'}",
+                f"- Hard failure: {'none' if no_hard_block else 'active'} {'✓' if no_hard_block else '✗'}",
+            ))
+            return reviews_ok and score_ok and no_hard_block, summary
+        if item_key == "measure":
+            score = {item.pillar: item for item in self.pillar_scores(account_id, window=30)}[pillar]
+            current_period_review = current_period_review_trader_wide if pillar == "psychology" else current_period_review_account
+            reviews_ok = score.reviewed_total >= 30
+            score_ok = score.score is not None and Decimal(score.score) >= 80
+            no_hard_block = not score.hard_block
+            summary = "\n".join((
+                f"- Reviews: {score.reviewed_total} (need 30 or more) {'✓' if reviews_ok else '✗'}",
+                f"- Score: {_rounded_score_text(score.score)} (need 80 or more) {'✓' if score_ok else '✗'}",
+                f"- Period review: {'saved' if current_period_review else 'missing'} {'✓' if current_period_review else '✗'}",
+                f"- Hard failure: {'none' if no_hard_block else 'active'} {'✓' if no_hard_block else '✗'}",
+            ))
+            return reviews_ok and score_ok and no_hard_block and current_period_review, summary
+        if item_key == "hypothesis":
+            focus_account_id = account_id if pillar in {"risk", "system"} else None
+            resolved = [
+                item for item in self._repository.list_framework_focuses()
+                if item.pillar == pillar and item.status in {"completed", "abandoned"} and item.account_id == focus_account_id
+            ]
+            if not resolved:
+                return False, None
+            latest = resolved[0]
+            return True, f"{latest.hypothesis} → {latest.resolution_note or '—'}"
+        if pillar == "risk" and item_key == "policy_and_sizing":
+            policy = self._repository.get_active_risk_policy(account_id)
+            if policy is None:
+                return False, None
+            return True, (
+                f"Risk {policy.standard_risk_per_trade_percent}%/trade, max {policy.maximum_risk_per_trade_percent}%, "
+                f"daily {policy.daily_loss_limit_r}R, weekly {policy.weekly_loss_limit_r}R."
+            )
+        if pillar == "system" and item_key == "rules":
+            profiles = [profile for profile in self._user_strategy_profiles() if (profile.description or "").strip()]
+            if not profiles:
+                return False, None
+            return True, f"{len(profiles)} strategy profile(s) with documented rules."
+        if pillar == "system" and item_key == "examples":
+            for profile in self._user_strategy_profiles():
+                if any((setup.description or "").strip() for setup in self._repository.list_strategy_setups(profile.id)):
+                    return True, "At least one documented strategy setup example."
+            return False, None
+        if pillar == "system" and item_key == "backtest":
+            for profile in self._user_strategy_profiles():
+                if profile.backtest_trade_count is None or profile.backtest_trade_count < 100:
+                    continue
+                expectancy_positive = profile.backtest_expectancy_r is not None and Decimal(profile.backtest_expectancy_r) > 0
+                net_r_positive = profile.backtest_net_r is not None and Decimal(profile.backtest_net_r) > 0
+                if expectancy_positive or net_r_positive:
+                    return True, f"Backtest: {profile.backtest_trade_count} trades, expectancy {profile.backtest_expectancy_r or '—'}R."
+            return False, None
+        return None
+
     def roadmap_status(self, account_id: int, *, now: datetime | None = None) -> tuple[PillarRoadmapStatus, ...]:
         evidence = {(item.pillar, item.level, item.item_key): item for item in self._repository.list_pillar_roadmap_evidence(account_id)}
         # Psychology is trader-wide; Risk and System are evaluated on the selected account.
@@ -732,30 +827,24 @@ class FrameworkService:
         current_period_review_trader_wide = self._has_current_period_review(account_id, now=now, trader_wide=True)
         statuses: list[PillarRoadmapStatus] = []
         for pillar, levels in ROADMAP_ITEMS.items():
-            total = sum(len(items) for items in levels.values())
-            completed = sum(1 for level, items in levels.items() for key, _ in items if (item := evidence.get((pillar, level, key))) and item.completed)
-            current_level = next((level for level, items in levels.items() if not all((item := evidence.get((pillar, level, key))) and item.completed for key, _ in items)), 5)
-            current_period_review = current_period_review_trader_wide if pillar == "psychology" else current_period_review_account
-            if completed == total:
-                allowed, gate = False, "All framework evidence is complete; continue monitoring the current sample."
-            elif current_level == 3:
-                score = {item.pillar: item for item in self.pillar_scores(account_id, window=20)}[pillar]
-                allowed = score.reviewed_total >= 20 and score.score is not None and Decimal(score.score) >= 70 and not score.hard_block
-                gate = (
-                    f"Needs 20 full reviews (have {score.reviewed_total}), a score of at least 70 "
-                    f"(current {_rounded_score_text(score.score)}), and no active hard failure."
-                )
-            elif current_level == 4:
-                score = {item.pillar: item for item in self.pillar_scores(account_id, window=30)}[pillar]
-                allowed = score.reviewed_total >= 30 and score.score is not None and Decimal(score.score) >= 80 and not score.hard_block and current_period_review
-                gate = (
-                    f"Needs 30 full reviews (have {score.reviewed_total}), a 30-review score of at least 80 "
-                    f"(current {_rounded_score_text(score.score)}), a saved weekly or monthly review "
-                    f"for the latest completed period{'' if current_period_review else ' (not yet saved)'}, and no active hard failure."
-                )
-            else:
-                allowed, gate = True, "Complete the current evidence item with a note."
-            statuses.append(PillarRoadmapStatus(pillar, completed, total, current_level, allowed, gate))
+            items: list[RoadmapItemStatus] = []
+            for level, entries in levels.items():
+                for item_key, label in entries:
+                    auto_result = self._auto_roadmap_item_evaluation(
+                        pillar, item_key, account_id,
+                        current_period_review_account=current_period_review_account,
+                        current_period_review_trader_wide=current_period_review_trader_wide,
+                    )
+                    if auto_result is not None:
+                        completed, summary = auto_result
+                        items.append(RoadmapItemStatus(item_key, label, level, True, completed, summary))
+                    else:
+                        saved = evidence.get((pillar, level, item_key))
+                        items.append(RoadmapItemStatus(item_key, label, level, False, bool(saved and saved.completed), saved.evidence_note if saved else None))
+            total = len(items)
+            completed_count = sum(1 for item in items if item.completed)
+            current_level = next((item.level for item in items if not item.completed), 5)
+            statuses.append(PillarRoadmapStatus(pillar, completed_count, total, current_level, tuple(items)))
         return tuple(statuses)
 
     def save_pillar_roadmap_evidence(
@@ -768,10 +857,12 @@ class FrameworkService:
         completed: bool,
         evidence_note: str | None,
     ) -> PillarRoadmapEvidenceView:
-        """Defense-in-depth: re-validate the level gate here, not only in the presentation layer."""
+        """Defense-in-depth: re-validate the item is manual and unlocked here, not only in the presentation layer."""
+        if account_id is not None and self._auto_roadmap_item_evaluation(pillar, item_key, account_id) is not None:
+            raise ValueError("This roadmap item is auto-detected and cannot be saved manually.")
         if completed and account_id is not None:
             status = next(item for item in self.roadmap_status(account_id) if item.pillar == pillar)
-            if level != status.current_level or not status.can_complete_current_level:
+            if level != status.current_level:
                 raise ValueError("This roadmap item is not yet unlocked.")
         return self._repository.save_pillar_roadmap_evidence(
             account_id=account_id, pillar=pillar, level=level, item_key=item_key, completed=completed, evidence_note=evidence_note,

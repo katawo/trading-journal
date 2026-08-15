@@ -9,8 +9,7 @@ from streamlit.testing.v1 import AppTest
 
 from trading_journal.application.display_time import format_relative_time
 from trading_journal.domain.models import MT5PositionExport
-from trading_journal.infrastructure.sqlite_repository import PillarRoadmapEvidenceView, SQLiteJournalRepository
-from trading_journal.presentation.framework import _next_roadmap_item
+from trading_journal.infrastructure.sqlite_repository import SQLiteJournalRepository
 
 
 def write_auto_export(path: Path) -> None:
@@ -186,14 +185,6 @@ def test_framework_alert_codes_render_in_vietnamese_without_parsing_english(monk
     assert i18n.framework_alert_message("psychology_developing", "Psychology is below 70 in the rolling sample.") == "Tâm lý thấp hơn 70 trong mẫu trượt."
     assert i18n.framework_alert_message("system_developing", "Trading system is below 70 in the rolling sample.") == "Hệ thống giao dịch thấp hơn 70 trong mẫu trượt."
 
-
-def test_roadmap_selects_only_the_first_incomplete_item_for_each_pillar():
-    evidence = {
-        ("psychology", 1, "triggers"): PillarRoadmapEvidenceView("trader", "psychology", 1, "triggers", True, "Written triggers.", "2026-08-12T00:00:00+00:00"),
-    }
-
-    assert _next_roadmap_item("psychology", evidence) == (1, "behaviour_rules", "Document no-revenge and no-chase rules")
-    assert _next_roadmap_item("risk", evidence) == (1, "policy", "Define account risk policy and hard limits")
 
 
 def test_settings_groups_reporting_accounts_risk_strategies_and_review_rules(monkeypatch, tmp_path):
@@ -422,6 +413,78 @@ def test_framework_workspace_renders_account_scoped_post_trade_journal(monkeypat
     assert [tab.label for tab in app.tabs] == ["Review", "Monitor", "Improve"]
     assert any("No completed MT5 positions" in item.value for item in app.info)
     assert not any(item.label == "Roadmap pillar" for item in app.segmented_control)
+
+
+def test_improve_tab_shows_auto_detected_and_manual_roadmap_items(monkeypatch, tmp_path):
+    database_path = tmp_path / "journal.db"
+    repository = SQLiteJournalRepository(database_path)
+    repository.initialize()
+    repository.configure_journal(reporting_time_basis="utc")
+    repository.register_mt5_account(
+        display_name="Primary",
+        login="123456",
+        broker_server="DemoBroker-Live",
+        account_currency="USD",
+        export_file_path="",
+        opening_balance="1000",
+    )
+    account = repository.find_active_mt5_account("123456", "DemoBroker-Live")
+    assert account is not None
+    repository.save_account_risk_policy(
+        account_id=account.id,
+        standard_risk_per_trade_percent="1",
+        maximum_risk_per_trade_percent="1",
+        daily_loss_limit_r="2",
+        weekly_loss_limit_r="4",
+        max_drawdown_percent="10",
+        max_open_risk_r="1",
+        max_consecutive_losses=3,
+        minimum_rr="1.5",
+        correlation_policy=None,
+        pretrade_balance_auto_evidence_enabled=False,
+    )
+    strategy = repository.save_strategy_profile(
+        name="Trend continuation",
+        description="Trade a confirmed pullback continuation.",
+        backtest_start_date="2024-01-01",
+        backtest_end_date="2025-01-01",
+        backtest_trade_count=120,
+        backtest_win_rate="52",
+        backtest_expectancy_r="0.25",
+        backtest_net_r="30",
+        backtest_notes="Representative sample including modeled costs.",
+    )
+    repository.save_strategy_setup(
+        strategy_profile_id=strategy.id,
+        name="Standard pullback",
+        description="Valid: pullback holds prior structure. Invalid: break of structure before entry.",
+    )
+    monkeypatch.setenv("TRADING_JOURNAL_DB", str(database_path))
+
+    app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
+    app.switch_page("app_pages/framework.py").run()
+    app.session_state["framework-tab"] = "Improve"
+    app.run()
+
+    assert not app.exception
+    assert any("Readiness roadmap" in item.value for item in app.markdown)
+    markdown_text = "\n".join(item.value for item in app.markdown)
+    # Risk: policy_and_sizing auto-detected complete from the saved policy, advancing past Define with no click.
+    assert ":green[✓ Define]" in markdown_text
+    assert "Risk 1%/trade, max 1%, daily 2R, weekly 4R." in markdown_text
+    # System: rules, examples, and backtest all auto-detected complete from the strategy profile, reaching Execute.
+    assert "**▶ Execute**" in markdown_text
+    assert "Backtest: 120 trades, expectancy 0.25R." in markdown_text
+    assert "1 strategy profile(s) with documented rules." in markdown_text
+    assert "At least one documented strategy setup example." in markdown_text
+    # Execute is auto but not yet met (no reviews), so it shows live progress, not a form.
+    assert any("Reviews: 0 (need 20 or more)" in item.value for item in app.info)
+    # Psychology has no structured equivalent, so both level-1 items stay manual.
+    assert sum(1 for item in app.checkbox if item.label == "I completed this step") >= 2
+    # Risk's still-manual "test" item also renders as a form, not auto-detected.
+    assert any(item.label == "Evidence note" for item in app.text_area)
+    completed_evidence = [item for item in app.status if item.label == "Completed evidence"]
+    assert completed_evidence
 
 
 def test_dashboard_uses_the_active_account_for_framework_status(monkeypatch, tmp_path):
@@ -1352,8 +1415,13 @@ def test_dashboard_renders_graphics_for_imported_trades(monkeypatch, tmp_path):
 
     assert not app.exception
     assert app.subheader[0].value == "Performance dashboard"
+    assert any(item.value == "Concentration (80/20)" for item in app.subheader)
     assert len(app.metric) >= 10
     assert any(item.label == "Sync MT5 now" for item in app.button)
+    concentration_control = next(item for item in app.segmented_control if item.label == "Concentration view")
+    assert any("No losing logical trades" in item.value for item in app.info)
+    concentration_control.set_value("Trade").run()
+    assert not app.exception
     assert {item.label for item in app.metric} >= {"Account balance", "Account drawdown", "Profit factor", "Worst day"}
 
 

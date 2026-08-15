@@ -120,7 +120,7 @@ def _policy(repository: SQLiteJournalRepository, account_id: int, *, pretrade_ba
 
 
 def _strategy(repository: SQLiteJournalRepository):
-    return repository.save_strategy_profile(
+    profile = repository.save_strategy_profile(
         name="Trend continuation",
         description="Trade a confirmed pullback continuation.",
         backtest_start_date="2024-01-01",
@@ -131,6 +131,12 @@ def _strategy(repository: SQLiteJournalRepository):
         backtest_net_r="30",
         backtest_notes="Representative sample including modeled costs.",
     )
+    repository.save_strategy_setup(
+        strategy_profile_id=profile.id,
+        name="Standard pullback",
+        description="Valid: pullback holds prior structure. Invalid: break of structure before entry.",
+    )
+    return profile
 
 
 def _import_position(
@@ -676,6 +682,10 @@ def test_grouped_positions_become_one_logical_trade_for_review_and_dashboard(tmp
     assert report.per_trade[0].position_count == 2
     assert report.per_trade[0].logical_trade_id == group_id
     assert report.per_trade[0].display_label == "London scale-in"
+    trade_concentration = next(item for item in report.concentration if item.dimension == "trade")
+    assert [(item.label, item.trade_count, item.amount) for item in trade_concentration.profit.items] == [
+        (f"LT-{group_id} · London scale-in", 1, "20"),
+    ]
 
 
 def test_disbanding_a_reviewed_group_supersedes_its_assessment_and_restores_singletons(tmp_path) -> None:
@@ -1115,10 +1125,11 @@ def test_roadmap_execution_gate_requires_score_sample_and_no_hard_rule(tmp_path)
             repository.save_pillar_roadmap_evidence(account_id=account_id, pillar="psychology", level=level, item_key=item_key, completed=True, evidence_note="Documented evidence.")
 
     status = {item.pillar: item for item in service.roadmap_status(account_id)}["psychology"]
+    execution_item = next(item for item in status.items if item.item_key == "execution")
 
     assert status.current_level == 3
-    assert not status.can_complete_current_level
-    assert "20 full reviews" in status.gate
+    assert not execution_item.completed
+    assert "20" in execution_item.evidence_summary
 
 
 def test_roadmap_execution_gate_rounds_a_non_terminating_score_for_display(tmp_path) -> None:
@@ -1135,9 +1146,10 @@ def test_roadmap_execution_gate_rounds_a_non_terminating_score_for_display(tmp_p
             repository.save_pillar_roadmap_evidence(account_id=account_id, pillar="psychology", level=level, item_key=item_key, completed=True, evidence_note="Documented evidence.")
 
     status = {item.pillar: item for item in FrameworkService(repository).roadmap_status(account_id)}["psychology"]
+    execution_item = next(item for item in status.items if item.item_key == "execution")
 
     assert status.current_level == 3
-    assert "(current 96)" in status.gate
+    assert "Score: 96" in execution_item.evidence_summary
 
 
 def test_roadmap_measure_gate_requires_a_review_for_the_latest_completed_period(tmp_path) -> None:
@@ -1174,9 +1186,10 @@ def test_roadmap_measure_gate_requires_a_review_for_the_latest_completed_period(
     now = datetime(2026, 8, 17, tzinfo=timezone.utc)
 
     before_current_review = {item.pillar: item for item in service.roadmap_status(account_id, now=now)}["psychology"]
+    before_measure_item = next(item for item in before_current_review.items if item.item_key == "measure")
 
     assert before_current_review.current_level == 4
-    assert not before_current_review.can_complete_current_level
+    assert not before_measure_item.completed
 
     service.save_period_review(
         account_id=account_id,
@@ -1187,8 +1200,10 @@ def test_roadmap_measure_gate_requires_a_review_for_the_latest_completed_period(
     )
 
     after_current_review = {item.pillar: item for item in FrameworkService(repository).roadmap_status(account_id, now=now)}["psychology"]
+    after_measure_item = next(item for item in after_current_review.items if item.item_key == "measure")
 
-    assert after_current_review.can_complete_current_level
+    assert after_measure_item.completed
+    assert after_current_review.current_level == 5
 
 
 def test_roadmap_measure_gate_uses_the_full_thirty_review_sample(tmp_path) -> None:
@@ -1242,7 +1257,8 @@ def test_roadmap_measure_gate_uses_the_full_thirty_review_sample(tmp_path) -> No
     assert twenty_review_score.score == "100"
     assert Decimal(thirty_review_score.score) < Decimal("80")
     assert status.current_level == 4
-    assert not status.can_complete_current_level
+    measure_item = next(item for item in status.items if item.item_key == "measure")
+    assert not measure_item.completed
 
 
 def test_saving_roadmap_evidence_through_the_service_rejects_a_locked_level(tmp_path) -> None:
@@ -1253,11 +1269,96 @@ def test_saving_roadmap_evidence_through_the_service_rejects_a_locked_level(tmp_
         service.save_pillar_roadmap_evidence(
             account_id=account_id,
             pillar="psychology",
+            level=2,
+            item_key="practice",
+            completed=True,
+            evidence_note="Skipping ahead of level 1.",
+        )
+
+
+def test_saving_roadmap_evidence_through_the_service_rejects_an_auto_detected_item(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    service = FrameworkService(repository)
+
+    with pytest.raises(ValueError, match="auto-detected"):
+        service.save_pillar_roadmap_evidence(
+            account_id=account_id,
+            pillar="psychology",
             level=3,
             item_key="execution",
             completed=True,
-            evidence_note="Skipping ahead of the gate.",
+            evidence_note="Should never be saved manually.",
         )
+
+
+def test_roadmap_risk_policy_and_sizing_is_auto_detected_from_active_policy(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    service = FrameworkService(repository)
+    before = next(item for item in service.roadmap_status(account_id) if item.pillar == "risk").items
+    before_item = next(item for item in before if item.item_key == "policy_and_sizing")
+    assert before_item.is_auto
+    assert not before_item.completed
+
+    _policy(repository, account_id)
+
+    after = next(item for item in service.roadmap_status(account_id) if item.pillar == "risk").items
+    after_item = next(item for item in after if item.item_key == "policy_and_sizing")
+    assert after_item.completed
+    assert "%/trade" in after_item.evidence_summary
+
+
+def test_roadmap_system_items_are_auto_detected_from_the_strategy_profile(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    service = FrameworkService(repository)
+    before = next(item for item in service.roadmap_status(account_id) if item.pillar == "system").items
+    for key in ("rules", "examples", "backtest"):
+        item = next(entry for entry in before if entry.item_key == key)
+        assert item.is_auto
+        assert not item.completed
+
+    _strategy(repository)
+
+    after = next(item for item in service.roadmap_status(account_id) if item.pillar == "system").items
+    for key in ("rules", "examples", "backtest"):
+        item = next(entry for entry in after if entry.item_key == key)
+        assert item.completed, key
+
+
+def test_roadmap_hypothesis_is_auto_detected_from_a_resolved_framework_focus(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    service = FrameworkService(repository)
+    before_item = next(item for item in service.roadmap_status(account_id) if item.pillar == "psychology").items
+    hypothesis_item = next(item for item in before_item if item.item_key == "hypothesis")
+    assert not hypothesis_item.completed
+
+    focus = repository.save_framework_focus(
+        account_id=None,
+        pillar="psychology",
+        metric_kind="manual_evidence",
+        metric_code=None,
+        hypothesis="Reducing revenge trades will raise rule adherence.",
+        action_text="Pause 60 seconds after any loss before re-entering.",
+        baseline_value="60",
+        target_value="80",
+        target_reviews=5,
+        starting_manual_reviews=0,
+    )
+    repository.resolve_framework_focus(focus_id=focus.id, outcome="completed", resolution_note="Rule adherence rose to 85.")
+
+    after_items = next(item for item in service.roadmap_status(account_id) if item.pillar == "psychology").items
+    after_hypothesis_item = next(item for item in after_items if item.item_key == "hypothesis")
+    assert after_hypothesis_item.completed
+    assert "Rule adherence rose to 85." in after_hypothesis_item.evidence_summary
+
+
+def test_roadmap_auto_items_never_write_a_persisted_evidence_row(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    _policy(repository, account_id)
+    _strategy(repository)
+
+    FrameworkService(repository).roadmap_status(account_id)
+
+    assert repository.list_pillar_roadmap_evidence(account_id) == []
 
 
 def test_saving_a_period_review_twice_for_the_same_period_is_rejected(tmp_path) -> None:
@@ -1319,9 +1420,12 @@ def test_only_psychology_accepts_a_period_review_saved_against_any_account(tmp_p
     now = datetime(2026, 8, 17, tzinfo=timezone.utc)
 
     before = {item.pillar: item for item in FrameworkService(repository).roadmap_status(primary_id, now=now)}
-    assert not before["psychology"].can_complete_current_level
-    assert not before["risk"].can_complete_current_level
-    assert not before["system"].can_complete_current_level
+    assert before["psychology"].current_level == 4
+    assert before["risk"].current_level == 4
+    assert before["system"].current_level == 4
+    for pillar_status in before.values():
+        measure_item = next(item for item in pillar_status.items if item.item_key == "measure")
+        assert not measure_item.completed
 
     secondary_trade_id = _import_position(repository, secondary.id, position_id="secondary-only")
     _review(repository, secondary.id, secondary_trade_id, secondary_policy, strategy)
@@ -1334,9 +1438,12 @@ def test_only_psychology_accepts_a_period_review_saved_against_any_account(tmp_p
     )
 
     after = {item.pillar: item for item in FrameworkService(repository).roadmap_status(primary_id, now=now)}
-    assert after["psychology"].can_complete_current_level, "Psychology is trader-wide and should accept any account's period review"
-    assert not after["risk"].can_complete_current_level, "Risk is account-scoped and must not unlock from another account's period review"
-    assert not after["system"].can_complete_current_level, "System is account-scoped and must not unlock from another account's period review"
+    psychology_measure = next(item for item in after["psychology"].items if item.item_key == "measure")
+    risk_measure = next(item for item in after["risk"].items if item.item_key == "measure")
+    system_measure = next(item for item in after["system"].items if item.item_key == "measure")
+    assert psychology_measure.completed, "Psychology is trader-wide and should accept any account's period review"
+    assert not risk_measure.completed, "Risk is account-scoped and must not unlock from another account's period review"
+    assert not system_measure.completed, "System is account-scoped and must not unlock from another account's period review"
 
 
 def test_corrections_archive_complete_prior_assessment(tmp_path) -> None:

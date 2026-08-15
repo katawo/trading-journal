@@ -10,14 +10,21 @@ from trading_journal.domain.models import MT5PositionExport
 from trading_journal.infrastructure.sqlite_repository import JournalDatabaseResetRequiredError, SQLiteJournalRepository
 
 
-def position(position_id: str, *, net_pnl: str, exit_time: str, strategy: str | None = None) -> MT5PositionExport:
+def position(
+    position_id: str,
+    *,
+    net_pnl: str,
+    exit_time: str,
+    symbol: str = "XAUUSD",
+    strategy: str | None = None,
+) -> MT5PositionExport:
     return MT5PositionExport(
         schema_version=1,
         account_login="123456",
         broker_server="DemoBroker-Live",
         account_currency="USD",
         position_id=position_id,
-        symbol="XAUUSD",
+        symbol=symbol,
         direction="long",
         entry_time="2026-08-01T08:00:00+00:00",
         exit_time=exit_time,
@@ -240,6 +247,87 @@ def test_dashboard_builds_kpis_and_time_series_from_effective_risk(tmp_path: Pat
     assert [point.cumulative_pnl for point in report.cumulative] == ["20", "15"]
     assert [point.cumulative_r for point in report.cumulative] == ["2", "1.5"]
     assert [(item.strategy, item.net_pnl, item.total_r) for item in report.by_strategy] == [("Journal default", "15", "1.5")]
+
+
+def test_dashboard_separates_profit_and_loss_concentration_by_trade_symbol_and_strategy(tmp_path: Path) -> None:
+    repository = configured_repository(tmp_path, standard_risk_percent="10")
+    account = repository.find_active_mt5_account("123456", "DemoBroker-Live")
+    assert account is not None
+    repository.upsert_mt5_positions(
+        account.id,
+        [
+            position("1001", net_pnl="80", exit_time="2026-08-01T09:00:00+00:00", symbol="XAUUSD"),
+            position("1002", net_pnl="20", exit_time="2026-08-02T09:00:00+00:00", symbol="EURUSD"),
+            position("1003", net_pnl="-40", exit_time="2026-08-03T09:00:00+00:00", symbol="XAUUSD"),
+            position("1004", net_pnl="-10", exit_time="2026-08-04T09:00:00+00:00", symbol="EURUSD"),
+        ],
+        "positions.csv",
+        "concentration-hash",
+    )
+
+    report = DashboardService(repository).build_report(start_date="2026-08-01", end_date="2026-08-31")
+    concentration = {item.dimension: item for item in report.concentration}
+
+    trade_profit = concentration["trade"].profit
+    assert trade_profit.gross_amount == "100"
+    assert trade_profit.target_group_count == 1
+    assert [(item.label, item.amount, item.share_percent, item.cumulative_share_percent) for item in trade_profit.items] == [
+        ("LT-1 · #1001", "80", "80", "80"),
+        ("LT-2 · #1002", "20", "20", "100"),
+    ]
+    assert [(item.label, item.amount) for item in concentration["trade"].loss.items] == [
+        ("LT-3 · #1003", "40"),
+        ("LT-4 · #1004", "10"),
+    ]
+    assert [(item.label, item.amount, item.trade_count) for item in concentration["symbol"].profit.items] == [
+        ("XAUUSD", "80", 1),
+        ("EURUSD", "20", 1),
+    ]
+    assert [(item.label, item.amount) for item in concentration["symbol"].loss.items] == [
+        ("XAUUSD", "40"),
+        ("EURUSD", "10"),
+    ]
+    assert [(item.label, item.amount, item.trade_count) for item in concentration["strategy"].profit.items] == [
+        ("Journal default", "100", 2),
+    ]
+    assert [(item.label, item.amount, item.trade_count) for item in concentration["strategy"].loss.items] == [
+        ("Journal default", "50", 2),
+    ]
+
+
+def test_dashboard_concentration_handles_profit_only_loss_only_and_breakeven_samples(tmp_path: Path) -> None:
+    repository = configured_repository(tmp_path)
+    account = repository.find_active_mt5_account("123456", "DemoBroker-Live")
+    assert account is not None
+    repository.upsert_mt5_positions(
+        account.id,
+        [
+            position("1001", net_pnl="5", exit_time="2026-08-01T09:00:00+00:00"),
+            position("1002", net_pnl="0", exit_time="2026-08-02T09:00:00+00:00"),
+            position("1003", net_pnl="-7", exit_time="2026-09-01T09:00:00+00:00"),
+            position("1004", net_pnl="0", exit_time="2026-09-02T09:00:00+00:00"),
+        ],
+        "positions.csv",
+        "profit-only-hash",
+    )
+
+    report = DashboardService(repository).build_report(start_date="2026-08-01", end_date="2026-08-31")
+    breakdown = {item.dimension: item for item in report.concentration}["symbol"]
+
+    assert breakdown.profit.gross_amount == "5"
+    assert breakdown.profit.target_group_percent == "100"
+    assert breakdown.loss.gross_amount == "0"
+    assert breakdown.loss.items == []
+
+    loss_only = DashboardService(repository).build_report(start_date="2026-09-01", end_date="2026-09-30")
+    loss_breakdown = {item.dimension: item for item in loss_only.concentration}["symbol"]
+    assert loss_breakdown.profit.items == []
+    assert loss_breakdown.loss.gross_amount == "7"
+
+    breakeven_only = DashboardService(repository).build_report(start_date="2026-08-02", end_date="2026-08-02")
+    breakeven_breakdown = {item.dimension: item for item in breakeven_only.concentration}["symbol"]
+    assert breakeven_breakdown.profit.items == []
+    assert breakeven_breakdown.loss.items == []
 
 
 def test_dashboard_collapses_equity_curve_to_one_point_per_day(tmp_path: Path) -> None:

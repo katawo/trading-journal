@@ -99,6 +99,74 @@ def style_chart(figure: go.Figure, *, yaxis_title: str, currency: str | None = N
     return figure
 
 
+def _render_concentration_side(*, side, title: str, currency: str, positive: bool) -> None:
+    if not side.items:
+        outcome = tr("profitable") if positive else tr("losing")
+        st.info(tr("No {outcome} logical trades are available for this view.", outcome=outcome))
+        return
+
+    target = side.items[side.target_group_count - 1]
+    gross_label = tr("gross profit") if positive else tr("gross loss")
+    st.markdown(f"**{tr(title)}**")
+    st.caption(
+        tr(
+            "Top {count} of {total} groups ({group_percent}) account for {share} of {gross_label}.",
+            count=side.target_group_count,
+            total=side.group_count,
+            group_percent=format_percent(side.target_group_percent),
+            share=format_percent(target.cumulative_share_percent),
+            gross_label=gross_label,
+        )
+    )
+    labels = [item.label for item in side.items]
+    amounts = [float(item.amount) for item in side.items]
+    shares = [format_percent(item.share_percent) for item in side.items]
+    cumulative = [float(item.cumulative_share_percent) for item in side.items]
+    trades = [item.trade_count for item in side.items]
+    amount_labels = [format_currency(item.amount, currency, signed=False) for item in side.items]
+    figure = go.Figure(
+        go.Bar(
+            x=labels,
+            y=amounts,
+            marker_color=_CHART_POSITIVE if positive else _CHART_NEGATIVE,
+            marker_line_width=0,
+            customdata=list(zip(amount_labels, shares, trades, strict=True)),
+            hovertemplate=(
+                f"%{{x}}<br><b>%{{customdata[0]}}</b><br>%{{customdata[1]}} {tr('of total')}"
+                f"<br>%{{customdata[2]}} {tr('contributing logical trades')}<extra></extra>"
+            ),
+        )
+    )
+    figure = style_chart(
+        figure,
+        yaxis_title=f"{tr('Gross profit' if positive else 'Gross loss')} ({currency})",
+        currency=currency,
+    )
+    figure.add_trace(
+        go.Scatter(
+            x=labels,
+            y=cumulative,
+            yaxis="y2",
+            mode="lines+markers",
+            line=dict(color="#1e6ecb", width=3),
+            marker=dict(color="#1e6ecb", size=7),
+            hovertemplate=f"%{{x}}<br><b>%{{y:.1f}}% {tr('cumulative')}</b><extra></extra>",
+        )
+    )
+    figure.update_layout(
+        yaxis2=dict(
+            title=tr("Cumulative share"),
+            overlaying="y",
+            side="right",
+            range=[0, 100],
+            ticksuffix="%",
+            showgrid=False,
+            zeroline=False,
+        )
+    )
+    st.plotly_chart(figure, width="stretch", config={"displayModeBar": False})
+
+
 def apply_application_style() -> None:
     st.html("""
         <style>
@@ -1155,6 +1223,40 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
             )
             st.dataframe(trade_table, hide_index=True, width="stretch")
             st.caption("This view follows the current logical-trade grouping for review analysis. Account balance and account drawdown remain based on immutable MT5 positions in Daily view.")
+
+    with st.container(border=True):
+        st.subheader("Concentration (80/20)")
+        st.caption("Use this outcome-only lens to prioritize a review sample. It does not prove cause, system quality, or trading readiness.")
+        concentration_options = {
+            tr("Symbol"): "symbol",
+            tr("Strategy"): "strategy",
+            tr("Trade"): "trade",
+        }
+        concentration_choice = st.segmented_control(
+            "Concentration view",
+            list(concentration_options),
+            default=tr("Symbol"),
+            required=True,
+            key="dashboard-concentration-dimension",
+            width="content",
+        )
+        breakdown_by_dimension = {item.dimension: item for item in report.concentration}
+        selected_concentration = breakdown_by_dimension[concentration_options[concentration_choice]]
+        left, right = st.columns(2)
+        with left:
+            _render_concentration_side(
+                side=selected_concentration.profit,
+                title="Profit concentration",
+                currency=currency,
+                positive=True,
+            )
+        with right:
+            _render_concentration_side(
+                side=selected_concentration.loss,
+                title="Loss concentration",
+                currency=currency,
+                positive=False,
+            )
 
     with st.container(border=True):
         st.subheader("Strategy results and backtest context")

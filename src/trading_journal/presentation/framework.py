@@ -14,7 +14,7 @@ import altair as alt
 
 from trading_journal.application.framework import (
     PILLAR_NAMES,
-    ROADMAP_ITEMS,
+    ROADMAP_LEVEL_NAMES,
     FrameworkService,
     MonitorAnalysisReport,
     PillarScore,
@@ -28,7 +28,6 @@ from trading_journal.infrastructure.sqlite_repository import (
     RISK_CRITERIA,
     SYSTEM_CRITERIA,
     AccountListItem,
-    PillarRoadmapEvidenceView,
     ReviewContextSelection,
     SQLiteJournalRepository,
 )
@@ -1527,86 +1526,78 @@ def _render_period_reviews(repo: SQLiteJournalRepository, account: AccountListIt
             st.markdown(f"**{tr('Priority action:')}** {latest.priority_action}")
 
 
-def _next_roadmap_item(
-    pillar: str,
-    evidence: dict[tuple[str, int, str], PillarRoadmapEvidenceView],
-) -> tuple[int, str, str] | None:
-    """Return the first incomplete saved-evidence item for a roadmap pillar."""
-    for level, items in ROADMAP_ITEMS[pillar].items():
-        for item_key, label in items:
-            item = evidence.get((pillar, level, item_key))
-            if item is None or not item.completed:
-                return level, item_key, label
-    return None
-
-
 def _render_roadmap(repo: SQLiteJournalRepository, account: AccountListItem) -> None:
     service = FrameworkService(repo)
     statuses = {item.pillar: item for item in service.roadmap_status(account.id)}
-    evidence = {(item.pillar, item.level, item.item_key): item for item in repo.list_pillar_roadmap_evidence(account.id)}
     st.markdown("#### Readiness roadmap")
-    st.caption("Complete the next evidence item for each pillar. Score and review gates unlock automatically when met.")
+    st.caption("Define, Test, Execute, Measure, then Optimize. Most steps are detected automatically as you use the journal — only a few still need your own note.")
+
     for pillar, name in PILLAR_NAMES.items():
         status = statuses[pillar]
-        next_item = _next_roadmap_item(pillar, evidence)
         with st.container(border=True):
             st.markdown(f"##### {tr(name)}")
-            st.caption(f"Level {status.current_level} · {status.completed_items}/{status.total_items} evidence complete")
-            if next_item is None:
-                st.success("All roadmap evidence is complete. Continue monitoring the current sample.", icon=":material/check_circle:")
-                continue
-            level, item_key, label = next_item
-            st.markdown(f"**{tr('Next:')}** {tr(label)}")
-            if not status.can_complete_current_level:
-                st.info(status.gate, icon=":material/lock:")
-                continue
-            existing = evidence.get((pillar, level, item_key))
-            with st.form(f"roadmap-next-{pillar}-{level}-{item_key}"):
-                complete = st.checkbox("I completed this step", value=bool(existing and existing.completed))
-                note = st.text_area(
-                    "Evidence note",
-                    value=existing.evidence_note if existing and existing.evidence_note else "",
-                    placeholder="Briefly record the evidence for this step.",
-                )
-                submitted = st.form_submit_button("Mark complete", type="primary")
-            if submitted:
-                if not complete:
-                    st.warning("Confirm completion before saving this roadmap item.")
-                else:
-                    try:
-                        with st.spinner(tr("Saving…")):
-                            service.save_pillar_roadmap_evidence(
-                                account_id=account.id,
-                                pillar=pillar,
-                                level=level,
-                                item_key=item_key,
-                                completed=True,
-                                evidence_note=note,
-                            )
-                    except ValueError as error:
-                        st.error(str(error))
+            for level, column in zip(range(1, 6), st.columns(5), strict=True):
+                with column:
+                    level_name = tr(ROADMAP_LEVEL_NAMES[level])
+                    if level < status.current_level:
+                        st.markdown(f":green[✓ {level_name}]")
+                    elif level == status.current_level:
+                        st.markdown(f"**▶ {level_name}**")
                     else:
-                        completed_message = tr("{name} roadmap item completed.", name=tr(name))
-                        st.toast(completed_message)
-                        st.success(completed_message)
-                        st.rerun()
-    completed = [item for item in evidence.values() if item.completed]
-    if completed:
-        with st.expander("Completed evidence", icon=":material/history:"):
-            for pillar, name in PILLAR_NAMES.items():
-                pillar_items = sorted((item for item in completed if item.pillar == pillar), key=lambda item: (item.level, item.item_key))
-                if not pillar_items:
-                    continue
-                st.markdown(f"**{tr(name)}**")
-                labels = {
-                    (level, item_key): label
-                    for level, items in ROADMAP_ITEMS[pillar].items()
-                    for item_key, label in items
-                }
-                for item in pillar_items:
-                    label = labels[(item.level, item.item_key)]
-                    detail = f" — {item.evidence_note}" if item.evidence_note else ""
-                    st.markdown(f"- {tr('Level')} {item.level}: {tr(label)}{detail}")
+                        st.markdown(f":gray[🔒 {level_name}]")
+            st.caption(f"{status.completed_items}/{status.total_items} {tr('evidence complete')}")
+
+            if status.completed_items == status.total_items:
+                st.success(tr("All roadmap evidence is complete. Continue monitoring the current sample."), icon=":material/check_circle:")
+                continue
+
+            for item in (entry for entry in status.items if entry.level == status.current_level):
+                if item.is_auto:
+                    detail = item.evidence_summary or tr("Not yet detected.")
+                    text = f"**{tr(item.label)}**\n\n{detail}"
+                    if item.completed:
+                        st.success(text, icon=":material/check_circle:")
+                    else:
+                        st.info(text, icon=":material/hourglass_empty:")
+                else:
+                    with st.form(f"roadmap-{pillar}-{item.level}-{item.item_key}"):
+                        st.markdown(f"**{tr(item.label)}**")
+                        complete = st.checkbox(tr("I completed this step"), value=item.completed)
+                        note = st.text_area(
+                            tr("Evidence note"),
+                            value=item.evidence_summary or "",
+                            placeholder=tr("Briefly record the evidence for this step."),
+                        )
+                        submitted = st.form_submit_button(tr("Mark complete"), type="primary")
+                    if submitted:
+                        if not complete:
+                            st.warning(tr("Confirm completion before saving this roadmap item."))
+                        else:
+                            try:
+                                with st.spinner(tr("Saving…")):
+                                    service.save_pillar_roadmap_evidence(
+                                        account_id=account.id,
+                                        pillar=pillar,
+                                        level=item.level,
+                                        item_key=item.item_key,
+                                        completed=True,
+                                        evidence_note=note,
+                                    )
+                            except ValueError as error:
+                                st.error(str(error))
+                            else:
+                                completed_message = tr("{name} roadmap item completed.", name=tr(name))
+                                st.toast(completed_message)
+                                st.success(completed_message)
+                                st.rerun()
+
+            history_items = [item for item in status.items if item.completed]
+            if history_items:
+                with st.expander(tr("Completed evidence"), icon=":material/history:"):
+                    for item in sorted(history_items, key=lambda entry: (entry.level, entry.item_key)):
+                        tag = tr("Auto") if item.is_auto else tr("Manual")
+                        detail = f" — {item.evidence_summary}" if item.evidence_summary else ""
+                        st.markdown(f"- {tr('Level')} {item.level} · {tag}: {tr(item.label)}{detail}")
 def _render_risk_policy(repo: SQLiteJournalRepository, account: AccountListItem) -> None:
     policy = repo.get_active_risk_policy(account.id)
     funded = repo.get_account_funded_capital(account.id)

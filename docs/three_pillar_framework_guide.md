@@ -311,7 +311,16 @@ The three pillars progress in parallel:
 | Measure | 30 full reviews, a saved weekly or monthly review for the latest completed period, a 30-review score of at least 80, and no active hard failure. |
 | Optimize | A hypothesis, baseline, result, and keep/reject decision are recorded. |
 
-The readiness roadmap progresses in parallel across the three pillars. **Psychology** evidence is behaviour-focused; **Risk management** evidence is account-specific policy and sizing evidence; **Trading system** evidence is strategy rules, examples, and backtest evidence. Complete the evidence in **Bearings → Improve** only when it can be explained and revisited.
+The readiness roadmap progresses in parallel across the three pillars. **Psychology** evidence is behaviour-focused; **Risk management** evidence is account-specific policy and sizing evidence; **Trading system** evidence is strategy rules, examples, and backtest evidence.
+
+Most roadmap items are detected automatically from data already saved elsewhere in the journal, and never need a manual click:
+
+- Execute and Measure (all three pillars) complete themselves the moment their review-count/score/hard-failure/period-review conditions are met.
+- Optimize (all three pillars) completes itself once a Coaching focus for that pillar has been resolved (completed or abandoned) with a reflection note.
+- Risk's Define step completes itself once the account's Risk policy is saved.
+- Trading system's Define, Test, and backtest steps complete themselves once a strategy profile has a documented description, a setup with a documented example, and backtest evidence (100+ trades, positive expectancy) respectively.
+
+Only the items with no equivalent structured data anywhere in the app stay self-certified — Psychology's Define and Test steps, and Risk's "risk-calculation or simulation evidence" Test step. Complete those in **Bearings → Improve** only when they can be explained and revisited.
 
 ## 9. Data limits
 

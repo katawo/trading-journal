@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal
+from typing import Callable
 
 from trading_journal.application.reporting_time import reporting_date, reporting_datetime
 from trading_journal.infrastructure.sqlite_repository import (
@@ -69,6 +70,31 @@ class StrategyPerformance:
 
 
 @dataclass(frozen=True)
+class ConcentrationItem:
+    label: str
+    trade_count: int
+    amount: str
+    share_percent: str
+    cumulative_share_percent: str
+
+
+@dataclass(frozen=True)
+class ConcentrationSide:
+    gross_amount: str
+    group_count: int
+    target_group_count: int
+    target_group_percent: str | None
+    items: list[ConcentrationItem]
+
+
+@dataclass(frozen=True)
+class ConcentrationBreakdown:
+    dimension: str
+    profit: ConcentrationSide
+    loss: ConcentrationSide
+
+
+@dataclass(frozen=True)
 class DashboardReport:
     trade_count: int
     raw_position_count: int
@@ -92,6 +118,7 @@ class DashboardReport:
     per_trade: list[TradePerformancePoint]
     daily: list[DailyPerformance]
     by_strategy: list[StrategyPerformance]
+    concentration: list[ConcentrationBreakdown]
 
 
 class DashboardService:
@@ -147,6 +174,24 @@ class DashboardService:
             if trade.result_r is not None:
                 next_r = (strategy_r or Decimal("0")) + Decimal(trade.result_r)
             strategies[strategy] = (strategy_pnl + pnl, next_r)
+
+        concentration = [
+            ConcentrationBreakdown(
+                dimension="trade",
+                profit=self._concentration_side(trades, lambda trade: f"LT-{trade.logical_trade_id} · {trade.display_label}", positive=True),
+                loss=self._concentration_side(trades, lambda trade: f"LT-{trade.logical_trade_id} · {trade.display_label}", positive=False),
+            ),
+            ConcentrationBreakdown(
+                dimension="symbol",
+                profit=self._concentration_side(trades, lambda trade: trade.symbol, positive=True),
+                loss=self._concentration_side(trades, lambda trade: trade.symbol, positive=False),
+            ),
+            ConcentrationBreakdown(
+                dimension="strategy",
+                profit=self._concentration_side(trades, lambda trade: trade.strategy or "Untagged", positive=True),
+                loss=self._concentration_side(trades, lambda trade: trade.strategy or "Untagged", positive=False),
+            ),
+        ]
 
         cumulative: list[CumulativePoint] = []
         cumulative_pnl = Decimal("0")
@@ -273,6 +318,7 @@ class DashboardService:
                 )
                 for strategy, (pnl, total_r) in sorted(strategies.items())
             ],
+            concentration=concentration,
         )
 
     def earliest_trade_date(self, account_id: int | None = None) -> date | None:
@@ -290,6 +336,58 @@ class DashboardService:
         account = next((item for item in self._repository.list_mt5_accounts() if item.id == account_id), None)
         offset = 0 if account is None or account.latest_server_utc_offset_minutes is None else account.latest_server_utc_offset_minutes
         return reporting_datetime(datetime.now(timezone.utc).isoformat(), offset, settings.reporting_time_basis).date()
+
+    @staticmethod
+    def _concentration_side(
+        trades: list[TradePerformanceItem],
+        label_for: Callable[[TradePerformanceItem], str],
+        *,
+        positive: bool,
+    ) -> ConcentrationSide:
+        """Summarize gross profit or gross loss without using signed net P&L.
+
+        A net-P&L denominator produces misleading Pareto shares when wins and
+        losses offset each other. Each side instead uses its own gross total.
+        """
+        amounts: dict[str, Decimal] = {}
+        counts: dict[str, int] = {}
+        for trade in trades:
+            pnl = Decimal(trade.net_pnl)
+            if (positive and pnl <= 0) or (not positive and pnl >= 0):
+                continue
+            label = label_for(trade)
+            amount = pnl if positive else -pnl
+            amounts[label] = amounts.get(label, Decimal("0")) + amount
+            counts[label] = counts.get(label, 0) + 1
+
+        gross_amount = sum(amounts.values(), Decimal("0"))
+        ordered = sorted(amounts.items(), key=lambda item: (-item[1], item[0].casefold()))
+        cumulative = Decimal("0")
+        target_group_count = 0
+        items: list[ConcentrationItem] = []
+        for index, (label, amount) in enumerate(ordered, start=1):
+            cumulative += amount
+            share = amount * Decimal("100") / gross_amount
+            cumulative_share = cumulative * Decimal("100") / gross_amount
+            if target_group_count == 0 and cumulative_share >= Decimal("80"):
+                target_group_count = index
+            items.append(
+                ConcentrationItem(
+                    label=label,
+                    trade_count=counts[label],
+                    amount=_decimal_string(amount),
+                    share_percent=_decimal_string(share),
+                    cumulative_share_percent=_decimal_string(cumulative_share),
+                )
+            )
+        group_count = len(items)
+        return ConcentrationSide(
+            gross_amount=_decimal_string(gross_amount),
+            group_count=group_count,
+            target_group_count=target_group_count,
+            target_group_percent=None if group_count == 0 else _decimal_string(Decimal(target_group_count * 100) / Decimal(group_count)),
+            items=items,
+        )
 
     @staticmethod
     def _trade_date(trade: TradePerformanceItem, reporting_time_basis: str) -> date:
