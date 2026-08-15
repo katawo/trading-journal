@@ -479,7 +479,7 @@ Example:
 
 The minimum score is intentionally conservative. Two strong pillars should not hide one weak pillar.
 
-The app shows readiness only when its selected rolling sample is complete. Psychology and Trading System are trader-wide; Risk is evaluated for the selected account.
+The app shows readiness only when its selected rolling sample is complete. Psychology is trader-wide; Risk and Trading System are evaluated for the selected account, because each account represents an independent system.
 
 ---
 

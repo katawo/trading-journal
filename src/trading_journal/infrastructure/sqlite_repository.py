@@ -380,6 +380,8 @@ class FrameworkFocus(Base):
     target_reviews: Mapped[int] = mapped_column(Integer, nullable=False)
     starting_manual_reviews: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+    source: Mapped[str] = mapped_column(String(16), nullable=False, default="manual")
+    coach_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     resolution_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[str] = mapped_column(String(64), nullable=False)
     resolved_at: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -718,6 +720,8 @@ class FrameworkFocusView:
     target_reviews: int
     starting_manual_reviews: int
     status: str
+    source: str
+    coach_reason: str | None
     resolution_note: str | None
     created_at: str
     resolved_at: str | None
@@ -769,6 +773,10 @@ class SQLiteJournalRepository:
             ):
                 if column_name not in assessment_columns:
                     connection.exec_driver_sql(f"ALTER TABLE post_trade_assessments ADD COLUMN {column_name} {column_type}")
+            focus_columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(framework_focuses)")}
+            for column_name, column_type in (("source", "VARCHAR(16) NOT NULL DEFAULT 'manual'"), ("coach_reason", "TEXT")):
+                if column_name not in focus_columns:
+                    connection.exec_driver_sql(f"ALTER TABLE framework_focuses ADD COLUMN {column_name} {column_type}")
             # create_all does not add newly-declared indexes to an existing table.
             for statement in (
                 "CREATE INDEX IF NOT EXISTS ix_trades_account_exit ON trades (mt5_account_id, exit_time, id)",
@@ -1875,8 +1883,8 @@ class SQLiteJournalRepository:
             rows = session.scalars(
                 select(PillarRoadmapEvidence)
                 .where(
-                    ((PillarRoadmapEvidence.pillar == "risk") & (PillarRoadmapEvidence.scope_key == account_scope))
-                    | ((PillarRoadmapEvidence.pillar != "risk") & (PillarRoadmapEvidence.scope_key == "trader"))
+                    ((PillarRoadmapEvidence.pillar.in_(("risk", "system"))) & (PillarRoadmapEvidence.scope_key == account_scope))
+                    | ((PillarRoadmapEvidence.pillar == "psychology") & (PillarRoadmapEvidence.scope_key == "trader"))
                 )
                 .order_by(PillarRoadmapEvidence.pillar, PillarRoadmapEvidence.level, PillarRoadmapEvidence.item_key)
             ).all()
@@ -1887,14 +1895,23 @@ class SQLiteJournalRepository:
             row = session.scalar(select(FrameworkFocus).where(FrameworkFocus.scope_key == "trader", FrameworkFocus.status == "active"))
             return None if row is None else self._to_framework_focus_view(row)
 
+    def list_framework_focuses(self) -> list[FrameworkFocusView]:
+        with self._sessions() as session:
+            rows = session.scalars(
+                select(FrameworkFocus)
+                .where(FrameworkFocus.scope_key == "trader")
+                .order_by(FrameworkFocus.created_at.desc(), FrameworkFocus.id.desc())
+            ).all()
+            return [self._to_framework_focus_view(row) for row in rows]
+
     def save_framework_focus(
         self, *, account_id: int | None, pillar: str, metric_kind: str, metric_code: str | None,
         hypothesis: str, action_text: str, baseline_value: str | None, target_value: str, target_reviews: int,
-        starting_manual_reviews: int,
+        starting_manual_reviews: int, source: str = "manual", coach_reason: str | None = None,
     ) -> FrameworkFocusView:
         if pillar not in {"psychology", "risk", "system"}:
             raise ValueError("Unknown framework pillar")
-        if metric_kind not in {"manual_evidence", "criterion", "violation"}:
+        if metric_kind not in {"manual_evidence", "criterion", "component", "violation"}:
             raise ValueError("Unknown framework focus metric")
         if metric_kind == "manual_evidence" and metric_code is not None:
             raise ValueError("Manual-evidence focus cannot use a metric code")
@@ -1902,25 +1919,28 @@ class SQLiteJournalRepository:
             raise ValueError("Choose a metric for this framework focus")
         if target_reviews not in {5, 10, 20}:
             raise ValueError("Focus sample must be 5, 10, or 20 reviewed trades")
-        if pillar == "risk" and account_id is None:
-            raise ValueError("A Risk focus needs an account")
+        if source not in {"manual", "coach"}:
+            raise ValueError("Unknown framework focus source")
+        if pillar in {"risk", "system"} and account_id is None:
+            raise ValueError("A Risk or Trading system focus needs an account")
         with self._sessions.begin() as session:
             if session.scalar(select(FrameworkFocus).where(FrameworkFocus.scope_key == "trader", FrameworkFocus.status == "active")) is not None:
                 raise ValueError("Resolve the active framework focus before starting another")
             row = FrameworkFocus(
-                scope_key="trader", account_id=account_id if pillar == "risk" else None, pillar=pillar,
+                scope_key="trader", account_id=account_id if pillar in {"risk", "system"} else None, pillar=pillar,
                 metric_kind=metric_kind, metric_code=metric_code, hypothesis=self._required_text(hypothesis, "Focus hypothesis"),
                 action_text=self._required_text(action_text, "Focus action"), baseline_value=baseline_value,
                 target_value=target_value, target_reviews=target_reviews, starting_manual_reviews=starting_manual_reviews,
-                status="active", resolution_note=None, created_at=datetime.now(timezone.utc).isoformat(), resolved_at=None,
+                status="active", source=source, coach_reason=self._optional_text(coach_reason), resolution_note=None,
+                created_at=datetime.now(timezone.utc).isoformat(), resolved_at=None,
             )
             session.add(row)
             session.flush()
             return self._to_framework_focus_view(row)
 
     def resolve_framework_focus(self, *, focus_id: int, outcome: str, resolution_note: str) -> FrameworkFocusView:
-        if outcome not in {"completed", "abandoned"}:
-            raise ValueError("Focus outcome must be completed or abandoned")
+        if outcome not in {"completed", "abandoned", "superseded"}:
+            raise ValueError("Focus outcome must be completed, abandoned, or superseded")
         with self._sessions.begin() as session:
             row = session.get(FrameworkFocus, focus_id)
             if row is None or row.status != "active":
@@ -1929,12 +1949,21 @@ class SQLiteJournalRepository:
             session.flush()
             return self._to_framework_focus_view(row)
 
+    def update_framework_focus_action(self, *, focus_id: int, action_text: str) -> FrameworkFocusView:
+        with self._sessions.begin() as session:
+            row = session.get(FrameworkFocus, focus_id)
+            if row is None or row.status != "active":
+                raise ValueError("Active framework focus was not found")
+            row.action_text = self._required_text(action_text, "Focus action")
+            session.flush()
+            return self._to_framework_focus_view(row)
+
     @staticmethod
     def _to_framework_focus_view(row: FrameworkFocus) -> FrameworkFocusView:
         return FrameworkFocusView(
             row.id, row.account_id, row.pillar, row.metric_kind, row.metric_code, row.hypothesis,
             row.action_text, row.baseline_value, row.target_value, row.target_reviews,
-            row.starting_manual_reviews, row.status, row.resolution_note, row.created_at, row.resolved_at,
+            row.starting_manual_reviews, row.status, row.source, row.coach_reason, row.resolution_note, row.created_at, row.resolved_at,
         )
 
     def save_pillar_roadmap_evidence(
@@ -1944,8 +1973,8 @@ class SQLiteJournalRepository:
             raise ValueError("Unknown pillar roadmap item")
         if completed and not self._optional_text(evidence_note):
             raise ValueError("An evidence note is required before completing a roadmap item")
-        if pillar == "risk" and account_id is None:
-            raise ValueError("An account is required for Risk roadmap evidence")
+        if pillar in {"risk", "system"} and account_id is None:
+            raise ValueError("An account is required for Risk or Trading system roadmap evidence")
         scope_key = self._roadmap_scope_key(pillar, account_id)
         with self._sessions.begin() as session:
             row = session.scalar(
@@ -1968,7 +1997,7 @@ class SQLiteJournalRepository:
 
     @staticmethod
     def _roadmap_scope_key(pillar: str, account_id: int | None) -> str:
-        return "trader" if pillar in {"psychology", "system"} else f"account:{account_id}"
+        return "trader" if pillar == "psychology" else f"account:{account_id}"
 
     def latest_mt5_import_hash(self, *, login: str, broker_server: str, source_file_path: str) -> str | None:
         with self._sessions() as session:

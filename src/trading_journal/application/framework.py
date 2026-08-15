@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -42,6 +42,11 @@ CRITICAL_VIOLATIONS = {
     "psychology": frozenset({"revenge", "emotional_sizing", "post_loss_reset", "oversized_revenge"}),
     "risk": frozenset({"daily_limit", "weekly_limit", "drawdown_limit", "open_exposure", "correlation_exposure", "oversized_revenge", "stop_widened", "shutdown_breach"}),
     "system": frozenset({"mandatory_setup_absent"}),
+}
+COMPONENT_CODES = {
+    "rule_adherence": "Rule adherence", "impulse_control": "Impulse control", "emotional_control": "Emotional control", "post_loss_discipline": "Post-loss discipline",
+    "policy_adherence": "Policy adherence", "stop_discipline": "Stop discipline", "limit_compliance": "Limit compliance", "exposure_control": "Exposure control",
+    "setup_validity": "Setup validity", "execution_fidelity": "Execution fidelity", "context_alignment": "Context alignment", "evidence_quality": "Evidence quality", "edge_evidence": "Edge evidence",
 }
 
 ROADMAP_ITEMS: dict[str, dict[int, tuple[tuple[str, str], ...]]] = {
@@ -264,6 +269,20 @@ class FrameworkFocusProgress:
 
 
 @dataclass(frozen=True)
+class CoachingRecommendation:
+    pillar: str
+    metric_kind: str
+    metric_code: str | None
+    hypothesis: str
+    action_text: str
+    baseline_value: str | None
+    target_value: str
+    target_reviews: int
+    reason: str
+    safety: bool = False
+
+
+@dataclass(frozen=True)
 class ReadinessAssessment:
     score: str | None
     status: str
@@ -324,7 +343,7 @@ class FrameworkService:
         scores = (
             self._period_pillar_score("psychology", trader_scores, window, "Trader-wide"),
             self._period_pillar_score("risk", account_scores, window, "Selected account", historical_events),
-            self._period_pillar_score("system", trader_scores, window, "Trader-wide"),
+            self._period_pillar_score("system", account_scores, window, "Selected account"),
         )
         self._pillar_score_cache[cache_key] = scores
         return scores
@@ -422,6 +441,14 @@ class FrameworkService:
     def recurring_issues(self, account_id: int, *, window: int = 20, as_of: date | None = None) -> tuple[tuple[str, int], ...]:
         scored = [item for item in self._scores_through(self.trade_process_scores(account_id), as_of) if item.review_kind in REVIEWED_KINDS][-window:]
         counter: Counter[str] = Counter(code for item in scored for code in set(item.violation_codes) | set(item.hard_rule_codes))
+        return tuple(counter.most_common())
+
+    @staticmethod
+    def _recurring_issues_from_scores(scores: tuple[TradeProcessScore, ...], *, window: int) -> tuple[tuple[str, int], ...]:
+        reviewed = [item for item in scores if item.review_kind in REVIEWED_KINDS][-window:]
+        counter: Counter[str] = Counter(
+            code for item in reviewed for code in set(item.violation_codes) | set(item.hard_rule_codes)
+        )
         return tuple(counter.most_common())
 
     def rolling_score_trend(self, account_id: int, *, window: int = 20) -> tuple[tuple[str, str | None, str | None, str | None], ...]:
@@ -563,10 +590,17 @@ class FrameworkService:
         focus = self._repository.get_active_framework_focus()
         if focus is None:
             return None, None
-        focus_account = focus.account_id if focus.pillar == "risk" else account_id
-        reviewed = [item for item in self.trade_process_scores(focus_account) if item.review_kind in REVIEWED_KINDS]
+        if focus.pillar in {"risk", "system"}:
+            if focus.account_id is None:
+                raise ValueError("Risk and Trading system focuses require an account")
+            focus_account = focus.account_id
+            focus_scores = self.trade_process_scores(focus_account)
+        else:
+            focus_account = account_id
+            focus_scores = self._trader_trade_process_scores()
+        reviewed = [item for item in focus_scores if item.review_kind in REVIEWED_KINDS]
         completed = max(0, len(reviewed) - focus.starting_manual_reviews)
-        sample = reviewed[-focus.target_reviews:]
+        sample = reviewed[focus.starting_manual_reviews:focus.starting_manual_reviews + focus.target_reviews]
         current: str | None = None
         if focus.metric_kind == "manual_evidence":
             current = str(completed)
@@ -575,12 +609,125 @@ class FrameworkService:
             current = _decimal_text(sum(values, Decimal("0")) / len(values)) if values else None
         elif focus.metric_kind == "violation" and sample:
             current = str(sum((focus.metric_code or "") in item.violation_codes for item in sample))
+        elif focus.metric_kind == "component" and sample and focus.metric_code:
+            components = self._period_components(
+                focus.pillar, sample,
+                self._historical_risk_events(focus_account) if focus.pillar == "risk" else None,
+                {item.trade_id: Decimal(item.net_pnl) for item in sample},
+            )
+            current = next((_decimal_text(value) for name, value in components if name == COMPONENT_CODES.get(focus.metric_code) and value is not None), None)
         return focus, FrameworkFocusProgress(focus.id, completed, focus.target_reviews, current, completed >= focus.target_reviews)
+
+    def coaching_recommendation(self, account_id: int) -> CoachingRecommendation | None:
+        """Choose one auditable, post-trade coaching experiment from current evidence."""
+        scores = self.pillar_scores(account_id, window=20)
+        reviewed = min(item.reviewed_total for item in scores)
+        for pillar in PILLAR_NAMES:
+            recent = [item for item in self._pillar_trade_process_scores(account_id, pillar) if item.review_kind in REVIEWED_KINDS][-20:]
+            latest_code = next((code for item in reversed(recent) for code in item.hard_rule_codes if code in CRITICAL_VIOLATIONS[pillar]), None)
+            if latest_code:
+                return replace(self._coaching_recommendation(
+                    pillar, "violation", latest_code, "0", 5,
+                    "Hard-rule safety focus.", safety=True,
+                ), baseline_value="1")
+        if reviewed < 5:
+            return CoachingRecommendation(
+                "psychology", "manual_evidence", None,
+                "A small reviewed sample cannot yet distinguish a stable pattern from noise.",
+                "Review each closed trade promptly and record one factual lesson.", str(reviewed), "5", 5,
+                "Build a first reviewed sample.",
+            )
+        for pillar in PILLAR_NAMES:
+            eligible_codes = (
+                (CRITICAL_VIOLATIONS["risk"] | CRITICAL_VIOLATIONS["system"]) - CRITICAL_VIOLATIONS["psychology"]
+                if pillar == "psychology"
+                else CRITICAL_VIOLATIONS[pillar]
+            )
+            recurring = next(
+                (
+                    (code, count)
+                    for code, count in self._recurring_issues_from_scores(
+                        self._pillar_trade_process_scores(account_id, pillar), window=10
+                    )
+                    if count >= 2 and (code not in eligible_codes if pillar == "psychology" else code in eligible_codes)
+                ),
+                None,
+            )
+            if recurring:
+                code, count = recurring
+                return replace(self._coaching_recommendation(pillar, "violation", code, "0", 10, "Repeated reviewed issue."), baseline_value=str(count))
+        weak = min((item for item in scores if item.score is not None), key=lambda item: Decimal(item.score), default=None)
+        if weak is not None and Decimal(weak.score) < 70:
+            component = min(((name, value) for name, value in weak.component_scores if value is not None), key=lambda item: Decimal(item[1]), default=None)
+            code = next((key for key, label in COMPONENT_CODES.items() if component and label == component[0]), None)
+            if code is not None:
+                return replace(self._coaching_recommendation(weak.pillar, "component", code, "80", 10, "Weakest current pillar component."), baseline_value=component[1])
+        return None
+
+    def ensure_coaching_focus(self, account_id: int) -> FrameworkFocusView | None:
+        active = self._repository.get_active_framework_focus()
+        recommendation = self.coaching_recommendation(account_id)
+        if active is not None and not (recommendation and recommendation.safety):
+            return active
+        if active is not None and recommendation is not None and active.metric_kind == recommendation.metric_kind and active.metric_code == recommendation.metric_code:
+            return active
+        if active is None and recommendation is not None:
+            focus_account_id = account_id if recommendation.pillar in {"risk", "system"} else None
+            completed = [
+                item for item in self._repository.list_framework_focuses()
+                if item.source == "coach" and item.status in {"completed", "abandoned"}
+                and item.pillar == recommendation.pillar and item.metric_kind == recommendation.metric_kind and item.metric_code == recommendation.metric_code
+                and item.account_id == focus_account_id
+            ]
+            if completed:
+                latest = completed[0]
+                reviewed_total = next(item.reviewed_total for item in self.pillar_scores(account_id) if item.pillar == recommendation.pillar)
+                if reviewed_total <= latest.starting_manual_reviews + latest.target_reviews:
+                    return None
+        if active is not None and recommendation is not None:
+            self._repository.resolve_framework_focus(
+                focus_id=active.id, outcome="superseded",
+                resolution_note=f"Superseded by safety coaching: {recommendation.reason}",
+            )
+        if recommendation is None:
+            return None
+        try:
+            return self._repository.save_framework_focus(
+                account_id=account_id if recommendation.pillar in {"risk", "system"} else None,
+                pillar=recommendation.pillar, metric_kind=recommendation.metric_kind, metric_code=recommendation.metric_code,
+                hypothesis=recommendation.hypothesis, action_text=recommendation.action_text,
+                baseline_value=recommendation.baseline_value, target_value=recommendation.target_value,
+                target_reviews=recommendation.target_reviews,
+                starting_manual_reviews=next(item.reviewed_total for item in self.pillar_scores(account_id) if item.pillar == recommendation.pillar),
+                source="coach", coach_reason=recommendation.reason,
+            )
+        except ValueError:
+            return self._repository.get_active_framework_focus()
+
+    @staticmethod
+    def _coaching_recommendation(
+        pillar: str, metric_kind: str, metric_code: str, target_value: str, target_reviews: int, reason: str, *, safety: bool = False,
+    ) -> CoachingRecommendation:
+        label = metric_code.replace("_", " ")
+        actions = {
+            "revenge": "After any loss, pause before the next order and re-check the written setup.",
+            "stop_widened": "Keep the original invalidation level; do not widen the stop after entry.",
+            "rule_adherence": "Before entry, state the rule that authorizes the trade; skip it if you cannot.",
+            "impulse_control": "Wait for the documented trigger, then take one breath before placing the order.",
+            "policy_adherence": "Calculate the planned risk before entry and reduce size when it exceeds policy.",
+            "setup_validity": "Name the documented setup and its invalidation before entering; otherwise stand aside.",
+            "post_loss_discipline": "After a loss, pause and confirm the next setup meets the written plan before re-entering.",
+            "limit_compliance": "Check the daily and weekly loss limits before taking additional risk.",
+            "execution_fidelity": "Use the documented entry, invalidation, and exit sequence without improvising.",
+            "evidence_quality": "Record the setup evidence and review it before changing the system.",
+            "edge_evidence": "Keep the system unchanged while you collect enough representative reviewed evidence.",
+        }
+        action = actions.get(metric_code, f"Before the next trade, verify {label} against the written plan and stand aside if it is not met.")
+        return CoachingRecommendation(pillar, metric_kind, metric_code, f"Practising {label} consistently will improve {PILLAR_NAMES[pillar]}.", action, None, target_value, target_reviews, reason, safety)
 
     def roadmap_status(self, account_id: int, *, now: datetime | None = None) -> tuple[PillarRoadmapStatus, ...]:
         evidence = {(item.pillar, item.level, item.item_key): item for item in self._repository.list_pillar_roadmap_evidence(account_id)}
-        # Psychology/System are trader-wide: a period review saved against any of the
-        # trader's accounts satisfies their level-4 gate. Risk stays account-scoped.
+        # Psychology is trader-wide; Risk and System are evaluated on the selected account.
         current_period_review_account = self._has_current_period_review(account_id, now=now)
         current_period_review_trader_wide = self._has_current_period_review(account_id, now=now, trader_wide=True)
         statuses: list[PillarRoadmapStatus] = []
@@ -588,7 +735,7 @@ class FrameworkService:
             total = sum(len(items) for items in levels.values())
             completed = sum(1 for level, items in levels.items() for key, _ in items if (item := evidence.get((pillar, level, key))) and item.completed)
             current_level = next((level for level, items in levels.items() if not all((item := evidence.get((pillar, level, key))) and item.completed for key, _ in items)), 5)
-            current_period_review = current_period_review_account if pillar == "risk" else current_period_review_trader_wide
+            current_period_review = current_period_review_trader_wide if pillar == "psychology" else current_period_review_account
             if completed == total:
                 allowed, gate = False, "All framework evidence is complete; continue monitoring the current sample."
             elif current_level == 3:
@@ -633,9 +780,9 @@ class FrameworkService:
     def _has_current_period_review(self, account_id: int, *, now: datetime | None = None, trader_wide: bool = False) -> bool:
         """Require reflection on the latest completed eligible week or month.
 
-        Trader-wide pillars (Psychology/System) must not be gated by whichever
-        single account happens to be active — a period review saved against
-        any of the trader's accounts satisfies them. Risk stays account-scoped.
+        Psychology must not be gated by whichever single account happens to be
+        active — a period review saved against any account satisfies it. Risk
+        and System remain account-scoped.
         """
         account_ids = tuple(item.id for item in self._repository.list_mt5_accounts()) if trader_wide else (account_id,)
         for candidate_account_id in account_ids:
@@ -702,6 +849,10 @@ class FrameworkService:
     def _trader_trade_process_scores(self) -> tuple[TradeProcessScore, ...]:
         scores = [score for account in self._repository.list_mt5_accounts() for score in self.trade_process_scores(account.id)]
         return tuple(sorted(scores, key=lambda item: (item.exit_time, item.trade_id)))
+
+    def _pillar_trade_process_scores(self, account_id: int, pillar: str) -> tuple[TradeProcessScore, ...]:
+        """Return the evidence scope used by a pillar's rolling score and coaching."""
+        return self._trader_trade_process_scores() if pillar == "psychology" else self.trade_process_scores(account_id)
 
     def _scores_through(self, scores: tuple[TradeProcessScore, ...], as_of: date | None) -> tuple[TradeProcessScore, ...]:
         if as_of is None:
@@ -871,7 +1022,7 @@ class FrameworkService:
             return True, None
         last_critical = last_critical_item.exit_time
         last_critical_date = self._trade_date(last_critical, last_critical_item.server_utc_offset_minutes).isoformat()
-        account_ids = {sample[-1].account_id} if pillar == "risk" else {item.id for item in self._repository.list_mt5_accounts()}
+        account_ids = {item.id for item in self._repository.list_mt5_accounts()} if pillar == "psychology" else {sample[-1].account_id}
         reviewed_after = any(
             review.created_at > last_critical
             for account_id in account_ids

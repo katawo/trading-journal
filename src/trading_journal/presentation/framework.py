@@ -194,7 +194,15 @@ def _reporting_time(repo: SQLiteJournalRepository, value: str, server_utc_offset
     return reporting_datetime(value, server_utc_offset_minutes, basis).strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _render_score_cards(scores: tuple[PillarScore, ...]) -> None:
+def _score_scope_label(score: PillarScore, account: AccountListItem) -> str:
+    """Describe the evidence scope without implying that a pillar is an aggregate."""
+    if score.pillar == "psychology":
+        return tr("Trader-wide")
+    label = _account_label(account)
+    return tr("Account: {account}", account=label) if score.pillar == "risk" else tr("System: {account}", account=label)
+
+
+def _render_score_cards(scores: tuple[PillarScore, ...], account: AccountListItem) -> None:
     for column, score in zip(st.columns(len(scores), gap="small"), scores, strict=True):
         if score.hard_block:
             label = "FAIL"
@@ -208,6 +216,7 @@ def _render_score_cards(scores: tuple[PillarScore, ...]) -> None:
         else:
             label = score.status.capitalize()
         column.metric(tr(PILLAR_NAMES[score.pillar]), _score_text(score.score), tr("{label} · {count} in sample", label=tr(label), count=score.sample_size), border=True)
+        column.caption(_score_scope_label(score, account))
         if score.status != "ready":
             column.caption(tr(score.detail))
 
@@ -265,16 +274,17 @@ def render_framework_dashboard(repo: SQLiteJournalRepository, account: AccountLi
     snapshot = service.risk_snapshot(account.id)
     scores = service.pillar_scores(account.id)
     readiness = service.readiness(account.id)
+    _render_framework_focus(repo, account, service, scores, compact=True)
     st.markdown("#### Three-pillar monitor")
-    st.caption(tr("Psychology and System are trader-wide. Risk is scoped to {account}.", account=_account_label(account)))
+    st.caption(tr("Psychology is trader-wide. Risk and System are scoped to {account}.", account=_account_label(account)))
     st.caption(tr("This compact view always uses a fixed 20-trade window. Open Bearings → Monitor to adjust the rolling sample."))
     _render_risk_configuration_notice(service, account.id)
     with st.container(horizontal=True, gap="small"):
-        st.metric("Readiness", _score_text(readiness.score), tr(readiness.status.capitalize()), border=True)
+        st.metric(tr("Overall readiness"), _score_text(readiness.score), tr(readiness.status.capitalize()), border=True)
         st.metric("Risk state", _state_label(snapshot), border=True)
         st.metric("Today", "—" if snapshot.daily_r is None else format_r(snapshot.daily_r), border=True)
         st.metric("Max drawdown", "—" if snapshot.max_drawdown_percent is None else format_percent(snapshot.max_drawdown_percent), border=True)
-    _render_score_cards(scores)
+    _render_score_cards(scores, account)
     _render_pillar_radar(scores)
     st.caption(tr(readiness.detail))
 
@@ -1267,7 +1277,7 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
 def _render_monitor(repo: SQLiteJournalRepository, account: AccountListItem) -> None:
     service = FrameworkService(repo)
     st.markdown("#### Monitoring")
-    st.caption(tr("Psychology and System are trader-wide. Risk is scoped to {account}.", account=_account_label(account)))
+    st.caption(tr("Psychology is trader-wide. Risk and System are scoped to {account}.", account=_account_label(account)))
     _render_risk_configuration_notice(service, account.id)
     controls, scope_note = st.columns((2, 3))
     with controls:
@@ -1302,7 +1312,7 @@ def _render_monitor(repo: SQLiteJournalRepository, account: AccountListItem) -> 
     coverage = service.risk_evidence_coverage(account.id, window=int(window))
     analysis = service.monitor_analysis(account.id, start_date=start_date, end_date=end_date, window=int(window))
     _render_framework_focus(repo, account, service, scores)
-    st.metric("Readiness", _score_text(readiness.score), tr(readiness.status.capitalize()), border=True)
+    st.metric(tr("Overall readiness"), _score_text(readiness.score), tr(readiness.status.capitalize()), border=True)
     st.caption(readiness.detail)
     with st.container(horizontal=True, gap="small"):
         st.metric("Risk checks", f"{coverage.approved}/{coverage.total}", "approved evidence", border=True)
@@ -1310,7 +1320,7 @@ def _render_monitor(repo: SQLiteJournalRepository, account: AccountListItem) -> 
         st.metric("Over policy", str(coverage.over_policy), border=True)
         st.metric("Risk unavailable", str(coverage.unavailable), border=True)
     st.caption("Approved Quick Risk Checks and Manual Reviews both feed pillar scores, readiness, and roadmap gates.")
-    _render_score_cards(scores)
+    _render_score_cards(scores, account)
     _render_pillar_radar(scores)
     component_rows = [
         {tr("Pillar"): tr(PILLAR_NAMES[score.pillar]), tr("Metric"): tr(name), tr("Score"): _score_text(value), tr("Scope"): tr(score.scope)}
@@ -1349,7 +1359,7 @@ def _render_monitor_process(service: FrameworkService, account: AccountListItem,
     if trend:
         frame = pd.DataFrame(trend, columns=["Closed", "Psychology", "Risk management", "Trading system"]).set_index("Closed")
         st.line_chart(frame, width="stretch")
-        st.caption("Each point keeps the same approved-review scoring rules as the score cards. Psychology and System are trader-wide; Risk is selected-account only.")
+        st.caption("Each point keeps the same approved-review scoring rules as the score cards. Psychology is trader-wide; Risk and System are selected-account only.")
     else:
         st.info("No approved review trend exists in this analysis period.")
     left, right = st.columns(2)
@@ -1440,17 +1450,28 @@ def _render_monitor_system(analysis: MonitorAnalysisReport) -> None:
             st.dataframe(frame, hide_index=True, width="stretch", column_config={"Process score": st.column_config.NumberColumn(format="%.0f"), "Win rate": st.column_config.NumberColumn(format="%.1f%%"), "Average R": st.column_config.NumberColumn(format="%+.2fR")})
 
 
-def _render_framework_focus(repo: SQLiteJournalRepository, account: AccountListItem, service: FrameworkService, scores: tuple[PillarScore, ...]) -> None:
+def _render_framework_focus(repo: SQLiteJournalRepository, account: AccountListItem, service: FrameworkService, scores: tuple[PillarScore, ...], *, compact: bool = False) -> None:
+    service.ensure_coaching_focus(account.id)
     focus, progress = service.focus_progress(account.id)
-    st.markdown("##### Coaching focus")
+    focus_heading = "Today's coaching action" if compact else "Coaching focus"
+    st.markdown(f"##### {tr(focus_heading)}")
+    if focus is not None and focus.pillar in {"risk", "system"} and focus.account_id != account.id:
+        st.info(tr("An active {pillar} coaching focus applies to another account. Select that account in Settings to review it.", pillar=tr(PILLAR_NAMES[focus.pillar])))
+        return
     if focus is not None and progress is not None:
         with st.container(border=True):
-            st.markdown(f"**{PILLAR_NAMES[focus.pillar]} · {focus.metric_kind.replace('_', ' ')}**")
-            st.write(focus.action_text)
-            st.caption(f"Hypothesis: {focus.hypothesis}")
+            kind = {"manual_evidence": "Reviewed evidence", "component": "Pillar component", "criterion": "Criterion", "violation": "Issue"}[focus.metric_kind]
+            st.markdown(f"**{tr(PILLAR_NAMES[focus.pillar])} · {tr(kind)}**")
+            st.write(tr(focus.action_text))
+            st.caption(f"{tr('Why now:')} {tr(focus.coach_reason or focus.hypothesis)}")
             current = "—" if progress.current_value is None else progress.current_value
-            st.metric("Reviewed trades collected", f"{progress.reviews_completed}/{progress.target_reviews}", f"Current metric: {current}", border=True)
-            st.caption(f"Baseline: {focus.baseline_value or '—'} · Target: {focus.target_value}")
+            st.metric(tr("Reviewed trades collected"), f"{progress.reviews_completed}/{progress.target_reviews}", f"{tr('Current metric:')} {current}", border=True)
+            st.caption(f"{tr('Baseline:')} {focus.baseline_value or '—'} · {tr('Target:')} {focus.target_value}")
+            with st.form(f"edit-framework-focus-{focus.id}", border=False):
+                action = st.text_area(tr("Tailor the next-trade action"), value=focus.action_text)
+                if st.form_submit_button(tr("Save action")):
+                    repo.update_framework_focus_action(focus_id=focus.id, action_text=action)
+                    st.rerun()
             if progress.ready_to_evaluate:
                 with st.form(f"resolve-framework-focus-{focus.id}"):
                     outcome = st.segmented_control("Focus outcome", ["completed", "abandoned"], default="completed", required=True)
@@ -1463,36 +1484,15 @@ def _render_framework_focus(repo: SQLiteJournalRepository, account: AccountListI
                         else:
                             st.toast("Framework focus resolved.")
                             st.rerun()
+            history = [item for item in repo.list_framework_focuses() if item.status != "active"]
+            if history and not compact:
+                with st.expander(tr("Coaching history")):
+                    for item in history[:5]:
+                        st.markdown(f"**{item.status.capitalize()} · {PILLAR_NAMES[item.pillar]}** — {item.action_text}")
+                        if item.resolution_note:
+                            st.caption(item.resolution_note)
         return
-    st.caption("Choose one measurable focus. Keep it active until its reviewed-trade sample is complete.")
-    with st.form(f"start-framework-focus-{account.id}"):
-        focus_type = st.selectbox("Focus type", ["Build reviewed evidence", "Improve a criterion", "Eliminate a violation"])
-        pillar = st.selectbox("Pillar", list(PILLAR_NAMES), format_func=PILLAR_NAMES.get)
-        metric_kind = {"Build reviewed evidence": "manual_evidence", "Improve a criterion": "criterion", "Eliminate a violation": "violation"}[focus_type]
-        codes = ()
-        if metric_kind == "criterion":
-            codes = PSYCHOLOGY_CRITERIA if pillar == "psychology" else RISK_CRITERIA if pillar == "risk" else SYSTEM_CRITERIA
-        elif metric_kind == "violation":
-            codes = tuple(VIOLATION_LABELS)
-        metric_code = st.selectbox("Metric", list(codes), format_func=lambda value: CRITERION_LABELS.get(value, VIOLATION_LABELS.get(value, value))) if codes else None
-        target_reviews = st.selectbox("Reviewed-trade sample", [5, 10, 20], index=1)
-        hypothesis = st.text_area("Hypothesis", placeholder="Why will this action improve the chosen metric?")
-        action = st.text_area("One action", placeholder="What will you do on every relevant trade?")
-        if st.form_submit_button("Start focus", type="primary"):
-            current_score = next((item.score for item in scores if item.pillar == pillar), None)
-            target_value = "0" if metric_kind == "violation" else "80" if metric_kind == "criterion" else str(target_reviews)
-            starting = next((item.reviewed_total for item in scores if item.pillar == pillar), 0)
-            try:
-                repo.save_framework_focus(
-                    account_id=account.id if pillar == "risk" else None, pillar=pillar, metric_kind=metric_kind, metric_code=metric_code,
-                    hypothesis=hypothesis, action_text=action, baseline_value=current_score, target_value=target_value,
-                    target_reviews=int(target_reviews), starting_manual_reviews=starting,
-                )
-            except ValueError as error:
-                st.error(str(error))
-            else:
-                st.toast("Framework focus started.")
-                st.rerun()
+    st.success(tr("On track: no coaching intervention is required from the current reviewed evidence."))
 
 
 def _render_period_reviews(repo: SQLiteJournalRepository, account: AccountListItem, service: FrameworkService) -> None:
@@ -1607,8 +1607,6 @@ def _render_roadmap(repo: SQLiteJournalRepository, account: AccountListItem) -> 
                     label = labels[(item.level, item.item_key)]
                     detail = f" — {item.evidence_note}" if item.evidence_note else ""
                     st.markdown(f"- {tr('Level')} {item.level}: {tr(label)}{detail}")
-
-
 def _render_risk_policy(repo: SQLiteJournalRepository, account: AccountListItem) -> None:
     policy = repo.get_active_risk_policy(account.id)
     funded = repo.get_account_funded_capital(account.id)

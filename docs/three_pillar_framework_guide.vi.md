@@ -12,7 +12,7 @@ Nhật ký đo lường *chất lượng của một giao dịch đã đóng*, k
 |---|---|---|
 | Tâm lý | Tôi đã thực hiện bản thân đúng cách chưa? | Toàn bộ tài khoản đang hoạt động của trader |
 | Quản lý rủi ro | Tôi có bảo vệ vốn và tuân thủ chính sách tài khoản không? | Tài khoản MT5 được chọn |
-| Hệ thống giao dịch | Tôi có thực hiện một setup hợp lệ, đã được ghi chép không? | Toàn bộ tài khoản đang hoạt động của trader |
+| Hệ thống giao dịch | Tôi có thực hiện một setup hợp lệ, đã được ghi chép không? | Tài khoản MT5 được chọn (mỗi tài khoản là một hệ thống độc lập) |
 
 Một giao dịch có lãi vẫn có thể là **Lệnh thắng xấu** khi quy trình thất bại. Một giao dịch lỗ nhưng tuân thủ có thể là **Lệnh thua tốt**. P&L và chất lượng quy trình được tách riêng một cách có chủ đích.
 
@@ -275,6 +275,10 @@ Dùng chẩn đoán thay vì P&L gần đây để chọn hành động:
 | Tâm lý và Rủi ro mạnh, Hệ thống yếu | Quy trình có kỷ luật nhưng setup/bằng chứng cần cải thiện. | Đóng băng quy tắc chiến lược và thu thập hoặc xác minh thêm backtest trước khi đổi cách thực hiện. |
 
 Không đổi chiến lược chỉ vì mẫu P&L gần đây nhỏ. Hãy lập một giả thuyết, thu thập bằng chứng, rồi giữ hoặc loại thay đổi.
+
+### Trọng tâm huấn luyện
+
+Theo dõi chỉ giữ một **Trọng tâm huấn luyện** cho toàn nhật ký. Trade Compass tự chọn trọng tâm từ bằng chứng đã đánh giá, rồi theo dõi 5, 10 hoặc 20 giao dịch mới đã đánh giá trước khi bạn ghi phản hồi kết thúc. Tâm lý dùng bằng chứng trên toàn trader; Quản lý rủi ro và Hệ thống giao dịch dùng bằng chứng của tài khoản được chọn, vì mỗi tài khoản đại diện cho một hệ thống độc lập. Ứng dụng vẫn chỉ tư vấn sau giao dịch.
 
 ## 8. Lộ trình cải thiện và các cổng
 

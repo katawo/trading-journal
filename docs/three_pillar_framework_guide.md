@@ -12,7 +12,7 @@ The journal measures the *quality of a completed trade*, not only its P&L. It is
 |---|---|---|
 | Psychology | Did I execute myself correctly? | Trader-wide across active accounts |
 | Risk management | Did I protect capital and follow the account policy? | Selected MT5 account |
-| Trading system | Did I execute a valid, documented setup? | Trader-wide across active accounts |
+| Trading system | Did I execute a valid, documented setup? | Selected MT5 account (one independent system per account) |
 
 A profitable trade can be a **Bad Win** when its process failed. A compliant losing trade can be a **Good Loss**. P&L and process quality are intentionally separate.
 
@@ -33,10 +33,16 @@ Monitor the latest 20, 30, or 50 full reviews
         ↓
 Save a weekly or monthly reflection
         ↓
-Choose one corrective action and test it
+Trade Compass selects one evidence-backed coaching action and tracks it through a reviewed-trade sample
 ```
 
 The journal starts at the completed trade. It does not claim to reconstruct every live decision, open exposure, or emotion from MT5 data.
+
+## Coaching loop
+
+Dashboard and **Bearings → Monitor** automatically maintain one post-trade coaching focus. The coach first addresses an active hard-rule failure, then recurring reviewed issues, then a weak pillar component, and finally missing reviewed evidence. Each focus gives one practical next-trade behavior, a target, and a reviewed-trade sample; it never approves, blocks, or changes an MT5 order.
+
+An active experiment remains in place until its sample is ready for reflection. A new hard-rule safety focus can supersede it, with the previous focus retained in history. Quick Risk Checks and Deep Reviews both advance coaching progress; only a Deep Review can add detailed behavioural, issue, and context evidence.
 
 ## Logical trades and scaled positions
 
@@ -285,7 +291,7 @@ Do not change a strategy solely because of a small recent P&L sample. Make one h
 
 ### Coaching focus
 
-The Monitor can hold one active journal-wide **Coaching focus**. Choose either to build reviewed evidence, improve one criterion, or eliminate one recurring violation. Record a hypothesis and one action, then collect 5, 10, or 20 newly reviewed trades before resolving it as completed or abandoned with a reflection. Risk focuses are account-specific; Psychology and Trading system focuses are trader-wide. The app does not change a focus automatically.
+The Monitor can hold one active journal-wide **Coaching focus**. Trade Compass automatically selects a focus from reviewed evidence, then tracks 5, 10, or 20 newly reviewed trades before it is resolved with a reflection. Psychology focuses use trader-wide evidence; Risk and Trading system focuses use the selected account, because each account represents an independent system. The app remains post-trade and advisory.
 
 ### Optional review context
 

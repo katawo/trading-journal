@@ -1292,7 +1292,7 @@ def test_saving_a_period_review_twice_for_the_same_period_is_rejected(tmp_path) 
         )
 
 
-def test_trader_wide_pillars_accept_a_period_review_saved_against_any_account(tmp_path) -> None:
+def test_only_psychology_accepts_a_period_review_saved_against_any_account(tmp_path) -> None:
     repository, primary_id = _repository(tmp_path)
     repository.register_mt5_account(
         display_name="Secondary",
@@ -1314,11 +1314,14 @@ def test_trader_wide_pillars_accept_a_period_review_saved_against_any_account(tm
             repository.save_pillar_roadmap_evidence(account_id=primary_id, pillar="psychology", level=level, item_key=item_key, completed=True, evidence_note="Documented evidence.")
         for item_key, _ in ROADMAP_ITEMS["risk"][level]:
             repository.save_pillar_roadmap_evidence(account_id=primary_id, pillar="risk", level=level, item_key=item_key, completed=True, evidence_note="Documented evidence.")
+        for item_key, _ in ROADMAP_ITEMS["system"][level]:
+            repository.save_pillar_roadmap_evidence(account_id=primary_id, pillar="system", level=level, item_key=item_key, completed=True, evidence_note="Documented evidence.")
     now = datetime(2026, 8, 17, tzinfo=timezone.utc)
 
     before = {item.pillar: item for item in FrameworkService(repository).roadmap_status(primary_id, now=now)}
     assert not before["psychology"].can_complete_current_level
     assert not before["risk"].can_complete_current_level
+    assert not before["system"].can_complete_current_level
 
     secondary_trade_id = _import_position(repository, secondary.id, position_id="secondary-only")
     _review(repository, secondary.id, secondary_trade_id, secondary_policy, strategy)
@@ -1333,6 +1336,7 @@ def test_trader_wide_pillars_accept_a_period_review_saved_against_any_account(tm
     after = {item.pillar: item for item in FrameworkService(repository).roadmap_status(primary_id, now=now)}
     assert after["psychology"].can_complete_current_level, "Psychology is trader-wide and should accept any account's period review"
     assert not after["risk"].can_complete_current_level, "Risk is account-scoped and must not unlock from another account's period review"
+    assert not after["system"].can_complete_current_level, "System is account-scoped and must not unlock from another account's period review"
 
 
 def test_corrections_archive_complete_prior_assessment(tmp_path) -> None:
@@ -1358,7 +1362,7 @@ def test_greenfield_database_rejects_legacy_framework_schema(tmp_path) -> None:
         SQLiteJournalRepository(database).initialize()
 
 
-def test_psychology_and_system_scores_are_trader_wide_while_risk_is_account_scoped(tmp_path) -> None:
+def test_psychology_is_trader_wide_while_risk_and_system_are_account_scoped(tmp_path) -> None:
     repository, primary_id = _repository(tmp_path)
     repository.register_mt5_account(display_name="Secondary", login="654321", broker_server="DemoBroker-Live", account_currency="USD", export_file_path="", opening_balance="1000")
     secondary = repository.find_active_mt5_account("654321", "DemoBroker-Live")
@@ -1384,8 +1388,10 @@ def test_psychology_and_system_scores_are_trader_wide_while_risk_is_account_scop
     scores = {item.pillar: item for item in FrameworkService(repository).pillar_scores(primary_id)}
 
     assert scores["psychology"].reviewed_total == 2
-    assert scores["system"].reviewed_total == 2
+    assert scores["system"].reviewed_total == 1
     assert scores["risk"].reviewed_total == 1
+    assert scores["psychology"].scope == "Trader-wide"
+    assert scores["system"].scope == "Selected account"
 
 
 def test_post_loss_discipline_uses_the_next_trader_wide_review(tmp_path) -> None:
@@ -1552,9 +1558,153 @@ def test_framework_focus_is_single_and_tracks_manual_reviews(tmp_path) -> None:
     )
     with pytest.raises(ValueError, match="Resolve the active"):
         repository.save_framework_focus(
-            account_id=None, pillar="system", metric_kind="manual_evidence", metric_code=None,
+            account_id=account_id, pillar="system", metric_kind="manual_evidence", metric_code=None,
             hypothesis="x", action_text="x", baseline_value=None, target_value="5", target_reviews=5, starting_manual_reviews=1,
         )
     current, progress = FrameworkService(repository).focus_progress(account_id)
     assert current == focus
     assert progress is not None and progress.reviews_completed == 0 and not progress.ready_to_evaluate
+
+
+def test_system_focus_requires_an_account(tmp_path) -> None:
+    repository, _account_id = _repository(tmp_path)
+
+    with pytest.raises(ValueError, match="Trading system focus needs an account"):
+        repository.save_framework_focus(
+            account_id=None, pillar="system", metric_kind="manual_evidence", metric_code=None,
+            hypothesis="Collect system evidence.", action_text="Review the next trade.", baseline_value="0", target_value="5",
+            target_reviews=5, starting_manual_reviews=0,
+        )
+
+
+def test_system_focus_progress_uses_its_account_only(tmp_path) -> None:
+    repository, primary_id = _repository(tmp_path)
+    repository.register_mt5_account(
+        display_name="Secondary", login="654321", broker_server="DemoBroker-Live", account_currency="USD", export_file_path="", opening_balance="1000",
+    )
+    secondary = repository.find_active_mt5_account("654321", "DemoBroker-Live")
+    assert secondary is not None
+    primary_policy, secondary_policy = _policy(repository, primary_id), _policy(repository, secondary.id)
+    strategy = _strategy(repository)
+    first = _import_position(repository, primary_id, position_id="primary-focus-baseline")
+    _review(repository, primary_id, first, primary_policy, strategy)
+    focus = repository.save_framework_focus(
+        account_id=primary_id, pillar="system", metric_kind="manual_evidence", metric_code=None,
+        hypothesis="Collect account-specific system evidence.", action_text="Review the next trade.", baseline_value="1", target_value="5",
+        target_reviews=5, starting_manual_reviews=1,
+    )
+    repository.upsert_mt5_positions(
+        secondary.id,
+        [MT5PositionExport(
+            schema_version=3, account_login="654321", broker_server="DemoBroker-Live", account_currency="USD", position_id="secondary-focus", symbol="XAUUSD", direction="long",
+            entry_time="2026-08-10T08:00:00+00:00", exit_time="2026-08-10T09:00:00+00:00", entry_price="3300", exit_price="3320", volume="0.1",
+            gross_pnl="20", commission="0", swap="0", fees="0", net_pnl="20", entry_deal_count=1,
+        )], "positions.csv", "secondary-focus-hash",
+    )
+    secondary_trade = next(item.id for item in repository.list_closed_trades_for_review(secondary.id) if item.position_id == "secondary-focus")
+    _review(repository, secondary.id, secondary_trade, secondary_policy, strategy)
+
+    current, progress = FrameworkService(repository).focus_progress(secondary.id)
+
+    assert current == focus
+    assert progress is not None and progress.reviews_completed == 0
+
+
+def test_coach_creates_an_evidence_focus_from_the_same_reviewed_trade_predicate(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy, _strategy_profile = _policy(repository, account_id), _strategy(repository)
+    trade_id = _import_position(repository, account_id, initial_risk_amount="5")
+    score = FrameworkService(repository).trade_process_scores(account_id)[0]
+    repository.approve_auto_review(
+        account_id=account_id, trade_id=trade_id, risk_policy_id=policy.id,
+        risk_evidence_source=score.risk_evidence_source, risk_policy_state=score.risk_policy_state,
+        actual_risk_amount=score.actual_risk_amount,
+        criterion_grades=FrameworkService._automatic_review_grades(score.risk_policy_state),
+    )
+
+    focus = FrameworkService(repository).ensure_coaching_focus(account_id)
+    current, progress = FrameworkService(repository).focus_progress(account_id)
+
+    assert focus is not None and focus.source == "coach" and focus.metric_kind == "manual_evidence"
+    assert current == focus
+    assert progress is not None and progress.reviews_completed == 0
+
+
+def test_hard_rule_coaching_supersedes_an_active_focus(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    initial = _import_position(repository, account_id, position_id="initial")
+    _review(repository, account_id, initial, policy, strategy)
+    active = repository.save_framework_focus(
+        account_id=None, pillar="psychology", metric_kind="manual_evidence", metric_code=None,
+        hypothesis="x", action_text="x", baseline_value="1", target_value="5", target_reviews=5, starting_manual_reviews=1,
+    )
+    unsafe = _import_position(repository, account_id, position_id="unsafe")
+    _review(repository, account_id, unsafe, policy, strategy, hard_rules=("stop_widened",), action="Keep the stop fixed.")
+
+    focus = FrameworkService(repository).ensure_coaching_focus(account_id)
+
+    assert focus is not None and focus.source == "coach" and focus.metric_code == "stop_widened"
+    assert repository.get_active_framework_focus() == focus
+    prior = next(item for item in repository.list_framework_focuses() if item.id == active.id)
+    assert prior.status == "superseded"
+
+
+def test_resolved_coach_focus_is_not_reopened_from_the_same_sample(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    trade_id = _import_position(repository, account_id)
+    _review(repository, account_id, trade_id, policy, strategy, hard_rules=("stop_widened",), action="Keep the stop fixed.")
+    focus = FrameworkService(repository).ensure_coaching_focus(account_id)
+    assert focus is not None
+    repository.resolve_framework_focus(focus_id=focus.id, outcome="completed", resolution_note="Recorded the safety lesson.")
+
+    assert FrameworkService(repository).ensure_coaching_focus(account_id) is None
+
+
+def test_resolved_risk_focus_on_another_account_does_not_suppress_coaching(tmp_path) -> None:
+    repository, primary_id = _repository(tmp_path)
+    repository.register_mt5_account(
+        display_name="Secondary", login="654321", broker_server="DemoBroker-Live", account_currency="USD", export_file_path="", opening_balance="1000",
+    )
+    secondary = repository.find_active_mt5_account("654321", "DemoBroker-Live")
+    assert secondary is not None
+    primary_policy, secondary_policy = _policy(repository, primary_id), _policy(repository, secondary.id)
+    strategy = _strategy(repository)
+    previous = repository.save_framework_focus(
+        account_id=primary_id, pillar="risk", metric_kind="violation", metric_code="stop_widened",
+        hypothesis="x", action_text="x", baseline_value="1", target_value="0", target_reviews=5, starting_manual_reviews=0,
+        source="coach", coach_reason="Hard-rule safety focus.",
+    )
+    repository.resolve_framework_focus(focus_id=previous.id, outcome="completed", resolution_note="Resolved on the primary account.")
+    repository.upsert_mt5_positions(
+        secondary.id,
+        [MT5PositionExport(
+            schema_version=3, account_login="654321", broker_server="DemoBroker-Live", account_currency="USD", position_id="secondary-unsafe", symbol="XAUUSD", direction="long",
+            entry_time="2026-08-10T08:00:00+00:00", exit_time="2026-08-10T09:00:00+00:00", entry_price="3300", exit_price="3320", volume="0.1",
+            gross_pnl="20", commission="0", swap="0", fees="0", net_pnl="20", entry_deal_count=1,
+        )], "positions.csv", "secondary-unsafe-hash",
+    )
+    secondary_trade = next(item.id for item in repository.list_closed_trades_for_review(secondary.id) if item.position_id == "secondary-unsafe")
+    _review(repository, secondary.id, secondary_trade, secondary_policy, strategy, hard_rules=("stop_widened",), action="Keep the stop fixed.")
+
+    focus = FrameworkService(repository).ensure_coaching_focus(secondary.id)
+
+    assert focus is not None and focus.pillar == "risk" and focus.account_id == secondary.id
+
+
+def test_coach_keeps_the_actual_weak_component_and_excludes_pre_focus_reviews(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    tags = ("fomo_or_chase", "revenge", "emotional_sizing", "post_loss_reset", "daily_limit")
+    for index, tag in enumerate(tags):
+        trade_id = _import_position(repository, account_id, position_id=f"weak-{index}")
+        _review(repository, account_id, trade_id, policy, strategy, grades={**ALL_PASS, "rule_adherence": "fail"}, tags=(tag,), action="Use the written rule.")
+
+    recommendation = FrameworkService(repository).coaching_recommendation(account_id)
+    focus = FrameworkService(repository).ensure_coaching_focus(account_id)
+    _current, progress = FrameworkService(repository).focus_progress(account_id)
+
+    assert recommendation is not None and recommendation.metric_kind == "component" and recommendation.metric_code == "rule_adherence"
+    assert focus is not None and focus.baseline_value == "0"
+    assert progress is not None and progress.reviews_completed == 0 and progress.current_value is None
