@@ -11,6 +11,12 @@ The desktop release keeps Trade Compass on the same computer as MT5. It is not a
 
 No Python, web server, Cloud account, MT5 password, or broker password is required by the portable bundle.
 
+## One instance at a time
+
+Only one journal application may run per data directory, because two of them would write the same SQLite database. Starting it a second time does not start a second copy: the new launch detects the running one, brings its window (or browser tab) back to the front, and closes itself immediately. Starting it while the first copy is still coming up waits for that startup to finish rather than reporting an error.
+
+The lock is held by the operating system for as long as the application runs, so it is released automatically if the application is force-quit or the machine loses power. A crashed session never blocks the next start, and there is no lock file to delete by hand.
+
 ## MT5 sync
 
 1. Compile and attach `mql5/TradingJournalSync.mq5` to one chart in each MT5 terminal.
@@ -27,9 +33,9 @@ All durable state remains local:
 - Windows: `%LOCALAPPDATA%\TradingJournal`
 - Linux: `$XDG_DATA_HOME/trading-journal`, or `~/.local/share/trading-journal`
 
-This directory contains `trading_journal.db`, the current sync status, and `desktop.log`. Back up the directory while the application is closed to preserve accounts, positions, logical-trade grouping, reviews, policies, strategies, and three-pillar evidence. Updating the portable bundle does not change this directory.
+This directory contains `trading_journal.db`, the current sync status, `desktop-runtime.json` (the address of the running instance, rewritten on every start), and `desktop.log`. Back up the directory while the application is closed to preserve accounts, positions, logical-trade grouping, reviews, policies, strategies, and three-pillar evidence. Updating the portable bundle does not change this directory.
 
-Use **Settings → Quit desktop journal** before replacing the application bundle or copying a backup. To recover from a failed launch, inspect `desktop.log`; deleting only `mt5-sync-status.json` is safe, but deleting the SQLite database permanently removes the local journal.
+Use **Settings → Quit desktop journal** before replacing the application bundle or copying a backup. To recover from a failed launch, inspect `desktop.log`; deleting only `mt5-sync-status.json` or `desktop-runtime.json` is safe, but deleting the SQLite database permanently removes the local journal. On Linux, `reset_desktop_instances.sh` (shipped next to the executable) stops every running copy and clears this transient state.
 
 ## Reset a local database
 

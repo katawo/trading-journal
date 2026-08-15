@@ -4,6 +4,8 @@ import csv
 from pathlib import Path
 import subprocess
 import sys
+import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -126,9 +128,79 @@ def test_desktop_server_port_uses_an_optional_explicit_port() -> None:
         desktop_server_port({"TRADING_JOURNAL_DESKTOP_PORT": "70000"})
 
 
-def test_desktop_lock_discards_a_legacy_lock_when_its_pid_was_reused(monkeypatch, tmp_path: Path) -> None:
+def _hold_lock_in_subprocess(lock_path: Path) -> subprocess.Popen[str]:
+    """Own the lock from a separate process so the kernel is the arbiter."""
+
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import sys;"
+            "from trading_journal.desktop import DesktopInstanceLock;"
+            "lock = DesktopInstanceLock(__import__('pathlib').Path(sys.argv[1]));"
+            "lock.acquire();"
+            "print('held', flush=True);"
+            "__import__('time').sleep(120)",
+            str(lock_path),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert process.stdout is not None
+    assert process.stdout.readline().strip() == "held", process.communicate()[1]
+    return process
+
+
+def test_desktop_lock_blocks_a_second_process_while_the_owner_lives(tmp_path: Path) -> None:
     from trading_journal import desktop
 
+    lock_path = tmp_path / "desktop.lock"
+    owner = _hold_lock_in_subprocess(lock_path)
+    try:
+        with pytest.raises(desktop.DesktopAlreadyRunningError, match="already running"):
+            DesktopInstanceLock(lock_path).acquire()
+    finally:
+        owner.kill()
+        owner.wait(timeout=10)
+
+
+def test_desktop_lock_is_released_by_the_kernel_when_the_owner_is_force_killed(tmp_path: Path) -> None:
+    """A SIGKILLed owner must not leave a lock that blocks the next launch."""
+
+    lock_path = tmp_path / "desktop.lock"
+    owner = _hold_lock_in_subprocess(lock_path)
+    owner.kill()
+    owner.wait(timeout=10)
+
+    lock = DesktopInstanceLock(lock_path)
+    lock.acquire()
+    lock.release()
+
+
+def test_desktop_lock_can_be_reacquired_after_a_clean_release(tmp_path: Path) -> None:
+    lock_path = tmp_path / "desktop.lock"
+    first = DesktopInstanceLock(lock_path)
+    first.acquire()
+    first.release()
+
+    second = DesktopInstanceLock(lock_path)
+    second.acquire()
+    second.release()
+
+
+def _force_pid_file_lock(monkeypatch) -> None:
+    """Exercise the fallback used only where neither fcntl nor msvcrt exists."""
+
+    from trading_journal import desktop
+
+    monkeypatch.setattr(desktop, "_os_lock_functions", lambda: None)
+
+
+def test_desktop_pid_file_lock_discards_a_legacy_lock_when_its_pid_was_reused(monkeypatch, tmp_path: Path) -> None:
+    from trading_journal import desktop
+
+    _force_pid_file_lock(monkeypatch)
     lock_path = tmp_path / "desktop.lock"
     lock_path.write_text("12345", encoding="utf-8")
     monkeypatch.setattr(desktop, "_process_is_running", lambda process_id: process_id == 12345)
@@ -142,16 +214,51 @@ def test_desktop_lock_discards_a_legacy_lock_when_its_pid_was_reused(monkeypatch
     assert not lock_path.exists()
 
 
-def test_desktop_lock_keeps_a_current_process_identity(monkeypatch, tmp_path: Path) -> None:
+def test_desktop_pid_file_lock_keeps_a_current_process_identity(monkeypatch, tmp_path: Path) -> None:
     from trading_journal import desktop
 
+    _force_pid_file_lock(monkeypatch)
     lock_path = tmp_path / "desktop.lock"
     lock_path.write_text("12345:linux:stable-start-time", encoding="utf-8")
     monkeypatch.setattr(desktop, "_process_is_running", lambda process_id: process_id == 12345)
     monkeypatch.setattr(desktop, "_process_start_identity", lambda process_id: "linux:stable-start-time" if process_id == 12345 else None)
 
-    with pytest.raises(RuntimeError, match="already running"):
+    with pytest.raises(desktop.DesktopAlreadyRunningError, match="already running"):
         DesktopInstanceLock(lock_path).acquire()
+
+
+def test_process_start_identity_uses_the_win32_creation_time(monkeypatch) -> None:
+    """Returning None here would make the PID-file lock treat live owners as stale."""
+
+    import ctypes
+
+    from trading_journal import desktop
+
+    class FakeKernel32:
+        def OpenProcess(self, _access, _inherit, _process_id):
+            return 1
+
+        def GetProcessTimes(self, _handle, creation_ref, _exit_ref, _kernel_ref, _user_ref):
+            creation_ref._obj.dwHighDateTime = 31
+            creation_ref._obj.dwLowDateTime = 4242
+            return 1
+
+        def CloseHandle(self, _handle):
+            return None
+
+    monkeypatch.setattr(ctypes, "windll", SimpleNamespace(kernel32=FakeKernel32()), raising=False)
+
+    assert desktop._process_start_identity(4242, platform="win32") == "windows:31:4242"
+
+
+def test_process_start_identity_is_present_for_a_live_local_process() -> None:
+    from trading_journal import desktop
+    import os
+
+    identity = desktop._process_start_identity(os.getpid())
+
+    if sys.platform.startswith("linux") or sys.platform.startswith("win"):
+        assert identity
 
 
 def test_process_probe_treats_an_invalid_windows_handle_as_not_running(monkeypatch) -> None:
@@ -385,6 +492,321 @@ def test_desktop_sync_control_consumes_a_manual_request_and_keeps_shutdown_separ
     control.request_reset()
     assert control.consume_reset_request() is True
     assert control.consume_reset_request() is False
+
+    control.request_show()
+    assert control.show_requested() is True
+    assert control.consume_show_request() is True
+    assert control.consume_show_request() is False
+    assert control.shutdown_requested() is False
+
+
+def test_desktop_runtime_record_round_trips_and_ignores_a_dead_owner(monkeypatch, tmp_path: Path) -> None:
+    from trading_journal import desktop
+
+    record = desktop.DesktopRuntimeRecord(tmp_path / "desktop-runtime.json")
+    assert record.read() is None
+
+    record.write(port=18501, url="http://127.0.0.1:18501", process_id=4242)
+
+    monkeypatch.setattr(desktop, "_process_is_running", lambda process_id: process_id == 4242)
+    payload = record.read()
+    assert payload is not None
+    assert payload["url"] == "http://127.0.0.1:18501"
+    assert payload["port"] == 18501
+
+    monkeypatch.setattr(desktop, "_process_is_running", lambda _process_id: False)
+    assert record.read() is None
+
+    record.clear()
+    assert not (tmp_path / "desktop-runtime.json").exists()
+
+
+def test_desktop_runtime_record_ignores_a_corrupt_file(tmp_path: Path) -> None:
+    from trading_journal import desktop
+
+    path = tmp_path / "desktop-runtime.json"
+    path.write_text("{not json", encoding="utf-8")
+
+    assert desktop.DesktopRuntimeRecord(path).read() is None
+
+
+def _headless_desktop_environment(monkeypatch, tmp_path: Path):
+    from trading_journal import desktop
+
+    monkeypatch.setenv("TRADING_JOURNAL_DESKTOP_DATA_DIR", str(tmp_path / "desktop-data"))
+    monkeypatch.setenv("TRADING_JOURNAL_DESKTOP_HEADLESS", "1")
+    monkeypatch.delenv("TRADING_JOURNAL_DESKTOP_PORT", raising=False)
+    monkeypatch.delenv("TRADING_JOURNAL_DB", raising=False)
+    return desktop.desktop_runtime_paths()
+
+
+def test_second_launch_reopens_the_running_instance_without_starting_children(monkeypatch, tmp_path: Path) -> None:
+    """The whole point of the lock: a second launch must never start a second server."""
+
+    from trading_journal import desktop
+
+    paths = _headless_desktop_environment(monkeypatch, tmp_path)
+    paths.data_directory.mkdir(parents=True, exist_ok=True)
+
+    owner_lock = DesktopInstanceLock(paths.lock_path)
+    owner_lock.acquire()
+    desktop.DesktopRuntimeRecord(paths.runtime_record_path).write(
+        port=18501, url="http://127.0.0.1:18501", process_id=4242
+    )
+    monkeypatch.setattr(desktop, "_process_is_running", lambda process_id: process_id == 4242)
+
+    def forbidden_popen(*_args, **_kwargs):
+        raise AssertionError("a second launch must not spawn any child process")
+
+    monkeypatch.setattr(desktop.subprocess, "Popen", forbidden_popen)
+    monkeypatch.setattr(desktop, "_SHOW_REQUEST_TIMEOUT_SECONDS", 0.5)
+    monkeypatch.setattr(desktop, "_STARTUP_HANDOFF_TIMEOUT_SECONDS", 2.0)
+
+    try:
+        exit_code = desktop.start_desktop_application()
+    finally:
+        owner_lock.release()
+
+    assert exit_code == 0
+    # The owner never answered, so the request is cleared rather than left behind.
+    assert not paths.show_request_path.exists()
+
+
+def test_second_launch_returns_after_the_running_instance_acknowledges(monkeypatch, tmp_path: Path) -> None:
+    import threading
+
+    from trading_journal import desktop
+
+    paths = _headless_desktop_environment(monkeypatch, tmp_path)
+    paths.data_directory.mkdir(parents=True, exist_ok=True)
+    control = DesktopSyncControl(
+        paths.sync_request_path, paths.shutdown_request_path, paths.reset_request_path, paths.show_request_path
+    )
+    record = desktop.DesktopRuntimeRecord(paths.runtime_record_path)
+    record.write(port=18501, url="http://127.0.0.1:18501", process_id=4242)
+    monkeypatch.setattr(desktop, "_process_is_running", lambda process_id: process_id == 4242)
+
+    acknowledged = threading.Event()
+
+    def owner() -> None:
+        for _ in range(100):
+            if control.consume_show_request():
+                acknowledged.set()
+                return
+            time.sleep(0.02)
+
+    responder = threading.Thread(target=owner, daemon=True)
+    responder.start()
+
+    payload = record.read()
+    assert payload is not None
+    exit_code = desktop._show_running_instance(paths, control, payload)
+    responder.join(timeout=5)
+
+    assert exit_code == 0
+    assert acknowledged.is_set()
+
+
+def test_second_launch_reports_when_the_running_instance_cannot_be_located(monkeypatch, tmp_path: Path) -> None:
+    from trading_journal import desktop
+
+    paths = _headless_desktop_environment(monkeypatch, tmp_path)
+    paths.data_directory.mkdir(parents=True, exist_ok=True)
+    control = DesktopSyncControl(
+        paths.sync_request_path, paths.shutdown_request_path, paths.reset_request_path, paths.show_request_path
+    )
+    monkeypatch.setattr(desktop, "_STARTUP_HANDOFF_TIMEOUT_SECONDS", 0.5)
+
+    owner_lock = DesktopInstanceLock(paths.lock_path)
+    owner_lock.acquire()
+    try:
+        exit_code = desktop._acquire_lock_or_show_running_instance(
+            paths, control, desktop.DesktopRuntimeRecord(paths.runtime_record_path), DesktopInstanceLock(paths.lock_path)
+        )
+    finally:
+        owner_lock.release()
+
+    assert exit_code == 1
+    assert "already running" in paths.log_path.read_text(encoding="utf-8")
+
+
+def test_second_launch_waits_for_a_starting_instance_to_publish_its_address(monkeypatch, tmp_path: Path) -> None:
+    """A double-click races the owner's startup; it must wait, not error out."""
+
+    from trading_journal import desktop
+
+    paths = _headless_desktop_environment(monkeypatch, tmp_path)
+    paths.data_directory.mkdir(parents=True, exist_ok=True)
+    control = DesktopSyncControl(
+        paths.sync_request_path, paths.shutdown_request_path, paths.reset_request_path, paths.show_request_path
+    )
+    record = desktop.DesktopRuntimeRecord(paths.runtime_record_path)
+    monkeypatch.setattr(desktop, "_process_is_running", lambda process_id: process_id == 4242)
+    monkeypatch.setattr(desktop, "_SHOW_REQUEST_TIMEOUT_SECONDS", 0.3)
+
+    owner_lock = DesktopInstanceLock(paths.lock_path)
+    owner_lock.acquire()
+
+    def publish_later() -> None:
+        time.sleep(0.6)
+        record.write(port=18501, url="http://127.0.0.1:18501", process_id=4242)
+
+    publisher = threading.Thread(target=publish_later, daemon=True)
+    publisher.start()
+    try:
+        exit_code = desktop._acquire_lock_or_show_running_instance(
+            paths, control, record, DesktopInstanceLock(paths.lock_path)
+        )
+    finally:
+        publisher.join(timeout=5)
+        owner_lock.release()
+
+    assert exit_code == 0
+
+
+def test_second_launch_takes_over_when_the_owner_dies_while_it_waits(monkeypatch, tmp_path: Path) -> None:
+    from trading_journal import desktop
+
+    paths = _headless_desktop_environment(monkeypatch, tmp_path)
+    paths.data_directory.mkdir(parents=True, exist_ok=True)
+    control = DesktopSyncControl(
+        paths.sync_request_path, paths.shutdown_request_path, paths.reset_request_path, paths.show_request_path
+    )
+    owner = _hold_lock_in_subprocess(paths.lock_path)
+
+    def kill_owner_later() -> None:
+        time.sleep(0.6)
+        owner.kill()
+
+    killer = threading.Thread(target=kill_owner_later, daemon=True)
+    killer.start()
+
+    contender = DesktopInstanceLock(paths.lock_path)
+    try:
+        outcome = desktop._acquire_lock_or_show_running_instance(
+            paths, control, desktop.DesktopRuntimeRecord(paths.runtime_record_path), contender
+        )
+    finally:
+        killer.join(timeout=5)
+        owner.wait(timeout=10)
+
+    # None means "this launch now owns the journal" rather than handing off.
+    assert outcome is None
+    contender.release()
+
+
+def test_desktop_window_raises_itself_when_a_second_launch_asks_for_it(tmp_path: Path) -> None:
+    from trading_journal import desktop
+
+    calls: list[str] = []
+
+    class FakeWindow:
+        def restore(self) -> None:
+            calls.append("restore")
+
+        def show(self) -> None:
+            calls.append("show")
+            raise RuntimeError("a GUI backend failure must not kill the window")
+
+    control = DesktopSyncControl(
+        tmp_path / "sync.request", tmp_path / "shutdown.request", show_path=tmp_path / "show.request"
+    )
+    control.request_show()
+
+    watcher = threading.Thread(
+        target=desktop._raise_window_on_show_request,
+        args=(FakeWindow(), control),
+        kwargs={"poll_seconds": 0.01},
+        daemon=True,
+    )
+    watcher.start()
+    for _ in range(200):
+        if calls:
+            break
+        time.sleep(0.01)
+
+    assert calls == ["restore", "show"]
+    assert not (tmp_path / "show.request").exists()
+
+
+class _FakeChild:
+    """A child process that has already exited, so the supervisor loop ends."""
+
+    def __init__(self, command: list[str]) -> None:
+        self.command = command
+        self.returncode = 0
+
+    def poll(self) -> int:
+        return 0
+
+
+def _run_supervisor_with_fake_children(monkeypatch, tmp_path: Path, *, healthy_after: int):
+    from trading_journal import desktop
+
+    paths = _headless_desktop_environment(monkeypatch, tmp_path)
+    paths.data_directory.mkdir(parents=True, exist_ok=True)
+    spawned: list[list[str]] = []
+    published: list[dict[str, object]] = []
+    ports = iter([18501, 18502, 18503, 18504])
+
+    def fake_popen(command, **_kwargs):
+        spawned.append(command)
+        return _FakeChild(command)
+
+    def capture_record(_self, *, port: int, url: str, process_id: int | None = None) -> None:
+        published.append({"port": port, "url": url})
+
+    monkeypatch.setattr(desktop, "_database_is_ready", lambda _path: (False, None))
+    monkeypatch.setattr(desktop, "desktop_server_port", lambda: next(ports))
+    monkeypatch.setattr(desktop.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(desktop.DesktopRuntimeRecord, "write", capture_record)
+
+    attempts = {"count": 0}
+
+    def wait_for_server(_url, _process, timeout_seconds: float = 30.0) -> bool:
+        attempts["count"] += 1
+        return attempts["count"] >= healthy_after
+
+    monkeypatch.setattr(desktop, "_wait_for_server", wait_for_server)
+    return desktop, paths, spawned, published
+
+
+def test_supervisor_retries_on_a_fresh_port_when_the_server_cannot_bind(monkeypatch, tmp_path: Path) -> None:
+    desktop, paths, spawned, published = _run_supervisor_with_fake_children(monkeypatch, tmp_path, healthy_after=2)
+
+    assert desktop.start_desktop_application() == 0
+
+    server_ports = [command[command.index("--port") + 1] for command in spawned if "--run-server" in command]
+    assert server_ports == ["18501", "18502"]
+    # A second launch must be pointed at the port that actually came up.
+    assert published == [{"port": 18502, "url": "http://127.0.0.1:18502"}]
+    assert not paths.runtime_record_path.exists()
+
+
+def test_supervisor_gives_up_after_repeated_server_start_failures(monkeypatch, tmp_path: Path) -> None:
+    desktop, paths, spawned, published = _run_supervisor_with_fake_children(monkeypatch, tmp_path, healthy_after=99)
+
+    with pytest.raises(RuntimeError, match="could not start"):
+        desktop.start_desktop_application()
+
+    server_ports = [command[command.index("--port") + 1] for command in spawned if "--run-server" in command]
+    assert server_ports == ["18501", "18502", "18503"]
+    assert published == []
+    # A failed launch must not leave the journal locked for the next attempt.
+    lock = DesktopInstanceLock(paths.lock_path)
+    lock.acquire()
+    lock.release()
+
+
+def test_supervisor_keeps_the_configured_port_instead_of_retrying(monkeypatch, tmp_path: Path) -> None:
+    desktop, _paths, spawned, _published = _run_supervisor_with_fake_children(monkeypatch, tmp_path, healthy_after=99)
+    monkeypatch.setenv("TRADING_JOURNAL_DESKTOP_PORT", "18501")
+
+    with pytest.raises(RuntimeError, match="could not start"):
+        desktop.start_desktop_application()
+
+    server_commands = [command for command in spawned if "--run-server" in command]
+    assert len(server_commands) == 1
 
 
 def test_reset_desktop_database_removes_only_journal_database_state(tmp_path: Path) -> None:

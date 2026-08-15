@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import signal
 import socket
 import subprocess
 import sys
@@ -39,9 +40,14 @@ SYNC_STATUS_ENVIRONMENT_KEY = "TRADING_JOURNAL_SYNC_STATUS"
 SYNC_REQUEST_ENVIRONMENT_KEY = "TRADING_JOURNAL_SYNC_REQUEST"
 SHUTDOWN_REQUEST_ENVIRONMENT_KEY = "TRADING_JOURNAL_SHUTDOWN_REQUEST"
 RESET_REQUEST_ENVIRONMENT_KEY = "TRADING_JOURNAL_RESET_REQUEST"
+SHOW_REQUEST_ENVIRONMENT_KEY = "TRADING_JOURNAL_SHOW_REQUEST"
+RUNTIME_RECORD_ENVIRONMENT_KEY = "TRADING_JOURNAL_DESKTOP_RUNTIME"
 DESKTOP_BROWSER_FALLBACK_ENVIRONMENT_KEY = "TRADING_JOURNAL_DESKTOP_BROWSER"
 DESKTOP_HEADLESS_ENVIRONMENT_KEY = "TRADING_JOURNAL_DESKTOP_HEADLESS"
 _DEFAULT_SYNC_INTERVAL_SECONDS = 5.0
+_SERVER_START_ATTEMPTS = 3
+_SHOW_REQUEST_TIMEOUT_SECONDS = 5.0
+_STARTUP_HANDOFF_TIMEOUT_SECONDS = 35.0
 
 
 @dataclass(frozen=True)
@@ -54,7 +60,9 @@ class DesktopRuntimePaths:
     sync_request_path: Path
     shutdown_request_path: Path
     reset_request_path: Path
+    show_request_path: Path
     lock_path: Path
+    runtime_record_path: Path
     log_path: Path
 
 
@@ -103,7 +111,9 @@ def desktop_runtime_paths(
         sync_request_path=Path(env.get(SYNC_REQUEST_ENVIRONMENT_KEY, str(data_directory / "mt5-sync.request"))).expanduser(),
         shutdown_request_path=Path(env.get(SHUTDOWN_REQUEST_ENVIRONMENT_KEY, str(data_directory / "shutdown.request"))).expanduser(),
         reset_request_path=Path(env.get(RESET_REQUEST_ENVIRONMENT_KEY, str(data_directory / "reset.request"))).expanduser(),
+        show_request_path=Path(env.get(SHOW_REQUEST_ENVIRONMENT_KEY, str(data_directory / "show.request"))).expanduser(),
         lock_path=data_directory / "desktop.lock",
+        runtime_record_path=Path(env.get(RUNTIME_RECORD_ENVIRONMENT_KEY, str(data_directory / "desktop-runtime.json"))).expanduser(),
         log_path=data_directory / "desktop.log",
     )
 
@@ -180,6 +190,8 @@ def desktop_environment(paths: DesktopRuntimePaths) -> dict[str, str]:
             SYNC_REQUEST_ENVIRONMENT_KEY: str(paths.sync_request_path),
             SHUTDOWN_REQUEST_ENVIRONMENT_KEY: str(paths.shutdown_request_path),
             RESET_REQUEST_ENVIRONMENT_KEY: str(paths.reset_request_path),
+            SHOW_REQUEST_ENVIRONMENT_KEY: str(paths.show_request_path),
+            RUNTIME_RECORD_ENVIRONMENT_KEY: str(paths.runtime_record_path),
         }
     )
     return environment
@@ -294,10 +306,17 @@ class DesktopSyncStatusStore:
 class DesktopSyncControl:
     """Small file-based signals between the browser UI and the desktop supervisor."""
 
-    def __init__(self, request_path: Path, shutdown_path: Path, reset_path: Path | None = None) -> None:
+    def __init__(
+        self,
+        request_path: Path,
+        shutdown_path: Path,
+        reset_path: Path | None = None,
+        show_path: Path | None = None,
+    ) -> None:
         self._request_path = request_path
         self._shutdown_path = shutdown_path
         self._reset_path = reset_path or shutdown_path.with_name("reset.request")
+        self._show_path = show_path or shutdown_path.with_name("show.request")
 
     def request_sync(self) -> None:
         self._write_request(self._request_path)
@@ -307,6 +326,11 @@ class DesktopSyncControl:
 
     def request_reset(self) -> None:
         self._write_request(self._reset_path)
+
+    def request_show(self) -> None:
+        """Ask the running instance to bring its own UI back to the front."""
+
+        self._write_request(self._show_path)
 
     def consume_sync_request(self) -> bool:
         return self._consume_request(self._request_path)
@@ -322,6 +346,15 @@ class DesktopSyncControl:
 
     def clear_reset_request(self) -> None:
         self._clear_request(self._reset_path)
+
+    def consume_show_request(self) -> bool:
+        return self._consume_request(self._show_path)
+
+    def show_requested(self) -> bool:
+        return self._show_path.is_file()
+
+    def clear_show_request(self) -> None:
+        self._clear_request(self._show_path)
 
     @staticmethod
     def _write_request(path: Path) -> None:
@@ -379,37 +412,159 @@ class DesktopSyncWorker:
             time.sleep(min(1.0, max(0.05, next_sync_at - time.monotonic())))
 
 
+class DesktopAlreadyRunningError(RuntimeError):
+    """Raised when a live supervisor already owns this data directory."""
+
+
+class DesktopRuntimeRecord:
+    """Publish where the running instance can be reached.
+
+    The server port is ephemeral, so a second launch has no other way to find
+    the live UI. This is deliberately a separate file from the lock: on Windows
+    the lock is a byte-range lock, and readers of a locked range can fail.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+
+    def write(self, *, port: int, url: str, process_id: int | None = None) -> None:
+        payload = {
+            "pid": os.getpid() if process_id is None else process_id,
+            "port": port,
+            "url": url,
+            "started_at": datetime.now(timezone.utc).isoformat(),
+        }
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = self._path.with_suffix(self._path.suffix + ".tmp")
+        temporary_path.write_text(json.dumps(payload), encoding="utf-8")
+        temporary_path.replace(self._path)
+
+    def read(self) -> dict[str, Any] | None:
+        """Return the record only while the process that wrote it is alive."""
+
+        try:
+            payload = json.loads(self._path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        process_id = payload.get("pid")
+        url = payload.get("url")
+        if not isinstance(process_id, int) or not isinstance(url, str) or not url:
+            return None
+        if not _process_is_running(process_id):
+            return None
+        return payload
+
+    def clear(self) -> None:
+        try:
+            self._path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _os_lock_functions() -> tuple[Any, Any] | None:
+    """Return (lock, unlock) primitives that the kernel releases on process death."""
+
+    try:
+        import fcntl
+    except ImportError:
+        pass
+    else:
+
+        def lock_posix(descriptor: int) -> None:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+        def unlock_posix(descriptor: int) -> None:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+
+        return lock_posix, unlock_posix
+
+    try:
+        import msvcrt
+    except ImportError:
+        return None
+
+    def lock_windows(descriptor: int) -> None:
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+
+    def unlock_windows(descriptor: int) -> None:
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+
+    return lock_windows, unlock_windows
+
+
 class DesktopInstanceLock:
-    """Prevent two desktop supervisors from writing one journal concurrently."""
+    """Prevent two desktop supervisors from writing one journal concurrently.
+
+    The lock is held by the operating system for the lifetime of the owning
+    process, so it is released even when that process is force-killed (SIGKILL,
+    Task Manager "End Task", power loss). That makes a stale lock structurally
+    impossible instead of something the next launch has to detect and clean up.
+    The lock file itself is never unlinked: removing it would let two launches
+    lock two different inodes and both believe they won.
+    """
 
     def __init__(self, path: Path) -> None:
         self._path = path
         self._owned = False
+        self._descriptor: int | None = None
 
     def acquire(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
+        primitives = _os_lock_functions()
+        if primitives is None:
+            self._acquire_without_os_lock()
+            return
+        lock, _ = primitives
+        descriptor = os.open(self._path, os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            lock(descriptor)
+        except OSError as error:
+            os.close(descriptor)
+            raise DesktopAlreadyRunningError("Trade Compass desktop is already running") from error
+        self._descriptor = descriptor
+        self._owned = True
+
+    def release(self) -> None:
+        if not self._owned:
+            return
+        self._owned = False
+        descriptor, self._descriptor = self._descriptor, None
+        if descriptor is None:
+            # Fallback path: the file's existence is the lock, so it must go.
+            try:
+                self._path.unlink()
+            except FileNotFoundError:
+                pass
+            return
+        primitives = _os_lock_functions()
+        try:
+            if primitives is not None:
+                primitives[1](descriptor)
+        except OSError:
+            pass
+        finally:
+            os.close(descriptor)
+
+    def _acquire_without_os_lock(self) -> None:
+        """Advisory PID-file lock for platforms with neither fcntl nor msvcrt."""
+
         for _ in range(2):
             try:
                 descriptor = os.open(self._path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
             except FileExistsError:
                 if self._clear_stale_lock():
                     continue
-                raise RuntimeError("Trade Compass desktop is already running")
+                raise DesktopAlreadyRunningError("Trade Compass desktop is already running")
             with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
                 process_id = os.getpid()
                 handle.write(f"{process_id}:{_process_start_identity(process_id) or ''}")
             self._owned = True
             return
-        raise RuntimeError("Trade Compass desktop is already running")
-
-    def release(self) -> None:
-        if not self._owned:
-            return
-        try:
-            self._path.unlink()
-        except FileNotFoundError:
-            pass
-        self._owned = False
+        raise DesktopAlreadyRunningError("Trade Compass desktop is already running")
 
     def _clear_stale_lock(self) -> bool:
         try:
@@ -475,10 +630,17 @@ def _process_is_running(process_id: int, *, platform: str | None = None) -> bool
     return True
 
 
-def _process_start_identity(process_id: int) -> str | None:
-    """Return a Linux process creation marker to prevent PID-reuse lock errors."""
+def _process_start_identity(process_id: int, *, platform: str | None = None) -> str | None:
+    """Return a process creation marker to prevent PID-reuse lock errors.
 
-    if not sys.platform.startswith("linux"):
+    Returning None here makes a PID-file lock treat every recorded owner as
+    stale, so it must produce a real identity on every supported platform.
+    """
+
+    resolved_platform = sys.platform if platform is None else platform
+    if resolved_platform.startswith("win"):
+        return _windows_process_start_identity(process_id)
+    if not resolved_platform.startswith("linux"):
         return None
     try:
         stat = Path(f"/proc/{process_id}/stat").read_text(encoding="utf-8")
@@ -486,6 +648,38 @@ def _process_start_identity(process_id: int) -> str | None:
         # (the start time) is therefore the 20th token after its closing bracket.
         return f"linux:{stat.rsplit(')', 1)[1].split()[19]}"
     except (IndexError, OSError):
+        return None
+
+
+def _windows_process_start_identity(process_id: int) -> str | None:
+    """Return a Win32 process creation time, the Windows PID-reuse guard."""
+
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, process_id)
+        if not handle:
+            return None
+        try:
+            creation_time = wintypes.FILETIME()
+            exit_time = wintypes.FILETIME()
+            kernel_time = wintypes.FILETIME()
+            user_time = wintypes.FILETIME()
+            if not kernel32.GetProcessTimes(
+                handle,
+                ctypes.byref(creation_time),
+                ctypes.byref(exit_time),
+                ctypes.byref(kernel_time),
+                ctypes.byref(user_time),
+            ):
+                return None
+            return f"windows:{creation_time.dwHighDateTime}:{creation_time.dwLowDateTime}"
+        finally:
+            kernel32.CloseHandle(handle)
+    except (AttributeError, OSError, ValueError):
         return None
 
 
@@ -623,20 +817,48 @@ def run_streamlit_server(port: int, parent_process_id: int | None = None) -> Non
     )
 
 
-def run_desktop_window(url: str, parent_process_id: int | None = None) -> None:
+def _raise_window_on_show_request(window: Any, control: DesktopSyncControl, *, poll_seconds: float = 0.5) -> None:
+    """Bring this window forward when a second launch asks for the running UI."""
+
+    while True:
+        if control.consume_show_request():
+            for method_name in ("restore", "show"):
+                method = getattr(window, method_name, None)
+                if method is None:
+                    continue
+                try:
+                    method()
+                except Exception:  # noqa: BLE001 - a GUI backend must never kill the window
+                    pass
+        time.sleep(poll_seconds)
+
+
+def _start_show_request_watcher(window: Any, show_request_path: Path | None) -> None:
+    if window is None or show_request_path is None:
+        return
+    control = DesktopSyncControl(
+        show_request_path.with_name("mt5-sync.request"),
+        show_request_path.with_name("shutdown.request"),
+        show_path=show_request_path,
+    )
+    threading.Thread(target=_raise_window_on_show_request, args=(window, control), daemon=True).start()
+
+
+def run_desktop_window(url: str, parent_process_id: int | None = None, show_request_path: Path | None = None) -> None:
     """Open the local app in a native window instead of an external browser."""
 
     import webview
 
     _start_parent_watchdog(parent_process_id)
 
-    webview.create_window(
+    window = webview.create_window(
         DISPLAY_NAME,
         url,
         width=1440,
         height=920,
         min_size=(1024, 700),
     )
+    _start_show_request_watcher(window, show_request_path)
     # pywebview owns the GUI loop and only returns after the user closes the
     # window. It must run in this dedicated child process's main thread.
     webview.start()
@@ -658,20 +880,143 @@ def run_sync_worker(
     worker.run(interval_seconds=interval_seconds, parent_process_id=parent_process_id)
 
 
+def _report(log_path: Path, message: str) -> None:
+    """Surface a launcher message on stdout and in the durable desktop log.
+
+    The frozen Windows build is windowed and has no console, so the log file is
+    the only channel a user can inspect after a failed or handed-off launch.
+    """
+
+    try:
+        # A windowed frozen build has no usable stdout; the log still must get it.
+        print(message)
+    except (AttributeError, OSError, ValueError):
+        pass
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(f"{message}\n")
+    except OSError:
+        pass
+
+
+def _acquire_lock_or_show_running_instance(
+    paths: DesktopRuntimePaths,
+    control: DesktopSyncControl,
+    record: DesktopRuntimeRecord,
+    lock: DesktopInstanceLock,
+) -> int | None:
+    """Take ownership of the journal, or hand this launch to whoever has it.
+
+    Returns None once this process owns the lock, or the exit code to use after
+    handing over. The lock is retried throughout because the owner may still be
+    starting up (its address is not published until its server answers) or may
+    die while we wait, in which case this launch takes over instead of failing.
+    """
+
+    deadline = time.monotonic() + _STARTUP_HANDOFF_TIMEOUT_SECONDS
+    while True:
+        try:
+            lock.acquire()
+            return None
+        except DesktopAlreadyRunningError:
+            pass
+        payload = record.read()
+        if payload is not None:
+            return _show_running_instance(paths, control, payload)
+        if time.monotonic() >= deadline:
+            _report(
+                paths.log_path,
+                f"{DISPLAY_NAME} is already running, but its address could not be read. "
+                f"Close the running instance first, or see {paths.log_path}.",
+            )
+            return 1
+        time.sleep(0.25)
+
+
+def _show_running_instance(paths: DesktopRuntimePaths, control: DesktopSyncControl, payload: dict[str, Any]) -> int:
+    """Reopen the UI of the supervisor that already owns this data directory.
+
+    This launch must never start a server, worker, or window of its own: a
+    second SQLite writer against the same journal is exactly what the instance
+    lock exists to prevent.
+    """
+
+    url = str(payload["url"])
+    control.request_show()
+    deadline = time.monotonic() + _SHOW_REQUEST_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        if not control.show_requested():
+            _report(paths.log_path, f"{DISPLAY_NAME} is already running; reopened the existing window at {url}.")
+            return 0
+        time.sleep(0.1)
+
+    # The owner is alive but not consuming requests (a wedged GUI loop, or an
+    # older build with no show channel). Opening the URL still reaches it.
+    control.clear_show_request()
+    if not desktop_headless():
+        webbrowser.open(url, new=1)
+        _report(paths.log_path, f"{DISPLAY_NAME} is already running; opened {url} in the default browser.")
+        return 0
+    _report(paths.log_path, f"{DISPLAY_NAME} is already running at {url}.")
+    return 0
+
+
+def _install_supervisor_signal_handlers() -> None:
+    """Unwind through the supervisor's cleanup when a terminating signal lands.
+
+    Without this, SIGTERM skips the finally block that stops the children and
+    releases the lock -- and SIGTERM is exactly what reset_desktop_instances.sh
+    sends.
+    """
+
+    def stop(signal_number: int, _frame: Any) -> None:
+        raise SystemExit(128 + signal_number)
+
+    for name in ("SIGTERM", "SIGINT", "SIGHUP"):
+        signal_number = getattr(signal, name, None)
+        if signal_number is None:
+            continue
+        try:
+            signal.signal(signal_number, stop)
+        except (OSError, ValueError):
+            # Not the main thread, or unsupported on this platform.
+            continue
+
+
+def _server_port_is_configured(environment: dict[str, str] | None = None) -> bool:
+    return bool((os.environ if environment is None else environment).get(DESKTOP_PORT_ENVIRONMENT_KEY, "").strip())
+
+
 def start_desktop_application() -> int:
     paths = desktop_runtime_paths()
     ensure_desktop_runtime_paths(paths)
+    control = DesktopSyncControl(
+        paths.sync_request_path,
+        paths.shutdown_request_path,
+        paths.reset_request_path,
+        paths.show_request_path,
+    )
+    record = DesktopRuntimeRecord(paths.runtime_record_path)
     lock = DesktopInstanceLock(paths.lock_path)
-    lock.acquire()
-    control = DesktopSyncControl(paths.sync_request_path, paths.shutdown_request_path, paths.reset_request_path)
-    control.clear_shutdown_request()
-    control.clear_reset_request()
-    environment = desktop_environment(paths)
-    log_handle = paths.log_path.open("a", encoding="utf-8")
+    handoff_code = _acquire_lock_or_show_running_instance(paths, control, record, lock)
+    if handoff_code is not None:
+        return handoff_code
+
+    log_handle: Any = None
     window_process: subprocess.Popen[Any] | None = None
     try:
-        port = desktop_server_port()
-        url = f"http://127.0.0.1:{port}"
+        _install_supervisor_signal_handlers()
+        control.clear_shutdown_request()
+        control.clear_reset_request()
+        control.clear_show_request()
+        environment = desktop_environment(paths)
+        log_handle = paths.log_path.open("a", encoding="utf-8")
+        # The port is chosen just before the server starts, and only once: the
+        # reset restart below must come back on the same URL because the browser
+        # bridge in presentation/desktop_reset_restart.py reloads that exact URL.
+        port: int | None = None
+        url = ""
         browser_opened = False
         while True:
             server_process: subprocess.Popen[Any] | None = None
@@ -709,19 +1054,44 @@ def start_desktop_application() -> int:
                         stdout=log_handle,
                         stderr=subprocess.STDOUT,
                     )
-                server_process = subprocess.Popen(
-                    _child_command("--run-server", "--port", str(port), "--parent-pid", str(os.getpid())),
-                    env=environment,
-                    cwd=application_resource_root(),
-                    stdin=subprocess.DEVNULL,
-                    stdout=log_handle,
-                    stderr=subprocess.STDOUT,
-                )
-                if not _wait_for_server(url, server_process):
-                    raise RuntimeError(f"Trade Compass could not start. See {paths.log_path}")
+                # _available_loopback_port() closes its probe socket before the
+                # child binds it, so another process can steal the port in
+                # between. Retry on a fresh port, but only on the first launch:
+                # a reset restart is pinned to the URL the browser will reload.
+                attempts = 1 if port is not None or _server_port_is_configured() else _SERVER_START_ATTEMPTS
+                for attempt in range(attempts):
+                    if port is None:
+                        port = desktop_server_port()
+                        url = f"http://127.0.0.1:{port}"
+                    server_process = subprocess.Popen(
+                        _child_command("--run-server", "--port", str(port), "--parent-pid", str(os.getpid())),
+                        env=environment,
+                        cwd=application_resource_root(),
+                        stdin=subprocess.DEVNULL,
+                        stdout=log_handle,
+                        stderr=subprocess.STDOUT,
+                    )
+                    if _wait_for_server(url, server_process):
+                        break
+                    _terminate(server_process)
+                    server_process = None
+                    if attempt + 1 >= attempts:
+                        raise RuntimeError(f"Trade Compass could not start. See {paths.log_path}")
+                    log_handle.write(f"Local server did not start on port {port}; retrying on another local port.\n")
+                    log_handle.flush()
+                    port = None
+                record.write(port=port, url=url)
                 if desktop_window_enabled() and window_process is None:
                     window_process = subprocess.Popen(
-                        _child_command("--desktop-window", "--url", url, "--parent-pid", str(os.getpid())),
+                        _child_command(
+                            "--desktop-window",
+                            "--url",
+                            url,
+                            "--parent-pid",
+                            str(os.getpid()),
+                            "--show-request",
+                            str(paths.show_request_path),
+                        ),
                         env=environment,
                         cwd=application_resource_root(),
                         stdin=subprocess.DEVNULL,
@@ -733,6 +1103,12 @@ def start_desktop_application() -> int:
                     browser_opened = True
                 worker_death_logged = False
                 while server_process.poll() is None and not control.shutdown_requested() and not control.consume_reset_request():
+                    # A second launch asks for the UI instead of starting its
+                    # own. The native window raises itself from its own process,
+                    # so only the browser path is handled here.
+                    if window_process is None and control.consume_show_request() and not desktop_headless():
+                        webbrowser.open(url, new=1)
+                        browser_opened = True
                     if window_process is not None and window_process.poll() is not None:
                         if window_process.returncode == 0:
                             return 0
@@ -759,7 +1135,10 @@ def start_desktop_application() -> int:
             reset_desktop_database(paths)
     finally:
         _terminate(window_process)
-        log_handle.close()
+        record.clear()
+        control.clear_show_request()
+        if log_handle is not None:
+            log_handle.close()
         lock.release()
 
 
@@ -791,6 +1170,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--status", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--request", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--shutdown-request", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--show-request", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--parent-pid", type=int, help=argparse.SUPPRESS)
     parser.add_argument("--sync-interval", type=float, default=_DEFAULT_SYNC_INTERVAL_SECONDS, help=argparse.SUPPRESS)
     parser.add_argument("--self-check", action="store_true", help="Validate bundled resources and writable local data paths.")
@@ -809,7 +1189,7 @@ def main(argv: list[str] | None = None) -> int:
     if arguments.desktop_window:
         if not arguments.url:
             raise SystemExit("--desktop-window requires --url")
-        run_desktop_window(arguments.url, arguments.parent_pid)
+        run_desktop_window(arguments.url, arguments.parent_pid, arguments.show_request)
         return 0
     if arguments.sync_worker:
         required = (arguments.database, arguments.status, arguments.request, arguments.shutdown_request)
