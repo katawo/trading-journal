@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "trade-compass"
-version = "0.1.8"
+version = "0.1.9"
 description = "Trade Compass: a local-first trade review app with read-only MT5 imports"
 requires-python = ">=3.12"
 dependencies = [
@@ -17,10 +17,17 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=9,<10", "httpx2"]
+dev = ["pytest>=9,<10", "httpx>=0.28,<1"]
 desktop = [
   "pyinstaller>=6.10,<7",
   "pywebview>=5,<7",
+  # Pin pythonnet (pulled transitively by pywebview on Windows for the native
+  # window). Unpinned, a CI Python change resolved a pythonnet whose bundled
+  # Python.Runtime.dll no longer matched clr_loader, so the frozen app failed
+  # with "Failed to resolve Python.Runtime.Loader.Initialize". 3.0.5 is the
+  # mature 3.0.x line with Python 3.12 support. Windows-only so the Linux
+  # desktop build never tries to install it.
+  "pythonnet==3.0.5; sys_platform == 'win32'",
 ]
 multiuser = [
   "streamlit-authenticator>=0.4,<0.5",
