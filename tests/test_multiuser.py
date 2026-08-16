@@ -70,6 +70,7 @@ def test_resolve_username_for_token_with_no_tokens_file(tmp_path) -> None:
 
 
 def test_resolve_username_for_token_matches_a_stored_hash(tmp_path) -> None:
+    pytest.importorskip("yaml", reason="pyyaml is only installed via the optional 'multiuser'/'ingestion' extras")
     environment = {"TRADING_JOURNAL_MULTIUSER_DATA_DIR": str(tmp_path)}
     token = "example-token-value"
     tokens_path = ingestion_tokens_path(environment=environment)

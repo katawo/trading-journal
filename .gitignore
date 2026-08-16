@@ -26,3 +26,4 @@ release/
 
 # MetaEditor compilation artifacts
 *.ex5
+deploy/.env

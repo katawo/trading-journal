@@ -4,6 +4,9 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+
+pytest.importorskip("fastapi", reason="fastapi is only installed via the optional 'ingestion' extra")
+
 from fastapi.testclient import TestClient
 
 from trading_journal.application.multiuser import generate_ingestion_token, hash_ingestion_token, ingestion_tokens_path, user_database_path
