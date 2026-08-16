@@ -1,0 +1,18 @@
+[Unit]
+Description=Trade Compass - MT5 ingestion API
+After=network.target
+
+[Service]
+Type=simple
+User=trade-compass
+WorkingDirectory=/opt/trade-compass
+Environment=TRADING_JOURNAL_MULTIUSER_DATA_DIR=/var/lib/trade-compass
+ExecStart=/opt/trade-compass/.venv/bin/uvicorn trading_journal.ingestion_api:app --app-dir src --host 127.0.0.1 --port 8600
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/trade-compass
+
+[Install]
+WantedBy=multi-user.target

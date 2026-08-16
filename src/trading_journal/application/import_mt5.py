@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import json
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -97,9 +98,61 @@ class MT5ImportService:
         except ValidationError as error:
             raise ImportValidationError(f"Invalid MT5 export row: {error.errors()[0]['msg']}") from error
 
-        if any(position.schema_version != schema_version for position in positions):
+        return self._import_validated_positions(
+            positions,
+            source_path=str(path),
+            source_hash=file_hash,
+            source_file_mtime_ns=source_file_mtime_ns,
+            source_file_size=source_file_size,
+        )
+
+    def import_json_positions(self, rows: list[dict], *, source_label: str) -> ImportResult:
+        """Import already-parsed rows pushed directly by an MT5 EA (no local file).
+
+        Shares every validation/idempotency rule with the CSV path via
+        _import_validated_positions, including the required-column check (enforced
+        there via model_fields_set, since JSON rows have no shared header row to
+        check up front like the CSV path does) - only how the rows first arrive
+        differs.
+        """
+        if not rows:
+            raise ImportValidationError("MT5 export contains no completed positions")
+        try:
+            positions = [MT5PositionExport.model_validate(row) for row in rows]
+        except ValidationError as error:
+            raise ImportValidationError(f"Invalid MT5 export row: {error.errors()[0]['msg']}") from error
+
+        payload_hash = hashlib.sha256(json.dumps(rows, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+        return self._import_validated_positions(positions, source_path=source_label, source_hash=payload_hash)
+
+    def _import_validated_positions(
+        self,
+        positions: list[MT5PositionExport],
+        *,
+        source_path: str,
+        source_hash: str,
+        source_file_mtime_ns: int | None = None,
+        source_file_size: int | None = None,
+    ) -> ImportResult:
+        if not positions:
+            raise ImportValidationError("MT5 export contains no completed positions")
+        schema_versions = {position.schema_version for position in positions}
+        if len(schema_versions) != 1:
             raise ImportValidationError("An MT5 export must use one schema version")
-        live_account_balance = None
+        schema_version = schema_versions.pop()
+        if schema_version not in SUPPORTED_SCHEMA_VERSIONS:
+            supported = " or ".join(str(version) for version in sorted(SUPPORTED_SCHEMA_VERSIONS))
+            raise ImportValidationError(f"Unsupported MT5 export schema version; expected {supported}")
+
+        # CSV rows always have every header key present (DictReader), so this is a
+        # no-op there; JSON rows have no shared header row, so this is the only
+        # guard against a schema_version=5 payload that omits v5 evidence fields -
+        # which would otherwise silently degrade into outcome-inferred R multiples.
+        for position in positions:
+            missing = V5_REQUIRED_COLUMNS - position.model_fields_set
+            if missing:
+                raise ImportValidationError(f"MT5 export is missing required columns: {', '.join(sorted(missing))}")
+
         balances = {position.account_balance for position in positions}
         if None in balances:
             raise ImportValidationError("Schema-v5 MT5 export requires an account balance on every position")
@@ -122,8 +175,8 @@ class MT5ImportService:
         return self._repository.upsert_mt5_positions(
             account.id,
             positions,
-            str(path),
-            file_hash,
+            source_path,
+            source_hash,
             live_account_balance=live_account_balance,
             source_file_mtime_ns=source_file_mtime_ns,
             source_file_size=source_file_size,

@@ -1,0 +1,30 @@
+# Keep the build context small and, critically, keep local runtime data and
+# secrets out of the image layers.
+.git
+.gitignore
+
+# Local databases, credentials, ingestion tokens, sync state — never bake these in.
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# Virtualenv and caches
+.venv/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Desktop/PyInstaller build outputs (irrelevant to the web image)
+build/
+dist/
+release/
+
+# Sibling MQL5 repo artefacts and backtests
+__backtests__/
+*.ex5
+
+# Deploy env holding the cookie-key secret
+deploy/.env

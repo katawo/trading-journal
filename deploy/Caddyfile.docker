@@ -1,0 +1,21 @@
+# Caddy config for the DOCKER deployment (deploy/docker-compose.yml).
+#
+# Differs from deploy/Caddyfile (the host/systemd one) only in the upstream
+# addresses: here Caddy runs as a container and reaches the app services by their
+# compose service names over the internal network, not 127.0.0.1.
+#
+# Replace the placeholder domain; Caddy fetches the Let's Encrypt certificate
+# automatically. For a quick local test without TLS, replace the domain line
+# with `:80 {` and use plain http://localhost.
+
+your-domain.example.com {
+	handle /ingest* {
+		reverse_proxy ingestion:8600
+	}
+	handle /health {
+		reverse_proxy ingestion:8600
+	}
+	handle {
+		reverse_proxy web:8501
+	}
+}

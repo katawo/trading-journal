@@ -1,0 +1,21 @@
+[Unit]
+Description=Trade Compass - multi-user Streamlit web app
+After=network.target
+
+[Service]
+Type=simple
+User=trade-compass
+WorkingDirectory=/opt/trade-compass
+Environment=TRADING_JOURNAL_MULTIUSER_MODE=1
+Environment=TRADING_JOURNAL_MULTIUSER_DATA_DIR=/var/lib/trade-compass
+# Generate with: python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+Environment=TRADING_JOURNAL_MULTIUSER_COOKIE_KEY=REPLACE_WITH_A_LONG_RANDOM_SECRET
+ExecStart=/opt/trade-compass/.venv/bin/python -m streamlit run app.py --server.address 127.0.0.1 --server.port 8501 --server.headless true
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/trade-compass
+
+[Install]
+WantedBy=multi-user.target

@@ -28,6 +28,7 @@ from trading_journal.presentation.framework import (
     render_framework_dashboard,
 )
 from trading_journal.presentation.global_alert_bubble import GlobalAlertItem, render_global_alert_bubble
+from trading_journal.presentation.multiuser_auth import current_username, is_multiuser_mode, render_login_gate, render_logout_control, user_database_path
 from trading_journal.presentation.desktop_reset_restart import render_desktop_reset_restart_bridge
 from trading_journal.presentation.i18n import (
     LANGUAGES,
@@ -65,7 +66,7 @@ def application_version() -> str:
     try:
         return version("trade-compass")
     except PackageNotFoundError:
-        return "0.1.6"
+        return "0.1.7"
 
 
 def supported_mt5_schema_versions() -> str:
@@ -285,7 +286,14 @@ def render_global_framework_alert_bubble(repo: SQLiteJournalRepository) -> None:
     )
 
 
-@st.cache_resource(show_spinner=False)
+# Bounds how many distinct SQLite engines (one per multiuser database_path) stay
+# open at once; irrelevant for desktop/single-user web mode, which only ever hit
+# one path, but multiuser mode would otherwise keep growing this forever as more
+# users log in over the life of the process.
+_REPOSITORY_CACHE_MAX_ENTRIES = 64
+
+
+@st.cache_resource(show_spinner=False, max_entries=_REPOSITORY_CACHE_MAX_ENTRIES)
 def _cached_repository(database_path: str) -> SQLiteJournalRepository:
     repo = SQLiteJournalRepository(database_path)
     repo.initialize()
@@ -293,7 +301,13 @@ def _cached_repository(database_path: str) -> SQLiteJournalRepository:
 
 
 def repository() -> SQLiteJournalRepository:
-    database_path = Path(os.environ.get("TRADING_JOURNAL_DB", "data/trading_journal.db")).resolve()
+    if is_multiuser_mode():
+        username = current_username()
+        if username is None:
+            raise RuntimeError("repository() called before a multiuser login succeeded")
+        database_path = user_database_path(username).resolve()
+    else:
+        database_path = Path(os.environ.get("TRADING_JOURNAL_DB", "data/trading_journal.db")).resolve()
     database_path.parent.mkdir(parents=True, exist_ok=True)
     return _cached_repository(str(database_path))
 
@@ -1458,6 +1472,10 @@ def render_strategy_analytics(repo: SQLiteJournalRepository) -> None:
 
 
 def main() -> None:
+    if is_multiuser_mode():
+        username = render_login_gate()
+        if username is None:
+            return
     try:
         repo = repository()
     except JournalDatabaseResetRequiredError as error:
@@ -1481,7 +1499,10 @@ def main() -> None:
     st.session_state.setdefault("display_language", settings.display_language)
     install_streamlit_translations()
     render_pending_toast()
-    st.set_page_config(page_title=tr("Trade Compass"), page_icon="📈", layout="wide")
+    if not is_multiuser_mode():
+        st.set_page_config(page_title=tr("Trade Compass"), page_icon="📈", layout="wide")
+    if is_multiuser_mode():
+        render_logout_control()
     with st.sidebar:
         selected_language = st.selectbox(
             "Language",

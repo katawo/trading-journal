@@ -1,0 +1,90 @@
+# Docker deployment for the optional multi-user web mode — an alternative to the
+# systemd + host-Caddy setup (deploy/*.service + deploy/Caddyfile). Pick one.
+#
+#   cp deploy/.env.example deploy/.env   # then set a real cookie key
+#   docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d --build
+#
+# Only Caddy publishes host ports; the app services are reachable solely on the
+# internal compose network (the container equivalent of the desktop loopback
+# rule). See deploy/README-docker.md.
+
+services:
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: trade-compass-web:latest
+    command:
+      - python
+      - -m
+      - streamlit
+      - run
+      - app.py
+      - --server.address=0.0.0.0
+      - --server.port=8501
+      - --server.headless=true
+    environment:
+      TRADING_JOURNAL_MULTIUSER_MODE: "1"
+      TRADING_JOURNAL_MULTIUSER_DATA_DIR: /data
+      # Signs the "stay logged in" cookie. `:?` fails the launch loudly if unset,
+      # instead of silently falling back to an insecure built-in default.
+      TRADING_JOURNAL_MULTIUSER_COOKIE_KEY: ${TRADING_JOURNAL_MULTIUSER_COOKIE_KEY:?set a long random secret in deploy/.env}
+    volumes:
+      - tc-data:/data
+    expose:
+      - "8501"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8501/_stcore/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  ingestion:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: trade-compass-web:latest
+    command:
+      - uvicorn
+      - trading_journal.ingestion_api:app
+      - --app-dir=src
+      - --host=0.0.0.0
+      - --port=8600
+    environment:
+      TRADING_JOURNAL_MULTIUSER_DATA_DIR: /data
+    volumes:
+      - tc-data:/data
+    expose:
+      - "8600"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8600/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  caddy:
+    image: caddy:2
+    depends_on:
+      - web
+      - ingestion
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile.docker:/etc/caddy/Caddyfile:ro
+      # Persist ACME certs/state — without this every recreate re-requests a
+      # certificate and can hit Let's Encrypt rate limits.
+      - caddy-data:/data
+      - caddy-config:/config
+    restart: unless-stopped
+
+volumes:
+  # SQLite lives here. A local named volume is on the VM's own disk — never point
+  # this at NFS/network storage, where SQLite's file locking is unsafe.
+  tc-data:
+  caddy-data:
+  caddy-config:

@@ -8,6 +8,14 @@
 // Relative to MT5 Common Files. Each account receives its own CSV filename.
 input string CommonFilesSubfolder = "trading_journal";
 input int InpSafetyExportSeconds = 60;
+// Optional, additive: pushes the same completed positions to a remote journal
+// backend over HTTPS, in addition to the local CSV above (see
+// /home/thang/.claude/plans/which-free-server-platform-whimsical-sky.md).
+// Leave BackendUrl empty to keep the EA exactly as before. BackendUrl must be
+// whitelisted once in Tools > Options > Expert Advisors > "Allow WebRequest
+// for listed URL" - MT5 gives no programmatic way to do this.
+input string BackendUrl = "";
+input string ApiToken = "";
 
 int    g_last_export_count=-1;
 string g_last_export_time="";
@@ -15,6 +23,21 @@ string g_last_export_time="";
 string ExportFileName()
   {
    return CommonFilesSubfolder+"\\"+(string)AccountInfoInteger(ACCOUNT_LOGIN)+"_positions.csv";
+  }
+
+string AckLedgerFileName()
+  {
+   return CommonFilesSubfolder+"\\"+(string)AccountInfoInteger(ACCOUNT_LOGIN)+"_backend_acked.txt";
+  }
+
+string JsonEscape(const string value)
+  {
+   string result=value;
+   StringReplace(result,"\\","\\\\");
+   StringReplace(result,"\"","\\\"");
+   StringReplace(result,"\n"," ");
+   StringReplace(result,"\r"," ");
+   return result;
   }
 
 string ServerTime(datetime value)
@@ -63,6 +86,82 @@ bool ContainsPosition(const ulong &positions[],const ulong position_id)
       if(positions[index]==position_id)
          return true;
    return false;
+  }
+
+// The backend push has no delivery guarantee beyond its own HTTP response, so
+// only a confirmed 2xx marks a position acknowledged here - a dropped
+// connection or backend outage simply retries next cycle, and a position
+// already on the backend from a prior successful push is never resent.
+void LoadAckedIds(ulong &acked_ids[])
+  {
+   ArrayResize(acked_ids,0);
+   int handle=FileOpen(AckLedgerFileName(),FILE_READ|FILE_TXT|FILE_COMMON|FILE_ANSI,CP_UTF8);
+   if(handle==INVALID_HANDLE)
+      return;
+   while(!FileIsEnding(handle))
+     {
+      string line=FileReadString(handle);
+      if(StringLen(line)>0)
+        {
+         int size=ArraySize(acked_ids);
+         ArrayResize(acked_ids,size+1);
+         acked_ids[size]=(ulong)StringToInteger(line);
+        }
+     }
+   FileClose(handle);
+  }
+
+void AppendAckedId(const ulong position_id)
+  {
+   int handle=FileOpen(AckLedgerFileName(),FILE_READ|FILE_WRITE|FILE_TXT|FILE_COMMON|FILE_ANSI,CP_UTF8);
+   if(handle==INVALID_HANDLE)
+      return;
+   FileSeek(handle,0,SEEK_END);
+   FileWriteString(handle,(string)position_id+"\n");
+   FileClose(handle);
+  }
+
+// Blocking by design (see WebRequest's own docs) - only ever called from the
+// OnTimer path, never from OnTradeTransaction, so a slow/cold backend can
+// never stall trade-event handling.
+bool PushToBackend(const string json_body)
+  {
+   string headers="Content-Type: application/json\r\nAuthorization: Bearer "+ApiToken+"\r\n";
+   char post_data[];
+   StringToCharArray(json_body,post_data,0,StringLen(json_body),CP_UTF8);
+   char result[];
+   string result_headers;
+   ResetLastError();
+   int status=WebRequest("POST",BackendUrl,headers,10000,post_data,result,result_headers);
+   if(status==-1)
+     {
+      PrintFormat("Trading Journal backend push failed to send: %d (is %s whitelisted in Tools > Options > Expert Advisors > Allow WebRequest?)",GetLastError(),BackendUrl);
+      return false;
+     }
+   if(status<200 || status>=300)
+     {
+      PrintFormat("Trading Journal backend push rejected: HTTP %d",status);
+      return false;
+     }
+   return true;
+  }
+
+void PushPendingPositions(const string &pending_json_rows[],const ulong &pending_ids[])
+  {
+   string body="{\"positions\":[";
+   for(int index=0;index<ArraySize(pending_json_rows);index++)
+     {
+      if(index>0)
+         body+=",";
+      body+=pending_json_rows[index];
+     }
+   body+="]}";
+   if(PushToBackend(body))
+     {
+      for(int index=0;index<ArraySize(pending_ids);index++)
+         AppendAckedId(pending_ids[index]);
+      PrintFormat("Trading Journal backend push complete: %d position(s)",ArraySize(pending_ids));
+     }
   }
 
 // Reconstruct the balance immediately before a position's first entry from
@@ -128,7 +227,8 @@ bool PreTradeBalance(const ulong position_id,const double current_balance,double
    return false;
   }
 
-bool ExportPosition(const ulong position_id,const int handle,const double account_balance,const int server_utc_offset_minutes)
+bool ExportPosition(const ulong position_id,const int handle,const double account_balance,const int server_utc_offset_minutes,
+                    const ulong &acked_ids[],string &pending_json_rows[],ulong &pending_ids[])
   {
    double pretrade_balance=0.0;
    bool has_pretrade_balance=PreTradeBalance(position_id,account_balance,pretrade_balance);
@@ -250,18 +350,59 @@ bool ExportPosition(const ulong position_id,const int handle,const double accoun
              OptionalNumber(initial_reward,2),
              DoubleToString(account_balance,2),
              has_pretrade_balance ? DoubleToString(pretrade_balance,2) : "");
+
+   if(StringLen(BackendUrl)>0 && !ContainsPosition(acked_ids,position_id))
+     {
+      string json="{";
+      json+="\"schema_version\":"+(string)TRADING_JOURNAL_SCHEMA_VERSION+",";
+      json+="\"account_login\":\""+JsonEscape((string)AccountInfoInteger(ACCOUNT_LOGIN))+"\",";
+      json+="\"broker_server\":\""+JsonEscape(AccountInfoString(ACCOUNT_SERVER))+"\",";
+      json+="\"account_currency\":\""+JsonEscape(AccountInfoString(ACCOUNT_CURRENCY))+"\",";
+      json+="\"position_id\":\""+(string)position_id+"\",";
+      json+="\"symbol\":\""+JsonEscape(symbol)+"\",";
+      json+="\"direction\":\""+direction+"\",";
+      json+="\"entry_time\":\""+ServerTime(entry_time)+"\",";
+      json+="\"exit_time\":\""+ServerTime(exit_time)+"\",";
+      json+="\"server_utc_offset_minutes\":"+(string)server_utc_offset_minutes+",";
+      json+="\"entry_price\":\""+DoubleToString(entry_price,symbol_digits)+"\",";
+      json+="\"exit_price\":\""+DoubleToString(exit_notional/exit_volume,symbol_digits)+"\",";
+      json+="\"volume\":\""+DoubleToString(entry_volume,2)+"\",";
+      json+="\"gross_pnl\":\""+DoubleToString(gross_pnl,2)+"\",";
+      json+="\"commission\":\""+DoubleToString(commission,2)+"\",";
+      json+="\"swap\":\""+DoubleToString(swap,2)+"\",";
+      json+="\"fees\":\""+DoubleToString(fees,2)+"\",";
+      json+="\"net_pnl\":\""+DoubleToString(net_pnl,2)+"\",";
+      json+="\"entry_stop_price\":\""+OptionalNumber(entry_stop,symbol_digits)+"\",";
+      json+="\"entry_target_price\":\""+OptionalNumber(entry_target,symbol_digits)+"\",";
+      json+="\"close_stop_price\":\""+OptionalNumber(close_stop,symbol_digits)+"\",";
+      json+="\"entry_magic_number\":\""+(string)entry_magic+"\",";
+      json+="\"entry_deal_count\":"+(string)entry_deal_count+",";
+      json+="\"exit_reason\":\""+DealReasonText(exit_reason)+"\",";
+      json+="\"initial_risk_amount\":\""+OptionalNumber(initial_risk,2)+"\",";
+      json+="\"initial_reward_amount\":\""+OptionalNumber(initial_reward,2)+"\",";
+      json+="\"account_balance\":\""+DoubleToString(account_balance,2)+"\",";
+      json+="\"pretrade_account_balance\":\""+(has_pretrade_balance?DoubleToString(pretrade_balance,2):"")+"\"";
+      json+="}";
+
+      int size=ArraySize(pending_json_rows);
+      ArrayResize(pending_json_rows,size+1);
+      ArrayResize(pending_ids,size+1);
+      pending_json_rows[size]=json;
+      pending_ids[size]=position_id;
+     }
    return true;
   }
 
 void ShowStatusComment()
   {
-   Comment(StringFormat("Trading Journal Sync — schema v%d\nLast export: %s · %d completed positions",
+   Comment(StringFormat("Trading Journal Sync — schema v%d\nLast export: %s · %d completed positions\nBackend push: %s",
                          TRADING_JOURNAL_SCHEMA_VERSION,
                          g_last_export_time,
-                         MathMax(g_last_export_count,0)));
+                         MathMax(g_last_export_count,0),
+                         StringLen(BackendUrl)>0 ? BackendUrl : "off"));
   }
 
-bool ExportCompletedPositions()
+bool ExportCompletedPositions(const bool allow_network_push)
   {
    if(!HistorySelect(0,TimeCurrent()))
      {
@@ -298,11 +439,20 @@ bool ExportCompletedPositions()
    int server_utc_offset_minutes=ServerUtcOffsetMinutes();
    FileWrite(handle,"schema_version","account_login","broker_server","account_currency","position_id","symbol","direction","entry_time","exit_time","server_utc_offset_minutes","entry_price","exit_price","volume","gross_pnl","commission","swap","fees","net_pnl","entry_stop_price","entry_target_price","close_stop_price","entry_magic_number","entry_deal_count","exit_reason","initial_risk_amount","initial_reward_amount","account_balance","pretrade_account_balance");
 
+   ulong acked_ids[];
+   string pending_json_rows[];
+   ulong pending_ids[];
+   if(StringLen(BackendUrl)>0)
+      LoadAckedIds(acked_ids);
+
    int exported=0;
    for(int index=0;index<ArraySize(position_ids);index++)
-      if(ExportPosition(position_ids[index],handle,account_balance,server_utc_offset_minutes))
+      if(ExportPosition(position_ids[index],handle,account_balance,server_utc_offset_minutes,acked_ids,pending_json_rows,pending_ids))
          exported++;
    FileClose(handle);
+
+   if(allow_network_push && StringLen(BackendUrl)>0 && ArraySize(pending_json_rows)>0)
+      PushPendingPositions(pending_json_rows,pending_ids);
 
    // Do not publish an empty snapshot. The app will simply remain in its
    // waiting state until the account has its first completed position.
@@ -331,8 +481,9 @@ int OnInit()
   {
    int seconds=(InpSafetyExportSeconds<1 ? 1 : InpSafetyExportSeconds);
    EventSetTimer(seconds);
-   PrintFormat("Trading Journal Sync starting — schema version %d",TRADING_JOURNAL_SCHEMA_VERSION);
-   ExportCompletedPositions();
+   PrintFormat("Trading Journal Sync starting — schema version %d%s",TRADING_JOURNAL_SCHEMA_VERSION,
+               StringLen(BackendUrl)>0 ? StringFormat(" · backend push to %s enabled",BackendUrl) : "");
+   ExportCompletedPositions(true);
    return INIT_SUCCEEDED;
   }
 
@@ -344,7 +495,7 @@ void OnDeinit(const int reason)
 
 void OnTimer()
   {
-   ExportCompletedPositions();
+   ExportCompletedPositions(true);
   }
 
 void OnTradeTransaction(const MqlTradeTransaction &transaction,
@@ -353,6 +504,8 @@ void OnTradeTransaction(const MqlTradeTransaction &transaction,
   {
    // A deal event can be an entry or a partial close. Exporting a full snapshot
    // keeps the app's completed-position aggregation correct in both cases.
+   // The backend push is deliberately deferred to the next OnTimer tick (see
+   // PushToBackend) so a slow or cold backend can never stall this handler.
    if(transaction.type==TRADE_TRANSACTION_DEAL_ADD)
-      ExportCompletedPositions();
+      ExportCompletedPositions(false);
   }

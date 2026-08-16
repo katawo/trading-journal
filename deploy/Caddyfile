@@ -1,0 +1,20 @@
+# Reverse proxy for the optional multi-user web deployment (see
+# docs/multiuser_web_deploy.md). Caddy terminates HTTPS (automatic Let's
+# Encrypt certificates - just replace the placeholder domain below) and
+# routes the MT5 ingestion endpoint to the FastAPI service, everything else
+# to the Streamlit app.
+#
+# Install: https://caddyserver.com/docs/install
+# Run:     caddy run --config /path/to/this/Caddyfile
+
+your-domain.example.com {
+	handle /ingest* {
+		reverse_proxy 127.0.0.1:8600
+	}
+	handle /health {
+		reverse_proxy 127.0.0.1:8600
+	}
+	handle {
+		reverse_proxy 127.0.0.1:8501
+	}
+}

@@ -329,6 +329,84 @@ def test_imports_the_mt5_pretrade_balance_without_modifying_missing_sl(repositor
     assert trade.entry_stop_price == "1.09500"
 
 
+def _row_dict_for_json(**overrides: object) -> dict:
+    row = {
+        "schema_version": 5,
+        "account_login": "123456",
+        "broker_server": "DemoBroker-Live",
+        "account_currency": "USD",
+        "position_id": "9001",
+        "symbol": "EURUSD",
+        "direction": "long",
+        "entry_time": "2026-08-10T08:00:00+00:00",
+        "exit_time": "2026-08-10T10:00:00+00:00",
+        "entry_price": "1.10000",
+        "exit_price": "1.10100",
+        "volume": "1.00",
+        "gross_pnl": "100.00",
+        "commission": "-1.50",
+        "swap": "-0.25",
+        "fees": "-0.25",
+        "net_pnl": "98.00",
+        "entry_stop_price": "1.09500",
+        "entry_target_price": "1.11000",
+        "close_stop_price": "1.09800",
+        "entry_magic_number": "10001",
+        "entry_deal_count": 1,
+        "exit_reason": "take_profit",
+        "initial_risk_amount": "100.00",
+        "initial_reward_amount": "200.00",
+        "account_balance": "1000.00",
+        "pretrade_account_balance": "900.00",
+        "server_utc_offset_minutes": 180,
+    }
+    row.update(overrides)
+    return row
+
+
+def test_csv_and_json_imports_of_the_same_logical_batch_produce_identical_trades(tmp_path: Path) -> None:
+    """Parity test: the CSV and HTTP-JSON entrypoints must be behaviourally
+    equivalent, since they funnel through the same _import_validated_positions
+    core and are documented as sharing every validation/idempotency rule.
+    """
+    csv_repository = SQLiteJournalRepository(tmp_path / "csv.db")
+    csv_repository.initialize()
+    csv_repository.configure_journal(reporting_time_basis="utc")
+    csv_repository.register_mt5_account(
+        display_name="Primary", login="123456", broker_server="DemoBroker-Live", account_currency="USD", export_file_path=""
+    )
+    export_path = tmp_path / "positions.csv"
+    write_export(export_path, initial_risk_amount="100.00")
+    csv_result = MT5ImportService(csv_repository).import_csv(export_path)
+
+    json_repository = SQLiteJournalRepository(tmp_path / "json.db")
+    json_repository.initialize()
+    json_repository.configure_journal(reporting_time_basis="utc")
+    json_repository.register_mt5_account(
+        display_name="Primary", login="123456", broker_server="DemoBroker-Live", account_currency="USD", export_file_path=""
+    )
+    json_result = MT5ImportService(json_repository).import_json_positions([_row_dict_for_json()], source_label="http:test")
+
+    assert csv_result.created_count == json_result.created_count == 1
+    assert csv_result.updated_count == json_result.updated_count == 0
+
+    csv_account = csv_repository.find_active_mt5_account("123456", "DemoBroker-Live")
+    json_account = json_repository.find_active_mt5_account("123456", "DemoBroker-Live")
+    csv_trade = csv_repository.list_closed_trades_for_review(csv_account.id)[0]
+    json_trade = json_repository.list_closed_trades_for_review(json_account.id)[0]
+
+    comparable_fields = [
+        "symbol", "direction", "entry_time", "exit_time", "server_utc_offset_minutes",
+        "entry_price", "exit_price", "volume", "net_pnl",
+        "entry_stop_price", "entry_target_price", "close_stop_price",
+        "entry_magic_number", "entry_deal_count", "exit_reason",
+        "initial_risk_amount", "initial_reward_amount",
+    ]
+    for field in comparable_fields:
+        assert getattr(csv_trade, field) == getattr(json_trade, field), field
+    assert csv_trade.members[0].pretrade_account_balance == json_trade.members[0].pretrade_account_balance
+
+
 def test_schema_v4_is_rejected_after_the_v5_export_upgrade(repository: SQLiteJournalRepository, tmp_path: Path) -> None:
     export_path = tmp_path / "positions.csv"
     write_export(export_path, schema_version="4")
