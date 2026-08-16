@@ -48,6 +48,7 @@ _DEFAULT_SYNC_INTERVAL_SECONDS = 5.0
 _SERVER_START_ATTEMPTS = 3
 _SHOW_REQUEST_TIMEOUT_SECONDS = 5.0
 _STARTUP_HANDOFF_TIMEOUT_SECONDS = 35.0
+_TAKEOVER_TIMEOUT_SECONDS = 15.0
 
 
 @dataclass(frozen=True)
@@ -911,66 +912,78 @@ def _report(log_path: Path, message: str) -> None:
         pass
 
 
-def _acquire_lock_or_show_running_instance(
-    paths: DesktopRuntimePaths,
-    control: DesktopSyncControl,
-    record: DesktopRuntimeRecord,
-    lock: DesktopInstanceLock,
-) -> int | None:
-    """Take ownership of the journal, or hand this launch to whoever has it.
+def _terminate_process_tree(process_id: int) -> None:
+    """Force-close another desktop instance's supervisor and its children.
 
-    Returns None once this process owns the lock, or the exit code to use after
-    handing over. The lock is retried throughout because the owner may still be
-    starting up (its address is not published until its server answers) or may
-    die while we wait, in which case this launch takes over instead of failing.
+    On POSIX, SIGTERM lets the old supervisor unwind (stop its children, release
+    the lock) with a SIGKILL backstop; on Windows there is no SIGTERM, so
+    taskkill /T /F ends the whole process tree. The OS releases the instance
+    lock when the supervisor dies either way.
     """
 
-    deadline = time.monotonic() + _STARTUP_HANDOFF_TIMEOUT_SECONDS
+    if sys.platform.startswith("win"):
+        subprocess.run(
+            ["taskkill", "/PID", str(process_id), "/T", "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        return
+
+    try:
+        os.kill(process_id, signal.SIGTERM)
+    except OSError:
+        return
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        if not _process_is_running(process_id):
+            return
+        time.sleep(0.1)
+    try:
+        os.kill(process_id, signal.SIGKILL)
+    except OSError:
+        pass
+
+
+def _acquire_lock_taking_over(
+    paths: DesktopRuntimePaths,
+    record: DesktopRuntimeRecord,
+    lock: DesktopInstanceLock,
+) -> None:
+    """Acquire the single-instance lock, force-closing any existing instance first.
+
+    Newest launch wins: if another Trade Compass already owns the journal, it and
+    its children are terminated (Linux and Windows alike) so this launch starts
+    fresh, rather than reopening the existing one. Raises RuntimeError if a live
+    instance cannot be closed within the timeout.
+    """
+
+    try:
+        lock.acquire()
+        return
+    except DesktopAlreadyRunningError:
+        pass
+
+    payload = record.read()
+    if payload is not None:
+        _report(
+            paths.log_path,
+            f"Closing the running {DISPLAY_NAME} instance (pid {payload['pid']}) before starting a new one.",
+        )
+        _terminate_process_tree(int(payload["pid"]))
+
+    # The OS releases the lock once the old supervisor dies; take it when free.
+    deadline = time.monotonic() + _TAKEOVER_TIMEOUT_SECONDS
     while True:
         try:
             lock.acquire()
-            return None
+            return
         except DesktopAlreadyRunningError:
-            pass
-        payload = record.read()
-        if payload is not None:
-            return _show_running_instance(paths, control, payload)
-        if time.monotonic() >= deadline:
-            _report(
-                paths.log_path,
-                f"{DISPLAY_NAME} is already running, but its address could not be read. "
-                f"Close the running instance first, or see {paths.log_path}.",
-            )
-            return 1
-        time.sleep(0.25)
-
-
-def _show_running_instance(paths: DesktopRuntimePaths, control: DesktopSyncControl, payload: dict[str, Any]) -> int:
-    """Reopen the UI of the supervisor that already owns this data directory.
-
-    This launch must never start a server, worker, or window of its own: a
-    second SQLite writer against the same journal is exactly what the instance
-    lock exists to prevent.
-    """
-
-    url = str(payload["url"])
-    control.request_show()
-    deadline = time.monotonic() + _SHOW_REQUEST_TIMEOUT_SECONDS
-    while time.monotonic() < deadline:
-        if not control.show_requested():
-            _report(paths.log_path, f"{DISPLAY_NAME} is already running; reopened the existing window at {url}.")
-            return 0
-        time.sleep(0.1)
-
-    # The owner is alive but not consuming requests (a wedged GUI loop, or an
-    # older build with no show channel). Opening the URL still reaches it.
-    control.clear_show_request()
-    if not desktop_headless():
-        webbrowser.open(url, new=1)
-        _report(paths.log_path, f"{DISPLAY_NAME} is already running; opened {url} in the default browser.")
-        return 0
-    _report(paths.log_path, f"{DISPLAY_NAME} is already running at {url}.")
-    return 0
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f"{DISPLAY_NAME} is already running and could not be closed. See {paths.log_path}."
+                )
+            time.sleep(0.25)
 
 
 def _install_supervisor_signal_handlers() -> None:
@@ -1010,9 +1023,11 @@ def start_desktop_application() -> int:
     )
     record = DesktopRuntimeRecord(paths.runtime_record_path)
     lock = DesktopInstanceLock(paths.lock_path)
-    handoff_code = _acquire_lock_or_show_running_instance(paths, control, record, lock)
-    if handoff_code is not None:
-        return handoff_code
+    try:
+        _acquire_lock_taking_over(paths, record, lock)
+    except RuntimeError as error:
+        _report(paths.log_path, str(error))
+        return 1
 
     log_handle: Any = None
     window_process: subprocess.Popen[Any] | None = None

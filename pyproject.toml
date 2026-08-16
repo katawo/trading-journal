@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "trade-compass"
-version = "0.1.9"
+version = "0.1.10"
 description = "Trade Compass: a local-first trade review app with read-only MT5 imports"
 requires-python = ">=3.12"
 dependencies = [

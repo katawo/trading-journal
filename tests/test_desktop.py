@@ -540,159 +540,89 @@ def _headless_desktop_environment(monkeypatch, tmp_path: Path):
     return desktop.desktop_runtime_paths()
 
 
-def test_second_launch_reopens_the_running_instance_without_starting_children(monkeypatch, tmp_path: Path) -> None:
-    """The whole point of the lock: a second launch must never start a second server."""
+def test_second_launch_force_closes_the_running_instance_and_takes_over(monkeypatch, tmp_path: Path) -> None:
+    """Newest launch wins: a live instance is terminated so this launch owns the lock."""
 
     from trading_journal import desktop
 
     paths = _headless_desktop_environment(monkeypatch, tmp_path)
     paths.data_directory.mkdir(parents=True, exist_ok=True)
 
-    owner_lock = DesktopInstanceLock(paths.lock_path)
-    owner_lock.acquire()
-    desktop.DesktopRuntimeRecord(paths.runtime_record_path).write(
-        port=18501, url="http://127.0.0.1:18501", process_id=4242
-    )
-    monkeypatch.setattr(desktop, "_process_is_running", lambda process_id: process_id == 4242)
-
-    def forbidden_popen(*_args, **_kwargs):
-        raise AssertionError("a second launch must not spawn any child process")
-
-    monkeypatch.setattr(desktop.subprocess, "Popen", forbidden_popen)
-    monkeypatch.setattr(desktop, "_SHOW_REQUEST_TIMEOUT_SECONDS", 0.5)
-    monkeypatch.setattr(desktop, "_STARTUP_HANDOFF_TIMEOUT_SECONDS", 2.0)
-
-    try:
-        exit_code = desktop.start_desktop_application()
-    finally:
-        owner_lock.release()
-
-    assert exit_code == 0
-    # The owner never answered, so the request is cleared rather than left behind.
-    assert not paths.show_request_path.exists()
-
-
-def test_second_launch_returns_after_the_running_instance_acknowledges(monkeypatch, tmp_path: Path) -> None:
-    import threading
-
-    from trading_journal import desktop
-
-    paths = _headless_desktop_environment(monkeypatch, tmp_path)
-    paths.data_directory.mkdir(parents=True, exist_ok=True)
-    control = DesktopSyncControl(
-        paths.sync_request_path, paths.shutdown_request_path, paths.reset_request_path, paths.show_request_path
-    )
+    owner = _hold_lock_in_subprocess(paths.lock_path)  # a real process holding the OS lock
     record = desktop.DesktopRuntimeRecord(paths.runtime_record_path)
-    record.write(port=18501, url="http://127.0.0.1:18501", process_id=4242)
-    monkeypatch.setattr(desktop, "_process_is_running", lambda process_id: process_id == 4242)
-
-    acknowledged = threading.Event()
-
-    def owner() -> None:
-        for _ in range(100):
-            if control.consume_show_request():
-                acknowledged.set()
-                return
-            time.sleep(0.02)
-
-    responder = threading.Thread(target=owner, daemon=True)
-    responder.start()
-
-    payload = record.read()
-    assert payload is not None
-    exit_code = desktop._show_running_instance(paths, control, payload)
-    responder.join(timeout=5)
-
-    assert exit_code == 0
-    assert acknowledged.is_set()
-
-
-def test_second_launch_reports_when_the_running_instance_cannot_be_located(monkeypatch, tmp_path: Path) -> None:
-    from trading_journal import desktop
-
-    paths = _headless_desktop_environment(monkeypatch, tmp_path)
-    paths.data_directory.mkdir(parents=True, exist_ok=True)
-    control = DesktopSyncControl(
-        paths.sync_request_path, paths.shutdown_request_path, paths.reset_request_path, paths.show_request_path
-    )
-    monkeypatch.setattr(desktop, "_STARTUP_HANDOFF_TIMEOUT_SECONDS", 0.5)
-
-    owner_lock = DesktopInstanceLock(paths.lock_path)
-    owner_lock.acquire()
-    try:
-        exit_code = desktop._acquire_lock_or_show_running_instance(
-            paths, control, desktop.DesktopRuntimeRecord(paths.runtime_record_path), DesktopInstanceLock(paths.lock_path)
-        )
-    finally:
-        owner_lock.release()
-
-    assert exit_code == 1
-    assert "already running" in paths.log_path.read_text(encoding="utf-8")
-
-
-def test_second_launch_waits_for_a_starting_instance_to_publish_its_address(monkeypatch, tmp_path: Path) -> None:
-    """A double-click races the owner's startup; it must wait, not error out."""
-
-    from trading_journal import desktop
-
-    paths = _headless_desktop_environment(monkeypatch, tmp_path)
-    paths.data_directory.mkdir(parents=True, exist_ok=True)
-    control = DesktopSyncControl(
-        paths.sync_request_path, paths.shutdown_request_path, paths.reset_request_path, paths.show_request_path
-    )
-    record = desktop.DesktopRuntimeRecord(paths.runtime_record_path)
-    monkeypatch.setattr(desktop, "_process_is_running", lambda process_id: process_id == 4242)
-    monkeypatch.setattr(desktop, "_SHOW_REQUEST_TIMEOUT_SECONDS", 0.3)
-
-    owner_lock = DesktopInstanceLock(paths.lock_path)
-    owner_lock.acquire()
-
-    def publish_later() -> None:
-        time.sleep(0.6)
-        record.write(port=18501, url="http://127.0.0.1:18501", process_id=4242)
-
-    publisher = threading.Thread(target=publish_later, daemon=True)
-    publisher.start()
-    try:
-        exit_code = desktop._acquire_lock_or_show_running_instance(
-            paths, control, record, DesktopInstanceLock(paths.lock_path)
-        )
-    finally:
-        publisher.join(timeout=5)
-        owner_lock.release()
-
-    assert exit_code == 0
-
-
-def test_second_launch_takes_over_when_the_owner_dies_while_it_waits(monkeypatch, tmp_path: Path) -> None:
-    from trading_journal import desktop
-
-    paths = _headless_desktop_environment(monkeypatch, tmp_path)
-    paths.data_directory.mkdir(parents=True, exist_ok=True)
-    control = DesktopSyncControl(
-        paths.sync_request_path, paths.shutdown_request_path, paths.reset_request_path, paths.show_request_path
-    )
-    owner = _hold_lock_in_subprocess(paths.lock_path)
-
-    def kill_owner_later() -> None:
-        time.sleep(0.6)
-        owner.kill()
-
-    killer = threading.Thread(target=kill_owner_later, daemon=True)
-    killer.start()
+    record.write(port=18501, url="http://127.0.0.1:18501", process_id=owner.pid)
+    monkeypatch.setattr(desktop, "_TAKEOVER_TIMEOUT_SECONDS", 10.0)
 
     contender = DesktopInstanceLock(paths.lock_path)
     try:
-        outcome = desktop._acquire_lock_or_show_running_instance(
-            paths, control, desktop.DesktopRuntimeRecord(paths.runtime_record_path), contender
-        )
-    finally:
-        killer.join(timeout=5)
+        desktop._acquire_lock_taking_over(paths, record, contender)
+        # The old instance was force-closed and the contender now owns the lock.
         owner.wait(timeout=10)
+        assert owner.poll() is not None
+    finally:
+        contender.release()
+        if owner.poll() is None:
+            owner.kill()
+            owner.wait(timeout=5)
 
-    # None means "this launch now owns the journal" rather than handing off.
-    assert outcome is None
-    contender.release()
+
+def test_terminate_process_tree_stops_a_running_process(monkeypatch) -> None:
+    if sys.platform.startswith("win"):
+        pytest.skip("POSIX signal path")
+    from trading_journal import desktop
+
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+    try:
+        desktop._terminate_process_tree(proc.pid)
+        assert proc.wait(timeout=5) is not None
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
+def test_takeover_raises_when_a_live_instance_cannot_be_closed(monkeypatch, tmp_path: Path) -> None:
+    from trading_journal import desktop
+
+    paths = _headless_desktop_environment(monkeypatch, tmp_path)
+    paths.data_directory.mkdir(parents=True, exist_ok=True)
+
+    owner_lock = DesktopInstanceLock(paths.lock_path)
+    owner_lock.acquire()  # held for the whole test; the "kill" below is a no-op
+    record = desktop.DesktopRuntimeRecord(paths.runtime_record_path)
+    record.write(port=18501, url="http://127.0.0.1:18501", process_id=999999)
+    monkeypatch.setattr(desktop, "_process_is_running", lambda _process_id: True)
+    monkeypatch.setattr(desktop, "_terminate_process_tree", lambda _process_id: None)
+    monkeypatch.setattr(desktop, "_TAKEOVER_TIMEOUT_SECONDS", 0.5)
+
+    contender = DesktopInstanceLock(paths.lock_path)
+    try:
+        with pytest.raises(RuntimeError, match="already running"):
+            desktop._acquire_lock_taking_over(paths, record, contender)
+    finally:
+        owner_lock.release()
+
+
+def test_start_desktop_application_reports_when_takeover_fails(monkeypatch, tmp_path: Path) -> None:
+    """A failed force-close exits cleanly (code 1), never a traceback popup."""
+
+    from trading_journal import desktop
+
+    paths = _headless_desktop_environment(monkeypatch, tmp_path)
+    paths.data_directory.mkdir(parents=True, exist_ok=True)
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("Trade Compass is already running and could not be closed.")
+
+    monkeypatch.setattr(desktop, "_acquire_lock_taking_over", boom)
+
+    def forbidden_popen(*_args, **_kwargs):
+        raise AssertionError("no child process should start when takeover fails")
+
+    monkeypatch.setattr(desktop.subprocess, "Popen", forbidden_popen)
+
+    assert desktop.start_desktop_application() == 1
+    assert "could not be closed" in paths.log_path.read_text(encoding="utf-8")
 
 
 def test_desktop_window_raises_itself_when_a_second_launch_asks_for_it(tmp_path: Path) -> None:

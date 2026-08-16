@@ -13,7 +13,7 @@ No Python, web server, Cloud account, MT5 password, or broker password is requir
 
 ## One instance at a time
 
-Only one journal application may run per data directory, because two of them would write the same SQLite database. Starting it a second time does not start a second copy: the new launch detects the running one, brings its window (or browser tab) back to the front, and closes itself immediately. Starting it while the first copy is still coming up waits for that startup to finish rather than reporting an error.
+Only one journal application may run per data directory, because two of them would write the same SQLite database. The newest launch wins: starting it again force-closes any already-running copy — its server, MT5 sync worker, and window — and then starts fresh, on both Linux and Windows. You never end up with two copies fighting over the same journal.
 
 The lock is held by the operating system for as long as the application runs, so it is released automatically if the application is force-quit or the machine loses power. A crashed session never blocks the next start, and there is no lock file to delete by hand.
 
