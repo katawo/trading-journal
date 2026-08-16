@@ -1681,7 +1681,7 @@ def test_strategy_setup_can_be_edited_and_deactivated(monkeypatch, tmp_path):
     next(item for item in app.text_input if item.label == "Setup name").set_value("London pullback").run()
     next(item for item in app.button if item.label == "Add setup").click().run()
 
-    next(item for item in app.button if item.label == "Open" and "strategy-setup" in item.key).click().run()
+    next(item for item in app.button if item.label == "Edit" and "strategy-setup" in item.key).click().run()
 
     assert not app.exception
     assert next(item for item in app.text_input if item.label == "Setup name").value == "London pullback"

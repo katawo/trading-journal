@@ -673,11 +673,14 @@ def render_mt5_account_settings(repo: SQLiteJournalRepository) -> AccountListIte
                 is_editing = selected_id == str(account.id)
                 with st.container(border=True):
                     st.markdown(f"**{account.display_name}**")
-                    labels = [tr(label) for label, flag in (("Active", is_active), ("Editing", is_editing)) if flag]
-                    if labels:
-                        st.caption(" · ".join(labels))
+                    if is_active:
+                        st.caption(tr("Active"))
                     st.caption(f"{account.strategy_name} · {account.login} · {account.broker_server}")
-                    if st.button("Open", icon=":material/edit:", key=f"open-mt5-account-{account.id}", width="stretch", disabled=is_editing):
+                    if account.funded_capital:
+                        st.caption(f"{tr('Funded capital')}: {format_currency_caption(account.funded_capital, account.account_currency, signed=False)}")
+                    if is_editing:
+                        st.badge(tr("Currently editing"), icon=":material/edit_note:")
+                    elif st.button("Edit", icon=":material/edit:", key=f"open-mt5-account-{account.id}", width="stretch"):
                         st.session_state["mt5-account-selected-id"] = str(account.id)
                         st.rerun()
         else:
@@ -987,6 +990,9 @@ def render_strategy_settings(repo: SQLiteJournalRepository) -> None:
     profiles = [profile for profile in repo.list_strategy_profiles() if profile.name != "Journal default"]
 
     profiles_by_id = {profile.id: profile for profile in profiles}
+    bound_account_counts: dict[int, int] = {}
+    for account in repo.list_mt5_accounts():
+        bound_account_counts[account.strategy_profile_id] = bound_account_counts.get(account.strategy_profile_id, 0) + 1
     selected_id = st.session_state.get("strategy-selected-id")
     if selected_id not in profiles_by_id and selected_id != "new":
         selected_id = profiles[0].id if profiles else "new"
@@ -1011,9 +1017,25 @@ def render_strategy_settings(repo: SQLiteJournalRepository) -> None:
                 is_editing = selected_id == profile.id
                 with st.container(border=True):
                     st.markdown(f"**{profile.name}**")
+                    if profile.backtest_verified:
+                        st.caption("✅ " + tr("Backtest verified"))
+                    if profile.description:
+                        preview = profile.description.strip()
+                        if len(preview) > 80:
+                            preview = preview[:80].rstrip() + "…"
+                        st.caption(preview)
+                    setup_count = len(repo.list_strategy_setups(profile.id, include_inactive=True))
+                    bound_count = bound_account_counts.get(profile.id, 0)
+                    counts = []
+                    if bound_count:
+                        counts.append(tr("{count} account", count=bound_count) if bound_count == 1 else tr("{count} accounts", count=bound_count))
+                    if setup_count:
+                        counts.append(tr("{count} setup", count=setup_count) if setup_count == 1 else tr("{count} setups", count=setup_count))
+                    if counts:
+                        st.caption(" · ".join(counts))
                     if is_editing:
-                        st.caption(tr("Current"))
-                    if st.button("Open", icon=":material/edit:", key=f"open-strategy-{profile.id}", width="stretch", disabled=is_editing):
+                        st.badge(tr("Currently editing"), icon=":material/edit_note:")
+                    elif st.button("Edit", icon=":material/edit:", key=f"open-strategy-{profile.id}", width="stretch"):
                         st.session_state["strategy-selected-id"] = profile.id
                         st.rerun()
         else:
@@ -1053,6 +1075,7 @@ def render_strategy_settings(repo: SQLiteJournalRepository) -> None:
                     help="Confirms you have reviewed a trustworthy backtest showing this strategy has a positive edge.",
                 )
                 backtest_notes = st.text_area("Backtest notes", placeholder="Market, timeframe, rules, and any material caveats.", key=field_key("backtest-notes"))
+                st.caption("Backtest evidence applies to reviews you save from now on. Trades you've already reviewed keep the evidence saved with them, so their Trading system score doesn't change.")
             submitted = st.form_submit_button("Save strategy", type="primary", icon=":material/save:")
         if submitted:
             try:
@@ -1093,8 +1116,10 @@ def render_strategy_settings(repo: SQLiteJournalRepository) -> None:
                             st.caption(tr("Active") if setup.active else tr("Inactive"))
                             if setup.description:
                                 st.caption(setup.description)
-                            if st.button(
-                                "Open", icon=":material/edit:", key=f"open-strategy-setup-{setup.id}", width="stretch", disabled=is_editing
+                            if is_editing:
+                                st.badge(tr("Currently editing"), icon=":material/edit_note:")
+                            elif st.button(
+                                "Edit", icon=":material/edit:", key=f"open-strategy-setup-{setup.id}", width="stretch"
                             ):
                                 st.session_state[setup_selected_key] = setup.id
                                 st.rerun()
