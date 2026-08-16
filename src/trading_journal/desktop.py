@@ -847,21 +847,32 @@ def _start_show_request_watcher(window: Any, show_request_path: Path | None) -> 
 def run_desktop_window(url: str, parent_process_id: int | None = None, show_request_path: Path | None = None) -> None:
     """Open the local app in a native window instead of an external browser."""
 
-    import webview
-
     _start_parent_watchdog(parent_process_id)
 
-    window = webview.create_window(
-        DISPLAY_NAME,
-        url,
-        width=1440,
-        height=920,
-        min_size=(1024, 700),
-    )
-    _start_show_request_watcher(window, show_request_path)
-    # pywebview owns the GUI loop and only returns after the user closes the
-    # window. It must run in this dedicated child process's main thread.
-    webview.start()
+    try:
+        import webview
+
+        window = webview.create_window(
+            DISPLAY_NAME,
+            url,
+            width=1440,
+            height=920,
+            min_size=(1024, 700),
+        )
+        _start_show_request_watcher(window, show_request_path)
+        # pywebview owns the GUI loop and only returns after the user closes the
+        # window. It must run in this dedicated child process's main thread.
+        webview.start()
+    except BaseException:  # noqa: BLE001 - any GUI-backend failure must degrade, not pop a dialog
+        # The native window backend is unavailable — e.g. a missing Edge WebView2
+        # runtime or a pythonnet/CLR load failure on Windows. Record it and exit
+        # non-zero WITHOUT letting a windowed frozen build raise an unhandled
+        # exception (which shows a traceback dialog). The supervisor sees the
+        # non-zero exit and opens the app in the default browser instead.
+        import traceback
+
+        traceback.print_exc()  # -> desktop.log via the parent's stdout/stderr redirect
+        os._exit(1)
 
 
 def run_sync_worker(

@@ -79,6 +79,21 @@ def _authenticator():  # -> streamlit_authenticator.Authenticate, kept lazy: opt
     return st.session_state["_multiuser_authenticator"]
 
 
+def _hide_app_chrome() -> None:
+    """Hide the app sidebar/nav for the current run — used only on the login screen.
+
+    main() gates before st.navigation(), but Streamlit's multipage nav can linger
+    in the sidebar on a logged-out rerun (e.g. right after logout). Injected per
+    run, so authenticated runs — which never call this — keep the normal sidebar.
+    """
+
+    st.markdown(
+        "<style>[data-testid='stSidebar'], [data-testid='stSidebarNav'], "
+        "[data-testid='stSidebarCollapsedControl'] { display: none !important; }</style>",
+        unsafe_allow_html=True,
+    )
+
+
 def render_login_gate() -> str | None:
     """Render the login form when needed; return the authenticated username, else None.
 
@@ -98,24 +113,44 @@ def render_login_gate() -> str | None:
 
     config_path = users_config_path()
     if not config_path.is_file():
+        _hide_app_chrome()
         st.error(f"No user accounts are configured yet. Add one with scripts/add_web_user.py (writes to {config_path}).")
         return None
 
     try:
         authenticator = _authenticator()
     except RuntimeError as error:
+        _hide_app_chrome()
         st.error(str(error))
         return None
 
-    authenticator.login("main")
+    # Already signed in this session: keep the authenticator's state fresh (this
+    # draws nothing) and fall straight through to the app with no login chrome.
+    if st.session_state.get("authentication_status"):
+        authenticator.login("main")
+        return st.session_state.get("username")
+
+    # Otherwise render the login form inside a centered column. On a fresh
+    # cookie-restore, login() authenticates and draws nothing, so the empty
+    # column is invisible and we still fall through to the app.
+    _, center, _ = st.columns([1, 1.4, 1])
+    with center:
+        brand = st.empty()
+        authenticator.login("main")
+        message = st.empty()
 
     authentication_status = st.session_state.get("authentication_status")
+    if authentication_status:
+        return st.session_state.get("username")
+
+    # Not signed in: this run only shows the login screen. Hide the app sidebar
+    # and nav so no menu leaks onto the login page — before first login or after
+    # logout — and dress the form as a simple branded card.
+    _hide_app_chrome()
+    brand.markdown("### 📈 Trade Compass\nLocal-first trade review, guided by discipline.")
     if authentication_status is False:
-        st.error("Incorrect username or password.")
-        return None
-    if not authentication_status:
-        return None
-    return st.session_state.get("username")
+        message.error("Incorrect username or password.")
+    return None
 
 
 def render_logout_control() -> None:

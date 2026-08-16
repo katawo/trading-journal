@@ -23,6 +23,7 @@ COPY src ./src
 COPY app.py ./
 COPY app_pages ./app_pages
 COPY docs ./docs
+COPY .streamlit .streamlit
 # Admin CLIs (add_web_user.py / add_ingestion_token.py) are run as one-off
 # `docker compose run` commands, so they must be in the image too.
 COPY scripts ./scripts

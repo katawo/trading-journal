@@ -60,7 +60,16 @@ def main() -> int:
         _data_argument(PROJECT_ROOT / "mql5", "mql5"),
     ]
     if system == "windows":
-        command.extend(["--windowed", "--collect-all", "webview"])
+        # pywebview's WinForms/EdgeChromium backend loads .NET through pythonnet,
+        # which in turn uses clr_loader's native shims and Python.Runtime.dll.
+        # --collect-all webview alone misses those, so the frozen app fails with
+        # "Failed to resolve Python.Runtime.Loader.Initialize". Collect both.
+        command.extend([
+            "--windowed",
+            "--collect-all", "webview",
+            "--collect-all", "pythonnet",
+            "--collect-all", "clr_loader",
+        ])
     command.append(str(PROJECT_ROOT / "desktop_launcher.py"))
     subprocess.run(command, cwd=PROJECT_ROOT, check=True)
 
