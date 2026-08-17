@@ -680,6 +680,43 @@ class FrameworkService:
                 return replace(self._coaching_recommendation(weak.pillar, "component", code, "80", 10, "Weakest current pillar component."), baseline_value=component[1])
         return None
 
+    def _recently_resolved_same_recommendation(self, account_id: int, recommendation: CoachingRecommendation) -> FrameworkFocusView | None:
+        """A previously resolved coach focus matching this recommendation, if no fresh
+        reviewed evidence has landed since - the anti-recycling guard ensure_coaching_focus()
+        uses to avoid reopening a new tracked window before any new data exists to justify one.
+        """
+        focus_account_id = account_id if recommendation.pillar in {"risk", "system"} else None
+        completed = [
+            item for item in self._repository.list_framework_focuses()
+            if item.source == "coach" and item.status in {"completed", "abandoned"}
+            and item.pillar == recommendation.pillar and item.metric_kind == recommendation.metric_kind and item.metric_code == recommendation.metric_code
+            and item.account_id == focus_account_id
+        ]
+        if not completed:
+            return None
+        latest = completed[0]
+        reviewed_total = next(item.reviewed_total for item in self.pillar_scores(account_id) if item.pillar == recommendation.pillar)
+        return latest if reviewed_total <= latest.starting_manual_reviews + latest.target_reviews else None
+
+    def pending_coaching_reason(self, account_id: int) -> str | None:
+        """Why "Today focus" is showing nothing new right after a resolution: the top
+        recommendation is the same one just resolved, with no fresh reviewed evidence yet to
+        justify reopening it. Lets the UI say "still working on X" instead of the misleading
+        "on track" when a real weakness is simply waiting on more evidence.
+        """
+        recommendation = self.coaching_recommendation(account_id)
+        if recommendation is None:
+            return None
+        latest = self._recently_resolved_same_recommendation(account_id, recommendation)
+        if latest is None:
+            return None
+        reviewed_total = next(item.reviewed_total for item in self.pillar_scores(account_id) if item.pillar == recommendation.pillar)
+        remaining = latest.starting_manual_reviews + latest.target_reviews - reviewed_total + 1
+        return (
+            f"Still tracking {PILLAR_NAMES[recommendation.pillar]}: {recommendation.reason} "
+            f"Resolved, but {remaining} more reviewed trade(s) are needed before a new focus reopens on it."
+        )
+
     def ensure_coaching_focus(self, account_id: int) -> FrameworkFocusView | None:
         active = self._repository.get_active_framework_focus()
         recommendation = self.coaching_recommendation(account_id)
@@ -687,19 +724,8 @@ class FrameworkService:
             return active
         if active is not None and recommendation is not None and active.metric_kind == recommendation.metric_kind and active.metric_code == recommendation.metric_code:
             return active
-        if active is None and recommendation is not None:
-            focus_account_id = account_id if recommendation.pillar in {"risk", "system"} else None
-            completed = [
-                item for item in self._repository.list_framework_focuses()
-                if item.source == "coach" and item.status in {"completed", "abandoned"}
-                and item.pillar == recommendation.pillar and item.metric_kind == recommendation.metric_kind and item.metric_code == recommendation.metric_code
-                and item.account_id == focus_account_id
-            ]
-            if completed:
-                latest = completed[0]
-                reviewed_total = next(item.reviewed_total for item in self.pillar_scores(account_id) if item.pillar == recommendation.pillar)
-                if reviewed_total <= latest.starting_manual_reviews + latest.target_reviews:
-                    return None
+        if active is None and recommendation is not None and self._recently_resolved_same_recommendation(account_id, recommendation) is not None:
+            return None
         if active is not None and recommendation is not None:
             self._repository.resolve_framework_focus(
                 focus_id=active.id, outcome="superseded",

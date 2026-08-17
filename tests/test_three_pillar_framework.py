@@ -1759,6 +1759,35 @@ def test_resolved_coach_focus_is_not_reopened_from_the_same_sample(tmp_path) -> 
     assert FrameworkService(repository).ensure_coaching_focus(account_id) is None
 
 
+def test_pending_coaching_reason_explains_the_same_weak_area_wait(tmp_path) -> None:
+    """When ensure_coaching_focus() suppresses reopening the same recommendation (see the
+    test above), the UI should still be able to explain why - not silently imply "on track".
+    """
+    repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    trade_id = _import_position(repository, account_id)
+    _review(repository, account_id, trade_id, policy, strategy, hard_rules=("stop_widened",), action="Keep the stop fixed.")
+    focus = FrameworkService(repository).ensure_coaching_focus(account_id)
+    assert focus is not None
+    repository.resolve_framework_focus(focus_id=focus.id, outcome="completed", resolution_note="Recorded the safety lesson.")
+
+    assert FrameworkService(repository).ensure_coaching_focus(account_id) is None
+    reason = FrameworkService(repository).pending_coaching_reason(account_id)
+    assert reason is not None
+    assert "Risk management" in reason or "Trading system" in reason or "Psychology" in reason
+
+
+def test_pending_coaching_reason_is_none_when_genuinely_on_track(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    for index in range(5):
+        trade_id = _import_position(repository, account_id, position_id=f"clean-{index}")
+        _review(repository, account_id, trade_id, policy, strategy, action=None)
+
+    assert FrameworkService(repository).coaching_recommendation(account_id) is None
+    assert FrameworkService(repository).pending_coaching_reason(account_id) is None
+
+
 def test_resolved_risk_focus_on_another_account_does_not_suppress_coaching(tmp_path) -> None:
     repository, primary_id = _repository(tmp_path)
     repository.register_mt5_account(

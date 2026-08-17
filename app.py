@@ -1568,8 +1568,12 @@ def main() -> None:
         )
         focus_ready = _cached_focus_ready_to_evaluate(str(database_path), mtime, active_account.id)
     review_title = f"{tr('Review')} ({review_count})" if review_count else tr("Review")
-    monitor_title = f"{tr('Monitor')} ({monitor_alert_count})" if monitor_alert_count else tr("Monitor")
-    improve_title = f"{tr('Improve')} (1)" if focus_ready else tr("Improve")
+    # focus_ready's "(1)" lands on Monitor, not Improve: the coaching-focus resolve UI it
+    # signals only renders on the Monitor tab / Dashboard widget, never on Improve's roadmap
+    # checklist page - putting the badge there was a dead end.
+    monitor_badge_count = monitor_alert_count + (1 if focus_ready else 0)
+    monitor_title = f"{tr('Monitor')} ({monitor_badge_count})" if monitor_badge_count else tr("Monitor")
+    improve_title = tr("Improve")
 
     page = st.navigation(
         {

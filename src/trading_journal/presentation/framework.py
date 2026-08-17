@@ -1511,7 +1511,11 @@ def _render_framework_focus(repo: SQLiteJournalRepository, account: AccountListI
                         if item.resolution_note:
                             st.caption(item.resolution_note)
         return
-    st.success(tr("On track: no coaching intervention is required from the current reviewed evidence."))
+    pending_reason = service.pending_coaching_reason(account.id)
+    if pending_reason is not None:
+        st.info(tr(pending_reason))
+    else:
+        st.success(tr("On track: no coaching intervention is required from the current reviewed evidence."))
 
 
 def render_dashboard_coaching_focus(repo: SQLiteJournalRepository, account: AccountListItem) -> None:
@@ -1548,7 +1552,13 @@ def _render_period_reviews(repo: SQLiteJournalRepository, account: AccountListIt
     statuses = [service.period_review_status(account.id, cadence) for cadence in ("weekly", "monthly")]
     with st.container(horizontal=True, gap="small"):
         for status in statuses:
-            st.metric(tr(f"{status.cadence.capitalize()} review"), tr("Due" if status.due else "Up to date"), f"{status.period_start} to {status.period_end}", border=True)
+            if status.reviewed_trades == 0:
+                status_label = tr("Awaiting review")
+            elif status.due:
+                status_label = tr("Due")
+            else:
+                status_label = tr("Up to date")
+            st.metric(tr(f"{status.cadence.capitalize()} review"), status_label, f"{status.period_start} to {status.period_end}", border=True)
     due = next((status for status in statuses if status.due), None)
     if due is not None:
         with st.form(f"period-review-{account.id}-{due.cadence}"):
