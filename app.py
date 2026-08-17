@@ -1528,6 +1528,13 @@ def main() -> None:
         st.set_page_config(page_title=tr("Trade Compass"), page_icon="📈", layout="wide")
     if is_multiuser_mode():
         render_logout_control()
+        if current_username() is None:
+            # The sidebar logout button (st.sidebar.button(...)) clears auth state and
+            # returns True in this SAME script run, with no rerun of its own - continuing
+            # past this point would run the rest of main() (and page.run(), which calls
+            # repository() again independently per-page) against an already-logged-out
+            # session and crash instead of cleanly falling back to the login form.
+            st.rerun()
     with st.sidebar:
         selected_language = st.selectbox(
             "Language",

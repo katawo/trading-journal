@@ -141,7 +141,12 @@ def render_login_gate() -> str | None:
 
     authentication_status = st.session_state.get("authentication_status")
     if authentication_status:
-        return st.session_state.get("username")
+        # A fresh, successful submit already drew the login form above (the widgets
+        # are placed before login() can know the result) - returning here would let
+        # main() render the dashboard right below that still-visible form in this
+        # same run. Rerun instead so the next run's already-signed-in fast path
+        # (above) skips drawing the form at all.
+        st.rerun()
 
     # Not signed in: this run only shows the login screen. Hide the app sidebar
     # and nav so no menu leaks onto the login page — before first login or after
