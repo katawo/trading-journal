@@ -7,8 +7,9 @@ from pathlib import Path
 
 from trading_journal.application.import_mt5 import MT5ImportService
 from trading_journal.application.mt5_paths import resolve_account_export_path
+from trading_journal.application.multiuser import is_multiuser_mode
 from trading_journal.domain.errors import ImportValidationError
-from trading_journal.infrastructure.sqlite_repository import SQLiteJournalRepository
+from trading_journal.infrastructure.sqlite_repository import AccountListItem, SQLiteJournalRepository
 
 
 @dataclass(frozen=True)
@@ -35,7 +36,10 @@ class MT5AutoSyncService:
         results: list[MT5AutoSyncResult] = []
         for account in self._repository.list_mt5_accounts():
             if not account.export_file_path.strip():
-                results.append(MT5AutoSyncResult(account.display_name, account.login, account.broker_server, "", "unconfigured"))
+                if is_multiuser_mode():
+                    results.append(self._ingestion_sync_result(account))
+                else:
+                    results.append(MT5AutoSyncResult(account.display_name, account.login, account.broker_server, "", "unconfigured"))
                 continue
 
             path = resolve_account_export_path(account.export_file_path, account.login)
@@ -96,3 +100,18 @@ class MT5AutoSyncService:
                 )
             )
         return results
+
+    def _ingestion_sync_result(self, account: AccountListItem) -> MT5AutoSyncResult:
+        """Status for an account fed by the ingestion API (POST /ingest) instead of a local export file."""
+        run = self._repository.latest_ingestion_import(account.id)
+        if run is None:
+            return MT5AutoSyncResult(
+                account.display_name, account.login, account.broker_server,
+                "ingestion", "waiting", "Waiting for the first MT5 export.",
+            )
+        created_at, _created_count, _updated_count = run
+        return MT5AutoSyncResult(
+            account.display_name, account.login, account.broker_server,
+            "ingestion", "up_to_date",
+            export_updated_at=datetime.fromisoformat(created_at),
+        )

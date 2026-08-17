@@ -2184,6 +2184,21 @@ class SQLiteJournalRepository:
             ).one_or_none()
             return None if row is None else (row[0], row[1], row[2])
 
+    def latest_ingestion_import(self, account_id: int) -> tuple[str, int, int] | None:
+        """Most recent successful MT5ImportRun written by the ingestion API (POST /ingest) for this account."""
+        with self._sessions() as session:
+            row = session.execute(
+                select(MT5ImportRun.created_at, MT5ImportRun.created_count, MT5ImportRun.updated_count)
+                .where(
+                    MT5ImportRun.mt5_account_id == account_id,
+                    MT5ImportRun.source_file_path.like("http:%"),
+                    MT5ImportRun.status == "succeeded",
+                )
+                .order_by(MT5ImportRun.id.desc())
+                .limit(1)
+            ).one_or_none()
+            return None if row is None else (row[0], row[1], row[2])
+
     def save_strategy_profile(
         self,
         *,

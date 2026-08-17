@@ -18,7 +18,7 @@ COMPOSE := docker compose -f deploy/docker-compose.yml
 
 .PHONY: help venv setup run desktop bundle test check reset-db \
         deploy-systemd deploy-systemd-down deploy-docker deploy-docker-down \
-        web-user web-token
+        web-user web-token docker-user docker-token docker-logs docker-shell docker-status
 
 # Account/token creation for the systemd path (Docker uses `compose run` — see the guide).
 NAME ?= $(USER_NAME)
@@ -93,3 +93,35 @@ web-user: venv ## Create/update a web account (systemd path). Usage: make web-us
 web-token: venv ## Issue an MT5 ingestion token for a user (systemd path). Usage: make web-token USER_NAME=alice
 	@test -n "$(USER_NAME)" || { echo "Usage: make web-token USER_NAME=alice"; exit 2; }
 	TRADING_JOURNAL_MULTIUSER_DATA_DIR="$(DATA_DIR)" $(VENV_PYTHON) scripts/add_ingestion_token.py "$(USER_NAME)"
+
+docker-user: ## Create/update a web account (Docker path). Usage: make docker-user USER_NAME=alice [NAME="Alice" EMAIL=a@x.com]
+	@test -f deploy/.env || { echo "Create deploy/.env from deploy/.env.example first"; exit 2; }
+	@test -n "$(USER_NAME)" || { echo "Usage: make docker-user USER_NAME=alice [NAME=\"Alice\" EMAIL=a@example.com]"; exit 2; }
+	$(COMPOSE) --env-file deploy/.env run --rm web \
+		python scripts/add_web_user.py "$(USER_NAME)" \
+		--name "$(NAME)" --email "$(EMAIL)"
+
+docker-token: ## Issue an MT5 ingestion token for a user (Docker path). Usage: make docker-token USER_NAME=alice
+	@test -f deploy/.env || { echo "Create deploy/.env from deploy/.env.example first"; exit 2; }
+	@test -n "$(USER_NAME)" || { echo "Usage: make docker-token USER_NAME=alice"; exit 2; }
+	$(COMPOSE) --env-file deploy/.env run --rm web \
+		python scripts/add_ingestion_token.py "$(USER_NAME)"
+
+docker-logs: ## Show real-time Docker logs. Usage: make docker-logs [SERVICE=web|ingestion|caddy] or [all]
+	@SERVICE_FILTER=""; if [ -n "$(SERVICE)" ]; then SERVICE_FILTER="$(SERVICE)"; fi; \
+	if [ -n "$$SERVICE_FILTER" ]; then \
+		$(COMPOSE) --env-file deploy/.env logs -f $$SERVICE_FILTER; \
+	else \
+		$(COMPOSE) --env-file deploy/.env logs -f; \
+	fi
+
+docker-status: ## Show Docker container status and basic stats.
+	@echo "Container status:"; \
+	$(COMPOSE) --env-file deploy/.env ps; \
+	echo ""; \
+	echo "Resource usage:"; \
+	docker stats --no-stream 2>/dev/null | grep -E '^CONTAINER|trade-compass' || echo "  (use 'docker stats' to monitor)"
+
+docker-shell: ## Open a shell inside the web container. Usage: make docker-shell
+	@test -f deploy/.env || { echo "Create deploy/.env from deploy/.env.example first"; exit 2; }
+	$(COMPOSE) --env-file deploy/.env run --rm web /bin/bash
