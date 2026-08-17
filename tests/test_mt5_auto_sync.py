@@ -312,6 +312,34 @@ def test_auto_sync_waits_for_the_first_ingestion_push_in_multiuser_mode(monkeypa
     assert repository.count_trades() == 0
 
 
+def test_auto_sync_uses_the_ingestion_status_in_multiuser_mode_even_with_a_stale_local_export_path(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """The account-settings UI always fills export_file_path with a computed default when a
+    user leaves the "custom export path" field blank (app.py resolves an empty input to
+    default_mt5_export_path(login)), so a real multiuser account never actually has a blank
+    export_file_path - it's whatever the desktop/local default would be, which is meaningless
+    on a Docker web container that never has access to that filesystem. Multiuser mode must
+    use the ingestion status regardless of what's stored there, not only when it's blank.
+    """
+    monkeypatch.setenv("TRADING_JOURNAL_MULTIUSER_MODE", "1")
+    repository = SQLiteJournalRepository(tmp_path / "journal.db")
+    repository.initialize()
+    repository.configure_journal(reporting_time_basis="utc")
+    repository.register_mt5_account(
+        display_name="Primary",
+        login="123456",
+        broker_server="DemoBroker-Live",
+        account_currency="USD",
+        export_file_path="trading_journal/123456_positions.csv",
+    )
+    MT5ImportService(repository).import_json_positions([ingestion_row()], source_label="http:alice")
+
+    results = MT5AutoSyncService(repository).sync_configured_exports()
+
+    assert [item.status for item in results] == ["up_to_date"]
+
+
 def test_auto_sync_reports_up_to_date_after_a_successful_ingestion_push(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("TRADING_JOURNAL_MULTIUSER_MODE", "1")
     repository = ingestion_configured_repository(tmp_path)

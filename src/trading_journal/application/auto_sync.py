@@ -35,11 +35,15 @@ class MT5AutoSyncService:
     def sync_configured_exports(self) -> list[MT5AutoSyncResult]:
         results: list[MT5AutoSyncResult] = []
         for account in self._repository.list_mt5_accounts():
+            if is_multiuser_mode():
+                # A multiuser/Docker web process never has access to a local MT5 export file -
+                # MT5 runs on a separate host and pushes here via POST /ingest instead - so a
+                # configured export_file_path (even the UI's computed default) is meaningless here.
+                results.append(self._ingestion_sync_result(account))
+                continue
+
             if not account.export_file_path.strip():
-                if is_multiuser_mode():
-                    results.append(self._ingestion_sync_result(account))
-                else:
-                    results.append(MT5AutoSyncResult(account.display_name, account.login, account.broker_server, "", "unconfigured"))
+                results.append(MT5AutoSyncResult(account.display_name, account.login, account.broker_server, "", "unconfigured"))
                 continue
 
             path = resolve_account_export_path(account.export_file_path, account.login)
