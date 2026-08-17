@@ -1,0 +1,20 @@
+# Caddy config for testing without TLS (HTTP only on :80).
+# Use this for quick local tests before DNS/HTTPS is set up.
+#
+# To use:
+#   cp deploy/Caddyfile.docker.http-only deploy/Caddyfile.docker
+#   make deploy-docker
+#
+# Then access: http://168.107.93.149 (or your VM IP)
+
+:80 {
+	handle /ingest* {
+		reverse_proxy ingestion:8600
+	}
+	handle /health {
+		reverse_proxy ingestion:8600
+	}
+	handle {
+		reverse_proxy web:8501
+	}
+}
