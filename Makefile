@@ -18,7 +18,9 @@ COMPOSE := docker compose -f deploy/docker-compose.yml
 
 .PHONY: help venv setup run desktop bundle test check reset-db \
         deploy-systemd deploy-systemd-down deploy-docker deploy-docker-down \
-        web-user web-token docker-user docker-token docker-logs docker-shell docker-status
+        web-user web-token docker-user docker-token \
+        docker-logs docker-shell docker-status \
+        docker-restart docker-restart-web docker-restart-ingestion docker-restart-caddy
 
 # Account/token creation for the systemd path (Docker uses `compose run` — see the guide).
 NAME ?= $(USER_NAME)
@@ -125,3 +127,19 @@ docker-status: ## Show Docker container status and basic stats.
 docker-shell: ## Open a shell inside the web container. Usage: make docker-shell
 	@test -f deploy/.env || { echo "Create deploy/.env from deploy/.env.example first"; exit 2; }
 	$(COMPOSE) --env-file deploy/.env run --rm web /bin/bash
+
+docker-restart: ## Restart all Docker services (web, ingestion, caddy).
+	@test -f deploy/.env || { echo "Create deploy/.env from deploy/.env.example first"; exit 2; }
+	$(COMPOSE) --env-file deploy/.env restart
+
+docker-restart-web: ## Restart the web service (Streamlit app). Required after user changes.
+	@test -f deploy/.env || { echo "Create deploy/.env from deploy/.env.example first"; exit 2; }
+	$(COMPOSE) --env-file deploy/.env restart web
+
+docker-restart-ingestion: ## Restart the ingestion API service (FastAPI).
+	@test -f deploy/.env || { echo "Create deploy/.env from deploy/.env.example first"; exit 2; }
+	$(COMPOSE) --env-file deploy/.env restart ingestion
+
+docker-restart-caddy: ## Restart the Caddy reverse proxy. Required after Caddyfile changes.
+	@test -f deploy/.env || { echo "Create deploy/.env from deploy/.env.example first"; exit 2; }
+	$(COMPOSE) --env-file deploy/.env restart caddy
