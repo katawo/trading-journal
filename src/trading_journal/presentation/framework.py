@@ -303,7 +303,7 @@ def _render_framework_page_header(repo: SQLiteJournalRepository) -> AccountListI
     st.caption("Use completed MT5 trades to assess execution. Alerts are advisory; this journal never sends, blocks, or changes MT5 orders.")
     account = repo.get_active_mt5_account()
     if account is None:
-        st.info("Add an approved MT5 account in Settings before using the framework.")
+        st.info(tr("Add an approved MT5 account in Settings before using the framework."))
         st.page_link("app_pages/settings.py", label=tr("Go to Settings"), icon=":material/settings:")
         return None
     st.caption(tr("Reviewing {account}. Change the active account in Settings → Approved MT5 accounts.", account=_account_label(account)))
@@ -337,7 +337,7 @@ def _render_post_trade_review(repo: SQLiteJournalRepository, account: AccountLis
     profiles = [repo.get_account_strategy(account.id)]
     trades = repo.list_closed_trades_for_review(account.id)
     if not trades:
-        st.info("No completed MT5 positions have been imported for this account yet.")
+        st.info(tr("No completed MT5 positions have been imported for this account yet."))
         return
     score_items = service.trade_process_scores(account.id)
     snapshot = service.risk_snapshot(account.id)
@@ -752,7 +752,7 @@ def _render_post_trade_review_dialog(repo: SQLiteJournalRepository, account: Acc
         _render_review_history(repo, account.id, trade)
         return
     if any(value is None for value in grades.values()):
-        st.error("Rate every criterion as Pass, Partial, or Fail before saving.")
+        st.error(tr("Rate every criterion as Pass, Partial, or Fail before saving."))
         return
     try:
         with st.spinner(tr("Saving…")):
@@ -913,9 +913,9 @@ def _render_logical_trade_group_dialog(
 def _render_logical_trade_regroup_confirmation(repo: SQLiteJournalRepository, account: AccountListItem, confirmation: dict) -> None:  # type: ignore[type-arg]
     count = confirmation["affected_assessment_count"]
     if confirmation["mode"] == "disband":
-        st.warning("This will split the current logical trade into individual position trades.")
+        st.warning(tr("This will split the current logical trade into individual position trades."))
     else:
-        st.warning("This will apply the selected current membership to the logical trade.")
+        st.warning(tr("This will apply the selected current membership to the logical trade."))
     if count:
         st.error(
             tr(
@@ -1654,7 +1654,7 @@ def _render_risk_policy(repo: SQLiteJournalRepository, account: AccountListItem)
     st.markdown("#### Account risk policy")
     st.caption("The policy defines reporting 1R and safety limits. It monitors closed MT5 trades only and never controls MT5.")
     if funded is None:
-        st.warning("Set funded capital in Settings → Account & risk before saving a Risk policy.")
+        st.warning(tr("Set funded capital in Settings → Account & risk before saving a Risk policy."))
     else:
         st.info(f"Funded capital: {funded} {account.account_currency}.")
     with st.form(f"account-risk-policy-{account.id}"):
@@ -1691,7 +1691,7 @@ def _render_risk_policy(repo: SQLiteJournalRepository, account: AccountListItem)
             st.error(str(error))
         else:
             queue_toast(tr("Risk policy saved as a new version."))
-            st.success("Risk policy saved as a new version.")
+            st.success(tr("Risk policy saved as a new version."))
             st.rerun()
 
 
@@ -1717,5 +1717,5 @@ def _render_framework_rules(repo: SQLiteJournalRepository) -> None:
             st.error(str(error))
         else:
             queue_toast(tr("Review rules saved."))
-            st.success("Review rules saved.")
+            st.success(tr("Review rules saved."))
             st.rerun()

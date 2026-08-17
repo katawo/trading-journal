@@ -425,7 +425,7 @@ def render_manual_sync_button(repo: SQLiteJournalRepository, *, key: str) -> Non
         if is_desktop_mode():
             paths = desktop_runtime_paths()
             DesktopSyncControl(paths.sync_request_path, paths.shutdown_request_path).request_sync()
-            st.info("Desktop sync requested. The local worker will check every configured export within one second.")
+            st.info(tr("Desktop sync requested. The local worker will check every configured export within one second."))
         else:
             with st.spinner(tr("Syncing MT5 now…")):
                 results = MT5AutoSyncService(repo).sync_configured_exports()
@@ -444,7 +444,7 @@ def render_manual_sync_button(repo: SQLiteJournalRepository, *, key: str) -> Non
         updated = sum(item.updated_count for item in imported)
         st.success(f"Manual sync imported {created} created and {updated} updated MT5 position(s).")
     elif not failures and waiting:
-        st.info("MT5 sync is waiting: " + "; ".join(item.message or item.account_name for item in waiting))
+        st.info(tr("MT5 sync is waiting: ") + "; ".join(item.message or item.account_name for item in waiting))
     elif not failures and results:
         st.success("MT5 journal is already up to date.")
     elif not failures:
@@ -887,7 +887,7 @@ def render_settings(repo: SQLiteJournalRepository) -> None:
         account = render_mt5_account_settings(repo)
         st.divider()
         if account is None:
-            st.info("Save an MT5 account before configuring its Risk policy.")
+            st.info(tr("Save an MT5 account before configuring its Risk policy."))
         else:
             _render_risk_policy(repo, account)
     with strategies_tab:
@@ -906,7 +906,7 @@ def render_settings(repo: SQLiteJournalRepository) -> None:
             if st.button("Quit desktop journal", icon=":material/power_settings_new:", type="primary"):
                 paths = desktop_runtime_paths()
                 DesktopSyncControl(paths.sync_request_path, paths.shutdown_request_path, paths.reset_request_path).request_shutdown()
-                st.success("Closing the local Trade Compass…")
+                st.success(tr("Closing the local Trade Compass…"))
         render_desktop_database_reset()
 
 
@@ -1231,7 +1231,7 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
             start_date = first.date_input("Start date", value=today.replace(day=1))
             end_date = second.date_input("End date", value=today)
             if start_date > end_date:
-                st.error("Start date must be on or before end date.")
+                st.error(tr("Start date must be on or before end date."))
                 return account
     currency = account.account_currency
     time_label = {"server": "MT5 server time", "utc": "UTC", "local": "local computer time"}[settings.reporting_time_basis]
@@ -1311,7 +1311,7 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
     daily["net_pnl"] = daily["net_pnl"].astype(float)
 
     if chart_view == "Per trade" and not report.per_trade:
-        st.info("No complete logical trades closed in this period. Showing the immutable MT5 position history instead.")
+        st.info(tr("No complete logical trades closed in this period. Showing the immutable MT5 position history instead."))
         chart_view = "Daily"
 
     if chart_view == "Daily":
@@ -1475,7 +1475,7 @@ def render_strategy_analytics(repo: SQLiteJournalRepository) -> None:
         start_date = first.date_input("Start date", value=date.today().replace(day=1))
         end_date = second.date_input("End date", value=date.today())
         if start_date > end_date:
-            st.error("Start date must be on or before end date.")
+            st.error(tr("Start date must be on or before end date."))
             return
     rows: list[dict[str, object]] = []
     for account in accounts:
