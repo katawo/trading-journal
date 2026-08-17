@@ -8,7 +8,7 @@
 # automatically. For a quick local test without TLS, replace the domain line
 # with `:80 {` and use plain http://localhost.
 
-your-domain.example.com {
+:80 {
 	handle /ingest* {
 		reverse_proxy ingestion:8600
 	}

@@ -27,3 +27,5 @@ release/
 # MetaEditor compilation artifacts
 *.ex5
 deploy/.env
+keys/ssh-key-2026-08-17.key
+keys/ssh-key-2026-08-17.key.pub
