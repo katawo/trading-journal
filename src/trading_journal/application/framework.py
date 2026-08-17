@@ -309,6 +309,7 @@ class PeriodReviewStatus:
     period_end: str
     due: bool
     reviewed_trades: int
+    closed_trades: int
 
 
 @dataclass(frozen=True)
@@ -413,10 +414,16 @@ class FrameworkService:
             start = end.replace(day=1)
         else:
             raise ValueError("Period review cadence must be weekly or monthly")
-        reviewed = [item for item in self._repository.list_post_trade_assessment_outcomes(account_id) if start <= self._trade_date(item.trade.exit_time, item.trade.server_utc_offset_minutes) <= end]
+        # trade_process_scores() sees every closed trade regardless of review status (unlike
+        # list_post_trade_assessment_outcomes(), which only sees already-reviewed ones) - so a
+        # single pass over it distinguishes "nothing closed this period" from "closed trades
+        # are sitting unreviewed," using the same REVIEWED_KINDS the rest of the app already
+        # uses for review-status (Review-tab badge, coaching recommendations, etc.).
+        in_period = [item for item in self.trade_process_scores(account_id) if start <= self._trade_date(item.exit_time, item.server_utc_offset_minutes) <= end]
+        reviewed = [item for item in in_period if item.review_kind in REVIEWED_KINDS]
         existing = self._repository.list_framework_period_reviews(account_id, cadence)
         saved = any(item.period_start == start.isoformat() and item.period_end == end.isoformat() for item in existing)
-        return PeriodReviewStatus(cadence, start.isoformat(), end.isoformat(), bool(reviewed) and not saved, len(reviewed))
+        return PeriodReviewStatus(cadence, start.isoformat(), end.isoformat(), bool(reviewed) and not saved, len(reviewed), len(in_period))
 
     def save_period_review(
         self,

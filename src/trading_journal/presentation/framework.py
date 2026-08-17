@@ -1552,8 +1552,10 @@ def _render_period_reviews(repo: SQLiteJournalRepository, account: AccountListIt
     statuses = [service.period_review_status(account.id, cadence) for cadence in ("weekly", "monthly")]
     with st.container(horizontal=True, gap="small"):
         for status in statuses:
-            if status.reviewed_trades == 0:
-                status_label = tr("Awaiting review")
+            if status.closed_trades == 0:
+                status_label = tr("No activity")
+            elif status.reviewed_trades == 0:
+                status_label = tr("Pending review")
             elif status.due:
                 status_label = tr("Due")
             else:

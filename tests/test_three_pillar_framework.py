@@ -1031,6 +1031,7 @@ def test_weekly_period_review_captures_scores_and_resolves_repeated_cap(tmp_path
     service = FrameworkService(repository)
     status = service.period_review_status(account_id, "weekly", now=datetime(2026, 8, 10, tzinfo=timezone.utc))
     assert status.due
+    assert status.closed_trades == 2
     service.save_period_review(
         account_id=account_id, cadence="weekly", review_note="Stops widened twice.", priority_action="Use fixed stop orders.", now=datetime(2026, 8, 10, tzinfo=timezone.utc)
     )
@@ -1039,6 +1040,31 @@ def test_weekly_period_review_captures_scores_and_resolves_repeated_cap(tmp_path
     assert len(saved) == 1
     assert saved[0].cadence == "weekly"
     assert saved[0].priority_action == "Use fixed stop orders."
+
+
+def test_period_review_status_reports_no_activity_when_nothing_closed(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+
+    status = FrameworkService(repository).period_review_status(account_id, "weekly", now=datetime(2026, 8, 10, tzinfo=timezone.utc))
+
+    assert status.closed_trades == 0
+    assert status.reviewed_trades == 0
+    assert not status.due
+
+
+def test_period_review_status_distinguishes_pending_from_no_activity(tmp_path) -> None:
+    """A closed-but-unreviewed trade must not read the same as no activity at all - the
+    caller (the widget) needs closed_trades to tell these apart, since due/reviewed_trades
+    alone can't (see docs/period-review-status-investigation.md).
+    """
+    repository, account_id = _repository(tmp_path)
+    _import_position(repository, account_id, exit_time="2026-08-05T09:00:00+00:00")
+
+    status = FrameworkService(repository).period_review_status(account_id, "weekly", now=datetime(2026, 8, 10, tzinfo=timezone.utc))
+
+    assert status.closed_trades == 1
+    assert status.reviewed_trades == 0
+    assert not status.due
 
 
 def test_caution_cap_detail_names_the_date_of_the_last_critical_violation(tmp_path) -> None:

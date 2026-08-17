@@ -359,6 +359,8 @@ VI: dict[str, str] = {
     "Scope": "Phạm vi",
     "Issue": "Vấn đề",
     "Count": "Số lượng",
+    "No activity": "Không có hoạt động",
+    "Pending review": "Chờ đánh giá",
     "Due": "Đến hạn",
     "Up to date": "Đã cập nhật",
     "Weekly review": "Đánh giá tuần",
