@@ -1525,7 +1525,7 @@ def main() -> None:
     install_streamlit_translations()
     render_pending_toast()
     if not is_multiuser_mode():
-        st.set_page_config(page_title=tr("Trade Compass"), page_icon="📈", layout="wide")
+        st.set_page_config(page_title=tr("Trade Compass"), page_icon="🧭", layout="wide")
     if is_multiuser_mode():
         render_logout_control()
         if current_username() is None:
@@ -1535,6 +1535,10 @@ def main() -> None:
             # repository() again independently per-page) against an already-logged-out
             # session and crash instead of cleanly falling back to the login form.
             st.rerun()
+
+    # Trade Compass SVG logo (base64-encoded for inline display)
+    _trade_compass_svg_b64 = "data:image/svg+xml;base64,PHN2ZyB2aWV3Qm94PSIwIDAgMTAwIDEwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48ZGVmcz48ZmlsdGVyIGlkPSJibHVyLWFwcCI+PGZlR2F1c3NpYW5CbHVyIGluPSJTb3VyY2VHcmFwaGljIiBzdGREZXZpYXRpb249IjEuMiIvPjwvZmlsdGVyPjwvZGVmcz48Y2lyY2xlIGN4PSI1MCIgY3k9IjUwIiByPSI0NSIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMGU5MTYzIiBzdHJva2Utd2lkdGg9IjIiLz48Y2lyY2xlIGN4PSI1MCIgY3k9IjUwIiByPSIzOCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNmI3MjgwIiBzdHJva2Utd2lkdGg9IjEuNSIgb3BhY2l0eT0iMC40Ii8+PGNpcmNsZSBjeD0iNTAiIGN5PSIxMiIgcj0iMyIgZmlsbD0iIzBlOTE2MyIvPjxjaXJjbGUgY3g9Ijg4IiBjeT0iNTAiIHI9IjIuNSIgZmlsbD0iIzBlOTE2MyIgb3BhY2l0eT0iMC42Ii8+PGNpcmNsZSBjeD0iNTAiIGN5PSI4OCIgcj0iMi41IiBmaWxsPSIjMGU5MTYzIiBvcGFjaXR5PSIwLjYiLz48Y2lyY2xlIGN4PSIxMiIgY3k9IjUwIiByPSIyLjUiIGZpbGw9IiMwZTkxNjMiIG9wYWNpdHk9IjAuNiIvPjxwYXRoIGQ9Ik0gNTAgMTUgTCA0NSA0MCBMIDUwIDUwIEwgNTUgNDAgWiIgZmlsbD0iIzEwYjk4MSIvPjxnIGZpbHRlcj0idXJsKCNibHVyLWFwcCkiIG9wYWNpdHk9IjAuNDIiPjxwYXRoIGQ9Ik0gNTAgMTUgTCA0NSA0MCBMIDUwIDUwIEwgNTUgNDAgWiIgZmlsbD0iIzEwYjk4MSIgdHJhbnNmb3JtPSJyb3RhdGUoMTIwIDUwIDUwKSIvPjwvZz48ZyBmaWx0ZXI9InVybCgjYmx1ci1hcHApIiBvcGFjaXR5PSIwLjQyIj48cGF0aCBkPSJNIDUwIDE1IEwgNDUgNDAgTCA1MCA1MCBMIDU1IDQwIFoiIGZpbGw9IiMxMGI5ODEiIHRyYW5zZm9ybT0icm90YXRlKDI0MCA1MCA1MCkiLz48L2c+PHBhdGggZD0iTSA1MCA1MCBMIDQ1IDYwIEwgNTAgNTUgTCA1NSA2MCBaIiBmaWxsPSIjMGU5MTYzIiBvcGFjaXR5PSIwLjIiLz48Y2lyY2xlIGN4PSI1MCIgY3k9IjUwIiByPSIzLjUiIGZpbGw9IiMwZDdhNTIiLz48L3N2Zz4="
+
     with st.sidebar:
         selected_language = st.selectbox(
             "Language",
@@ -1551,7 +1555,13 @@ def main() -> None:
         st.rerun()
     apply_application_style()
     render_build_info()
-    st.title("Trade Compass")
+
+    # App branding with logo
+    col_logo, col_title = st.columns([0.12, 0.88], gap="small", vertical_alignment="center")
+    with col_logo:
+        st.image(_trade_compass_svg_b64, width=50)
+    with col_title:
+        st.title("Trade Compass")
     st.caption("Local-first trade review, guided by discipline.")
 
     review_count = 0
