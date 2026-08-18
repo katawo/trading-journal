@@ -8,7 +8,7 @@ import pytest
 
 import streamlit as st
 
-from trading_journal.application.framework import FrameworkService, ROADMAP_ITEMS
+from trading_journal.application.framework import FrameworkService, ROADMAP_ITEMS, ReadinessAssessment, RiskSnapshot
 from trading_journal.application.dashboard import DashboardService
 from trading_journal.domain.models import MT5PositionExport
 from trading_journal.infrastructure.sqlite_repository import (
@@ -23,14 +23,36 @@ from trading_journal.presentation.framework import (
     _automatic_risk_monitoring_detail,
     _clear_review_dialog,
     _default_policy_adherence_grade,
+    _daily_r_metric,
+    _drawdown_metric,
     _process_failure_detail,
+    _readiness_metric,
     _risk_evidence_detail,
+    _risk_state_metric,
     _set_pillar_grades_to_pass,
 )
 from trading_journal.presentation.trade_tags import direction_tag, outcome_tag
 
 
 ALL_PASS = {criterion: "pass" for criterion in ASSESSMENT_CRITERIA}
+
+
+def test_monitor_metrics_use_semantic_colors_without_treating_status_as_a_trend() -> None:
+    incomplete = ReadinessAssessment(None, "incomplete", 20, "More evidence required.")
+    ready = ReadinessAssessment("82", "ready", 20, "Ready.")
+    clear = RiskSnapshot(True, "clear", "-1.05", "-1.05", "2.7", "2.7", 1, "Clear.")
+
+    assert _readiness_metric(incomplete) == (None, "Incomplete", "orange")
+    assert _readiness_metric(ready) == ("82%", "Ready", "green")
+    assert _risk_state_metric(clear) == ("Clear", "Within limits", "green")
+    assert _daily_r_metric(clear.daily_r) == ("−1.05R", "Loss", "red")
+    assert _drawdown_metric(clear.max_drawdown_percent) == ("2.7%", "Historical maximum", "gray")
+
+
+def test_monitor_metrics_distinguish_unavailable_values_and_breached_drawdown() -> None:
+    assert _daily_r_metric(None) == (None, "Unavailable", "gray")
+    assert _drawdown_metric(None) == (None, "Unavailable", "gray")
+    assert _drawdown_metric("0") == ("0.0%", "No drawdown", "gray")
 
 
 def test_trade_tags_keep_direction_and_realized_outcome_separate() -> None:

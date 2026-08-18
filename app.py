@@ -27,6 +27,7 @@ from trading_journal.presentation.framework import (
     render_dashboard_coaching_focus,
     render_framework_dashboard,
 )
+from trading_journal.presentation.branding import TRADE_COMPASS_ICON
 from trading_journal.presentation.global_alert_bubble import GlobalAlertItem, render_global_alert_bubble
 from trading_journal.presentation.multiuser_auth import current_username, is_multiuser_mode, render_login_gate, render_logout_control, user_database_path
 from trading_journal.presentation.desktop_reset_restart import render_desktop_reset_restart_bridge
@@ -673,6 +674,11 @@ def render_mt5_account_settings(repo: SQLiteJournalRepository) -> AccountListIte
         st.session_state["mt5-account-selected-id"] = "new"
         st.session_state["account-onboarding-open"] = True
 
+    def activate_account(account_id: int, display_name: str) -> None:
+        repo.set_active_mt5_account(account_id)
+        st.session_state["mt5-account-notice"] = tr("{account} is now the active account.", account=display_name)
+        queue_toast(st.session_state["mt5-account-notice"], icon=":material/toggle_on:")
+
     master, detail = st.columns([2, 3], gap="large")
     with master:
         st.markdown("##### Accounts")
@@ -688,11 +694,22 @@ def render_mt5_account_settings(repo: SQLiteJournalRepository) -> AccountListIte
                     st.caption(f"{account.strategy_name} · {account.login} · {account.broker_server}")
                     if account.funded_capital:
                         st.caption(f"{tr('Funded capital')}: {format_currency_caption(account.funded_capital, account.account_currency, signed=False)}")
-                    if is_editing:
-                        st.badge(tr("Currently editing"), icon=":material/edit_note:")
-                    elif st.button("Edit", icon=":material/edit:", key=f"open-mt5-account-{account.id}", width="stretch"):
-                        st.session_state["mt5-account-selected-id"] = str(account.id)
-                        st.rerun()
+                    with st.container(horizontal=True, gap="small", vertical_alignment="center"):
+                        if not is_active:
+                            st.button(
+                                tr("Set active"),
+                                type="primary",
+                                icon=":material/toggle_on:",
+                                key=f"quick-activate-mt5-account-{account.id}",
+                                width="stretch",
+                                on_click=activate_account,
+                                args=(account.id, account.display_name),
+                            )
+                        if is_editing:
+                            st.badge(tr("Currently editing"), icon=":material/edit_note:")
+                        elif st.button("Edit", icon=":material/edit:", key=f"open-mt5-account-{account.id}", width="stretch"):
+                            st.session_state["mt5-account-selected-id"] = str(account.id)
+                            st.rerun()
         else:
             st.caption("No accounts yet. Create the first one to start importing MT5 trades.")
 
@@ -958,7 +975,7 @@ def request_desktop_database_reset() -> None:
 def render_desktop_database_diagnostic(error: Exception) -> None:
     """Keep unexpected local database failures in the browser, without resetting data."""
 
-    st.set_page_config(page_title="Trade Compass recovery", page_icon="📈", layout="wide")
+    st.set_page_config(page_title="Trade Compass recovery", page_icon=TRADE_COMPASS_ICON, layout="wide")
     st.title("Trade Compass recovery")
     st.error("Trade Compass could not open its local database.")
     st.caption("No data was changed. Inspect desktop.log in the Trade Compass data directory before taking further action.")
@@ -1429,13 +1446,13 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
             st.subheader("Concentration (80/20)")
             _render_help_popover("Use this outcome-only lens to prioritize a review sample. It does not prove cause, system quality, or trading readiness.")
         concentration_options = {
-            tr("Symbol"): "symbol",
             tr("Trade"): "trade",
+            tr("Symbol"): "symbol",
         }
         concentration_choice = st.segmented_control(
             "Concentration view",
             list(concentration_options),
-            default=tr("Symbol"),
+            default=tr("Trade"),
             required=True,
             key="dashboard-concentration-dimension",
             width="content",
@@ -1515,7 +1532,7 @@ def main() -> None:
         repo = repository()
     except JournalDatabaseResetRequiredError as error:
         if is_desktop_mode():
-            st.set_page_config(page_title="Trade Compass recovery", page_icon="📈", layout="wide")
+            st.set_page_config(page_title="Trade Compass recovery", page_icon=TRADE_COMPASS_ICON, layout="wide")
             st.title("Trade Compass recovery")
             st.error(str(error))
             st.caption("Reset the local database to start a clean journal. This cannot be undone.")
@@ -1535,7 +1552,7 @@ def main() -> None:
     install_streamlit_translations()
     render_pending_toast()
     if not is_multiuser_mode():
-        st.set_page_config(page_title=tr("Trade Compass"), page_icon="🧭", layout="wide")
+        st.set_page_config(page_title=tr("Trade Compass"), page_icon=TRADE_COMPASS_ICON, layout="wide")
     if is_multiuser_mode():
         render_logout_control()
         if current_username() is None:
@@ -1545,9 +1562,6 @@ def main() -> None:
             # repository() again independently per-page) against an already-logged-out
             # session and crash instead of cleanly falling back to the login form.
             st.rerun()
-
-    # Trade Compass SVG logo (base64-encoded for inline display)
-    _trade_compass_svg_b64 = "data:image/svg+xml;base64,PHN2ZyB2aWV3Qm94PSIwIDAgMTAwIDEwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48ZGVmcz48ZmlsdGVyIGlkPSJibHVyLWFwcCI+PGZlR2F1c3NpYW5CbHVyIGluPSJTb3VyY2VHcmFwaGljIiBzdGREZXZpYXRpb249IjEuMiIvPjwvZmlsdGVyPjwvZGVmcz48Y2lyY2xlIGN4PSI1MCIgY3k9IjUwIiByPSI0NSIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMGU5MTYzIiBzdHJva2Utd2lkdGg9IjIiLz48Y2lyY2xlIGN4PSI1MCIgY3k9IjUwIiByPSIzOCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNmI3MjgwIiBzdHJva2Utd2lkdGg9IjEuNSIgb3BhY2l0eT0iMC40Ii8+PGNpcmNsZSBjeD0iNTAiIGN5PSIxMiIgcj0iMyIgZmlsbD0iIzBlOTE2MyIvPjxjaXJjbGUgY3g9Ijg4IiBjeT0iNTAiIHI9IjIuNSIgZmlsbD0iIzBlOTE2MyIgb3BhY2l0eT0iMC42Ii8+PGNpcmNsZSBjeD0iNTAiIGN5PSI4OCIgcj0iMi41IiBmaWxsPSIjMGU5MTYzIiBvcGFjaXR5PSIwLjYiLz48Y2lyY2xlIGN4PSIxMiIgY3k9IjUwIiByPSIyLjUiIGZpbGw9IiMwZTkxNjMiIG9wYWNpdHk9IjAuNiIvPjxwYXRoIGQ9Ik0gNTAgMTUgTCA0NSA0MCBMIDUwIDUwIEwgNTUgNDAgWiIgZmlsbD0iIzEwYjk4MSIvPjxnIGZpbHRlcj0idXJsKCNibHVyLWFwcCkiIG9wYWNpdHk9IjAuNDIiPjxwYXRoIGQ9Ik0gNTAgMTUgTCA0NSA0MCBMIDUwIDUwIEwgNTUgNDAgWiIgZmlsbD0iIzEwYjk4MSIgdHJhbnNmb3JtPSJyb3RhdGUoMTIwIDUwIDUwKSIvPjwvZz48ZyBmaWx0ZXI9InVybCgjYmx1ci1hcHApIiBvcGFjaXR5PSIwLjQyIj48cGF0aCBkPSJNIDUwIDE1IEwgNDUgNDAgTCA1MCA1MCBMIDU1IDQwIFoiIGZpbGw9IiMxMGI5ODEiIHRyYW5zZm9ybT0icm90YXRlKDI0MCA1MCA1MCkiLz48L2c+PHBhdGggZD0iTSA1MCA1MCBMIDQ1IDYwIEwgNTAgNTUgTCA1NSA2MCBaIiBmaWxsPSIjMGU5MTYzIiBvcGFjaXR5PSIwLjIiLz48Y2lyY2xlIGN4PSI1MCIgY3k9IjUwIiByPSIzLjUiIGZpbGw9IiMwZDdhNTIiLz48L3N2Zz4="
 
     with st.sidebar:
         selected_language = st.selectbox(
@@ -1573,7 +1587,7 @@ def main() -> None:
     # Keeping real st.image/st.title calls (instead of hand-built HTML) also keeps
     # them visible to AppTest, which looks for those element types specifically.
     with st.container(key="trade-compass-brand"):
-        st.image(_trade_compass_svg_b64, width=50)
+        st.image(TRADE_COMPASS_ICON, width=50)
         st.title("Trade Compass")
     st.caption("Local-first trade review, guided by discipline.")
 

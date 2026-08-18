@@ -16,11 +16,14 @@ from trading_journal.infrastructure.sqlite_repository import LivePositionItem, S
 
 
 LIVE_POSITION_SCHEMA_VERSION = 1
+
+
 @dataclass(frozen=True)
 class LivePositionRisk:
     position: LivePositionItem
     risk_r: Decimal | None
     protected: bool
+    risk_amount_available: bool
 
 
 @dataclass(frozen=True)
@@ -32,6 +35,7 @@ class LivePositionReport:
     limit_r: Decimal | None
     net_unrealized_pnl: Decimal
     unprotected_count: int
+    risk_unavailable_count: int
     detail: str
 
 
@@ -141,17 +145,30 @@ class LivePositionService:
         limit_r = None if policy is None else Decimal(policy.max_open_risk_r)
         standard_r = None
         if policy is not None and opening_balance is not None:
-            standard_r = Decimal(opening_balance) * Decimal(policy.standard_risk_per_trade_percent) / Decimal("100")
+            configured_r = Decimal(opening_balance) * Decimal(policy.standard_risk_per_trade_percent) / Decimal("100")
+            if configured_r > 0:
+                standard_r = configured_r
         risks = tuple(
             LivePositionRisk(
                 position=row,
                 risk_r=None if row.risk_to_stop_amount is None or standard_r is None or standard_r <= 0 else Decimal(row.risk_to_stop_amount) / standard_r,
-                protected=row.risk_to_stop_amount is not None,
+                protected=self._has_protective_stop(row),
+                risk_amount_available=row.risk_to_stop_amount is not None,
             )
             for row in rows
         )
         unprotected = sum(not item.protected for item in risks)
-        total = sum((item.risk_r for item in risks if item.risk_r is not None), Decimal("0"))
+        risk_unavailable = sum(item.protected and not item.risk_amount_available for item in risks)
+        known_risks = tuple(item.risk_r for item in risks if item.risk_r is not None)
+        total = sum(known_risks, Decimal("0"))
+        if snapshot is None:
+            displayed_total = None
+        elif not risks:
+            displayed_total = Decimal("0")
+        elif known_risks:
+            displayed_total = total
+        else:
+            displayed_total = None
         stale_after = None if snapshot is None else timedelta(seconds=snapshot.export_interval_seconds * 2)
         stale = snapshot_time is not None and stale_after is not None and now - snapshot_time > stale_after
         if snapshot_time is None:
@@ -160,10 +177,12 @@ class LivePositionService:
             status, detail = "stale", "Live snapshot is older than two export intervals."
         elif policy is None or standard_r is None:
             status, detail = "unconfigured", "Set funded capital and an active Risk policy to calculate open risk."
-        elif unprotected:
-            status, detail = "unprotected", "At least one open position has no valid protective stop; known risk is only a lower bound."
         elif limit_r is not None and total >= limit_r:
             status, detail = "stop", "Known open risk has reached the account limit."
+        elif unprotected:
+            status, detail = "unprotected", "At least one open position has no valid protective stop; known risk is only a lower bound."
+        elif risk_unavailable:
+            status, detail = "risk_unavailable", "At least one protected position has unavailable risk calculation; known risk is only a lower bound."
         elif limit_r is not None and total >= limit_r * Decimal("0.8"):
             status, detail = "caution", "Known open risk has reached 80% of the account limit."
         else:
@@ -172,10 +191,11 @@ class LivePositionService:
             positions=risks,
             snapshot_time=snapshot_time,
             status=status,
-            total_risk_r=None if standard_r is None else total,
+            total_risk_r=displayed_total,
             limit_r=limit_r,
             net_unrealized_pnl=sum((Decimal(item.position.net_unrealized_pnl) for item in risks), Decimal("0")),
             unprotected_count=unprotected,
+            risk_unavailable_count=risk_unavailable,
             detail=detail,
         )
         self._record_incidents(account_id, report)
@@ -185,6 +205,14 @@ class LivePositionService:
     def _parse_snapshot_time(raw: str) -> datetime:
         value = datetime.fromisoformat(raw)
         return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+
+    @staticmethod
+    def _has_protective_stop(position: LivePositionItem) -> bool:
+        if position.stop_price is None:
+            return False
+        stop = Decimal(position.stop_price)
+        current = Decimal(position.current_price)
+        return stop < current if position.direction == "long" else stop > current
 
     def _record_incidents(self, account_id: int, report: LivePositionReport) -> None:
         # A stale or missing feed cannot safely resolve a previous live-risk event.
@@ -196,5 +224,11 @@ class LivePositionService:
         for item in report.positions:
             if not item.protected:
                 active[f"unprotected:{item.position.position_id}"] = ("unprotected", item.position.position_id, "Open position has no valid protective stop.")
+            elif not item.risk_amount_available:
+                active[f"risk_unavailable:{item.position.position_id}"] = (
+                    "risk_unavailable",
+                    item.position.position_id,
+                    "Protective stop exists, but MT5 could not calculate monetary risk.",
+                )
         occurred_at = (report.snapshot_time or datetime.now(timezone.utc)).isoformat()
         self._repository.record_live_incident_transitions(account_id, active, occurred_at=occurred_at)

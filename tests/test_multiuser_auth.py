@@ -1,5 +1,7 @@
 import pytest
 
+from trading_journal.presentation import multiuser_auth
+from trading_journal.presentation.branding import TRADE_COMPASS_ICON
 from trading_journal.presentation.multiuser_auth import _cookie_key
 
 
@@ -25,3 +27,14 @@ def test_cookie_key_accepts_a_sufficiently_long_random_secret(monkeypatch) -> No
     secret = "a" * 32
     monkeypatch.setenv("TRADING_JOURNAL_MULTIUSER_COOKIE_KEY", secret)
     assert _cookie_key() == secret
+
+
+def test_login_page_uses_the_trade_compass_favicon(monkeypatch, tmp_path) -> None:
+    configured: dict[str, object] = {}
+    monkeypatch.setattr(multiuser_auth, "users_config_path", lambda: tmp_path / "missing-users.yaml")
+    monkeypatch.setattr(multiuser_auth.st, "set_page_config", lambda **kwargs: configured.update(kwargs))
+    monkeypatch.setattr(multiuser_auth, "_hide_app_chrome", lambda: None)
+    monkeypatch.setattr(multiuser_auth.st, "error", lambda *_args, **_kwargs: None)
+
+    assert multiuser_auth.render_login_gate() is None
+    assert configured["page_icon"] == TRADE_COMPASS_ICON

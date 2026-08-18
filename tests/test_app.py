@@ -246,6 +246,27 @@ def test_ongoing_page_renders_its_auto_refreshing_workspace(monkeypatch, tmp_pat
     assert any("Add and select an MT5 account" in item.value for item in app.info)
 
 
+def test_ongoing_page_does_not_claim_positions_are_flat_before_the_first_snapshot(monkeypatch, tmp_path) -> None:
+    database_path = tmp_path / "journal.db"
+    repository = SQLiteJournalRepository(database_path)
+    repository.initialize()
+    repository.register_mt5_account(
+        display_name="Primary",
+        login="123456",
+        broker_server="DemoBroker-Live",
+        account_currency="USD",
+        export_file_path="",
+    )
+    monkeypatch.setenv("TRADING_JOURNAL_DB", str(database_path))
+
+    app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
+    app.switch_page("app_pages/ongoing.py").run()
+
+    assert not app.exception
+    assert any("Position data will appear after the first live MT5 snapshot" in item.value for item in app.caption)
+    assert not any("No open positions in the latest live snapshot" in item.value for item in app.info)
+
+
 def test_guidance_page_explains_the_post_trade_three_pillar_workflow(monkeypatch, tmp_path):
     monkeypatch.setenv("TRADING_JOURNAL_DB", str(tmp_path / "journal.db"))
 
@@ -526,22 +547,20 @@ def test_settings_can_switch_the_active_mt5_account(monkeypatch, tmp_path):
         export_file_path="",
         strategy_profile_id=strategy.id,
     )
-    monkeypatch.setenv("TRADING_JOURNAL_DB", str(database_path))
-
-    app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
-    app.switch_page("app_pages/settings.py").run()
-    assert not any(item.label == "Set as active account" for item in app.button)
-
     repository.register_mt5_account(
         display_name="Secondary", login="654321", broker_server="DemoBroker-Live", account_currency="USD",
         export_file_path="", strategy_profile_id=strategy.id,
     )
-    secondary = repository.find_active_mt5_account("654321", "DemoBroker-Live")
-    assert secondary is not None
-    repository.set_active_mt5_account(secondary.id)
+    monkeypatch.setenv("TRADING_JOURNAL_DB", str(database_path))
+
+    app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
+    app.switch_page("app_pages/settings.py").run()
+    quick_activate = next(item for item in app.button if item.label == "Set active")
+    quick_activate.click().run()
 
     assert not app.exception
     assert repository.get_active_mt5_account().display_name == "Secondary"
+    assert any(item.label == "Set as active account" for item in app.button)
 
 
 def test_framework_workspace_renders_account_scoped_post_trade_journal(monkeypatch, tmp_path):
@@ -1529,8 +1548,10 @@ def test_dashboard_renders_graphics_for_imported_trades(monkeypatch, tmp_path):
     assert len(app.metric) >= 10
     assert any(item.label == "Sync MT5 now" for item in app.button)
     concentration_control = next(item for item in app.segmented_control if item.label == "Concentration view")
+    assert concentration_control.options == ["Trade", "Symbol"]
+    assert concentration_control.value == "Trade"
     assert any("No losing logical trades" in item.value for item in app.info)
-    concentration_control.set_value("Trade").run()
+    concentration_control.set_value("Symbol").run()
     assert not app.exception
     assert {item.label for item in app.metric} >= {"Account balance", "Account drawdown", "Profit factor", "Worst day"}
 

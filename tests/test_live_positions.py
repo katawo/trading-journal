@@ -8,7 +8,14 @@ from types import SimpleNamespace
 
 from trading_journal.application.live_positions import LivePositionImportService, LivePositionService
 from trading_journal.infrastructure.sqlite_repository import SQLiteJournalRepository
-from trading_journal.presentation.ongoing import ONGOING_REFRESH_INTERVAL_SECONDS, _position_priority, _risk_label
+from trading_journal.presentation.ongoing import (
+    ONGOING_REFRESH_INTERVAL_SECONDS,
+    _pnl_metric,
+    _position_priority,
+    _risk_label,
+    _risk_metric,
+    _unprotected_metric,
+)
 
 
 def _repository(tmp_path) -> SQLiteJournalRepository:
@@ -68,6 +75,97 @@ def test_live_snapshot_accepts_a_small_positive_protective_risk(tmp_path) -> Non
     assert repository.list_live_positions(account.id)[0].risk_to_stop_amount == "1E-8"
 
 
+def test_open_risk_is_unavailable_when_no_position_risk_can_be_calculated(tmp_path) -> None:
+    repository = _repository(tmp_path)
+    LivePositionImportService(repository).import_snapshot(_snapshot(risk=None))
+    account = repository.get_active_mt5_account()
+    assert account is not None
+
+    report = LivePositionService(repository).build_report(
+        account.id,
+        now=datetime(2026, 8, 18, 8, 0, tzinfo=timezone.utc),
+    )
+
+    assert report.total_risk_r is None
+    assert report.positions[0].protected is True
+    assert report.positions[0].risk_amount_available is False
+    assert report.unprotected_count == 0
+    assert report.risk_unavailable_count == 1
+    assert report.status == "risk_unavailable"
+    assert _unprotected_metric(report) == ("0", "All protected", "green")
+    assert _risk_metric(report) == (None, "1 position risk unavailable", "orange", "2.00R account limit")
+    assert [(item.category, item.state) for item in repository.list_live_position_incidents(account.id)] == [
+        ("risk_unavailable", "opened"),
+    ]
+
+
+def test_known_limit_breach_takes_priority_over_additional_unavailable_risk(tmp_path) -> None:
+    repository = _repository(tmp_path)
+    payload = _snapshot(risk="20")
+    unavailable = _snapshot(risk=None, position_id="9002")["positions"][0]
+    payload["positions"].append(unavailable)
+    LivePositionImportService(repository).import_snapshot(payload)
+    account = repository.get_active_mt5_account()
+    assert account is not None
+
+    report = LivePositionService(repository).build_report(
+        account.id,
+        now=datetime(2026, 8, 18, 8, 0, tzinfo=timezone.utc),
+    )
+
+    assert report.status == "stop"
+    assert report.total_risk_r == Decimal("2")
+    assert report.risk_unavailable_count == 1
+    assert _risk_metric(report) == ("2.00R", "Limit reached", "red", "2.00R account limit")
+
+
+def test_empty_snapshot_reports_real_zeroes_but_missing_snapshot_reports_unavailable(tmp_path) -> None:
+    repository = _repository(tmp_path)
+    account = repository.get_active_mt5_account()
+    assert account is not None
+    missing = LivePositionService(repository).build_report(account.id)
+
+    assert missing.total_risk_r is None
+    assert _unprotected_metric(missing) == (None, "Unavailable", "gray")
+    assert _pnl_metric(missing, "USD") == (None, "Unavailable", "gray")
+
+    LivePositionImportService(repository).import_snapshot(_snapshot(positions=False))
+    flat = LivePositionService(repository).build_report(
+        account.id,
+        now=datetime(2026, 8, 18, 8, 0, tzinfo=timezone.utc),
+    )
+
+    assert flat.total_risk_r == Decimal("0")
+    assert _risk_metric(flat) == ("0.00R", "No open risk", "gray", "2.00R account limit")
+    assert _unprotected_metric(flat) == ("0", "No open positions", "gray")
+    assert _pnl_metric(flat, "USD") == ("$0.00", "Flat", "gray")
+
+
+def test_live_metric_colors_follow_risk_and_floating_pnl_state() -> None:
+    report = SimpleNamespace(
+        snapshot_time=datetime(2026, 8, 18, 8, 0, tzinfo=timezone.utc),
+        positions=(object(), object()),
+        unprotected_count=0,
+        risk_unavailable_count=0,
+        total_risk_r=Decimal("0.85"),
+        limit_r=Decimal("1"),
+        status="caution",
+        net_unrealized_pnl=Decimal("3.12"),
+    )
+
+    assert _risk_metric(report) == ("0.85R", "Near limit", "orange", "1.00R account limit")
+    assert _unprotected_metric(report) == ("0", "All protected", "green")
+    assert _pnl_metric(report, "USD") == ("+$3.12", "Profit", "green")
+
+    report.status = "stop"
+    report.total_risk_r = Decimal("1.25")
+    report.unprotected_count = 1
+    report.risk_unavailable_count = 1
+    report.net_unrealized_pnl = Decimal("-3.12")
+    assert _risk_metric(report) == ("1.25R", "Over limit", "red", "1.00R account limit")
+    assert _pnl_metric(report, "USD") == ("−$3.12", "Loss", "red")
+
+
 def test_protected_position_risk_is_unknown_without_a_risk_baseline() -> None:
     assert _risk_label(True, None) == "—"
     assert _risk_label(False, None) == "Unprotected"
@@ -105,7 +203,7 @@ def test_live_risk_status_and_incidents_only_transition(tmp_path) -> None:
     service.build_report(account.id, now=datetime(2026, 8, 18, 8, 0, tzinfo=timezone.utc))
     assert len(repository.list_live_position_incidents(account.id)) == 1
 
-    importer.import_snapshot(_snapshot(risk=None))
+    importer.import_snapshot(_snapshot(risk=None, stop_price=""))
     report = service.build_report(account.id, now=datetime(2026, 8, 18, 8, 0, tzinfo=timezone.utc))
     assert report.status == "unprotected"
     assert [(item.category, item.state) for item in repository.list_live_position_incidents(account.id)] == [

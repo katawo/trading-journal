@@ -18,6 +18,7 @@ from trading_journal.application.framework import (
     FrameworkService,
     MonitorAnalysisReport,
     PillarScore,
+    ReadinessAssessment,
     RiskSnapshot,
     TradeProcessScore,
 )
@@ -32,7 +33,7 @@ from trading_journal.infrastructure.sqlite_repository import (
     SQLiteJournalRepository,
 )
 from trading_journal.presentation.i18n import queue_toast, tr
-from trading_journal.presentation.formatting import format_currency, format_percent, format_r, format_score
+from trading_journal.presentation.formatting import format_currency, format_exposure_r, format_percent, format_r, format_score
 from trading_journal.presentation.trade_tags import direction_tag, outcome_tag
 
 
@@ -119,6 +120,43 @@ def _state_label(snapshot: RiskSnapshot) -> str:
     # metric is visible; reusing the same word for two unrelated states would
     # collide on screen.
     return tr({"clear": "Clear", "caution": "Elevated", "stop": "Stop", "unconfigured": "Set up"}[snapshot.state])
+
+
+def _readiness_metric(readiness: ReadinessAssessment) -> tuple[str | None, str, str]:
+    colors = {"ready": "green", "incomplete": "orange", "fail": "red"}
+    value = None if readiness.score is None else format_score(readiness.score)
+    return value, readiness.status.capitalize(), colors.get(readiness.status, "gray")
+
+
+def _risk_state_metric(snapshot: RiskSnapshot) -> tuple[str, str, str]:
+    details = {
+        "clear": ("Within limits", "green"),
+        "caution": ("Needs attention", "orange"),
+        "stop": ("Limit reached", "red"),
+        "unconfigured": ("Required", "orange"),
+    }
+    detail, color = details[snapshot.state]
+    return _state_label(snapshot), detail, color
+
+
+def _daily_r_metric(value: str | None) -> tuple[str | None, str, str]:
+    if value is None:
+        return None, "Unavailable", "gray"
+    result = Decimal(value)
+    if result > 0:
+        return format_r(result), "Gain", "green"
+    if result < 0:
+        return format_r(result), "Loss", "red"
+    return format_r(result), "Flat", "gray"
+
+
+def _drawdown_metric(value: str | None) -> tuple[str | None, str, str]:
+    if value is None:
+        return None, "Unavailable", "gray"
+    drawdown = Decimal(value)
+    if drawdown == 0:
+        return format_percent(drawdown), "No drawdown", "gray"
+    return format_percent(drawdown), "Historical maximum", "gray"
 
 
 def _auto_risk_label(score: TradeProcessScore) -> str:
@@ -283,15 +321,37 @@ def render_framework_dashboard(repo: SQLiteJournalRepository, account: AccountLi
     snapshot = service.risk_snapshot(account.id)
     scores = service.pillar_scores(account.id)
     readiness = service.readiness(account.id)
+    policy = repo.get_active_risk_policy(account.id)
     st.markdown("#### Three-pillar monitor")
     st.caption(tr("Psychology is trader-wide. Risk and System are scoped to {account}.", account=_account_label(account)))
     st.caption(tr("This compact view always uses a fixed 20-trade window. Open Bearings → Monitor to adjust the rolling sample."))
     _render_risk_configuration_notice(service, account.id)
+    readiness_value, readiness_delta, readiness_color = _readiness_metric(readiness)
+    state_value, state_delta, state_color = _risk_state_metric(snapshot)
+    daily_value, daily_delta, daily_color = _daily_r_metric(snapshot.daily_r)
+    drawdown_value, drawdown_delta, drawdown_color = _drawdown_metric(snapshot.max_drawdown_percent)
     with st.container(horizontal=True, gap="small"):
-        st.metric(tr("Overall readiness"), _score_text(readiness.score), tr(readiness.status.capitalize()), border=True)
-        st.metric("Risk state", _state_label(snapshot), border=True)
-        st.metric("Today", "—" if snapshot.daily_r is None else format_r(snapshot.daily_r), border=True)
-        st.metric("Max drawdown", "—" if snapshot.max_drawdown_percent is None else format_percent(snapshot.max_drawdown_percent), border=True)
+        st.metric(
+            tr("Overall readiness"), readiness_value, tr(readiness_delta),
+            delta_color=readiness_color, delta_arrow="off", border=True,
+        )
+        st.metric(
+            tr("Risk state"), state_value, tr(state_delta),
+            delta_color=state_color, delta_arrow="off", border=True,
+        )
+        st.metric(
+            tr("Today"), daily_value, tr(daily_delta),
+            delta_color=daily_color,
+            delta_arrow="off",
+            delta_description=None if policy is None else f"{format_exposure_r(policy.daily_loss_limit_r)} daily loss limit",
+            border=True,
+        )
+        st.metric(
+            tr("Max drawdown"), drawdown_value, tr(drawdown_delta),
+            delta_color=drawdown_color,
+            delta_arrow="off",
+            border=True,
+        )
     _render_score_cards(scores, account)
     _render_pillar_radar(scores)
     st.caption(tr(readiness.detail))
@@ -1368,7 +1428,11 @@ def _render_monitor(repo: SQLiteJournalRepository, account: AccountListItem) -> 
     coverage = service.risk_evidence_coverage(account.id, window=int(window))
     analysis = service.monitor_analysis(account.id, start_date=start_date, end_date=end_date, window=int(window))
     _render_framework_focus(repo, account, service, scores)
-    st.metric(tr("Overall readiness"), _score_text(readiness.score), tr(readiness.status.capitalize()), border=True)
+    readiness_value, readiness_delta, readiness_color = _readiness_metric(readiness)
+    st.metric(
+        tr("Overall readiness"), readiness_value, tr(readiness_delta),
+        delta_color=readiness_color, delta_arrow="off", border=True,
+    )
     st.caption(readiness.detail)
     with st.container(horizontal=True, gap="small", vertical_alignment="center"):
         st.metric("Risk checks", f"{coverage.approved}/{coverage.total}", "approved evidence", border=True)

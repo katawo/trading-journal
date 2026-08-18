@@ -27,13 +27,37 @@ def render_ongoing_positions_page(repo: SQLiteJournalRepository) -> None:
     _render_status(report.status, report.detail)
     snapshot_text = "No snapshot" if report.snapshot_time is None else report.snapshot_time.strftime("%Y-%m-%d %H:%M:%S UTC")
     st.caption(f"Snapshot: {snapshot_text} · This workspace refreshes every {ONGOING_REFRESH_INTERVAL_SECONDS} seconds.")
-    risk_text = "—" if report.total_risk_r is None else format_exposure_r(report.total_risk_r)
-    limit_text = "—" if report.limit_r is None else format_exposure_r(report.limit_r)
+    risk_value, risk_delta, risk_color, risk_description = _risk_metric(report)
+    unprotected_value, unprotected_delta, unprotected_color = _unprotected_metric(report)
+    pnl_value, pnl_delta, pnl_color = _pnl_metric(report, account.account_currency)
     with st.container(horizontal=True, gap="small"):
-        st.metric("Unprotected", str(report.unprotected_count), border=True)
-        st.metric("Known open risk", risk_text, f"Limit {limit_text}" if report.limit_r is not None else None, border=True)
-        st.metric("Open positions", str(len(report.positions)), border=True)
-        st.metric("Unrealized P&L", format_currency(report.net_unrealized_pnl, account.account_currency), border=True)
+        st.metric(
+            "Unprotected",
+            unprotected_value,
+            unprotected_delta,
+            delta_color=unprotected_color,
+            delta_arrow="off",
+            border=True,
+        )
+        st.metric(
+            "Known open risk",
+            risk_value,
+            risk_delta,
+            delta_color=risk_color,
+            delta_arrow="off",
+            delta_description=risk_description,
+            border=True,
+        )
+        st.metric("Open positions", None if report.snapshot_time is None else str(len(report.positions)), border=True)
+        st.metric(
+            "Unrealized P&L",
+            pnl_value,
+            pnl_delta,
+            delta_color=pnl_color,
+            delta_arrow="off",
+            delta_description="floating" if report.snapshot_time is not None else None,
+            border=True,
+        )
     _render_positions(report, account)
     _render_incidents(repo, account)
 
@@ -41,7 +65,7 @@ def render_ongoing_positions_page(repo: SQLiteJournalRepository) -> None:
 def _render_status(status: str, detail: str) -> None:
     if status in {"stop", "unprotected", "stale"}:
         st.error(detail, icon=":material/error:")
-    elif status == "caution":
+    elif status in {"caution", "risk_unavailable"}:
         st.warning(detail, icon=":material/warning:")
     elif status in {"waiting", "unconfigured"}:
         st.info(detail, icon=":material/info:")
@@ -49,8 +73,58 @@ def _render_status(status: str, detail: str) -> None:
         st.success(detail, icon=":material/check_circle:")
 
 
+def _unprotected_metric(report) -> tuple[str | None, str, str]:
+    if report.snapshot_time is None:
+        return None, "Unavailable", "gray"
+    if report.unprotected_count:
+        detail = "Position needs a stop" if report.unprotected_count == 1 else "Positions need stops"
+        return str(report.unprotected_count), detail, "red"
+    if report.positions:
+        return "0", "All protected", "green"
+    return "0", "No open positions", "gray"
+
+
+def _risk_metric(report) -> tuple[str | None, str, str, str | None]:
+    limit_description = None if report.limit_r is None else f"{format_exposure_r(report.limit_r)} account limit"
+    value = None if report.total_risk_r is None else format_exposure_r(report.total_risk_r)
+    if report.snapshot_time is None:
+        return value, "Unavailable", "gray", limit_description
+    if report.status == "stop":
+        label = "Limit reached" if report.limit_r == report.total_risk_r else "Over limit"
+        return value, label, "red", limit_description
+    if report.unprotected_count:
+        label = "position" if report.unprotected_count == 1 else "positions"
+        return value, f"{report.unprotected_count} {label} unavailable", "red", limit_description
+    if report.status == "stale":
+        return value, "Snapshot stale", "orange", limit_description
+    if report.risk_unavailable_count:
+        label = "position" if report.risk_unavailable_count == 1 else "positions"
+        return value, f"{report.risk_unavailable_count} {label} risk unavailable", "orange", limit_description
+    if not report.positions:
+        return value, "No open risk", "gray", limit_description
+    if report.status == "unconfigured" or value is None:
+        return value, "Risk unavailable", "orange", limit_description
+    if report.status == "caution":
+        return value, "Near limit", "orange", limit_description
+    return value, "Within limit", "green", limit_description
+
+
+def _pnl_metric(report, currency: str) -> tuple[str | None, str, str]:
+    if report.snapshot_time is None:
+        return None, "Unavailable", "gray"
+    value = format_currency(report.net_unrealized_pnl, currency)
+    if report.net_unrealized_pnl > 0:
+        return value, "Profit", "green"
+    if report.net_unrealized_pnl < 0:
+        return value, "Loss", "red"
+    return value, "Flat", "gray"
+
+
 def _render_positions(report, account: AccountListItem) -> None:
     st.markdown("##### Current positions")
+    if report.snapshot_time is None:
+        st.caption("Position data will appear after the first live MT5 snapshot.")
+        return
     if not report.positions:
         st.info("No open positions in the latest live snapshot.")
         return

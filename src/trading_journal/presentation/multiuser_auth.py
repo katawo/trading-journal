@@ -15,6 +15,7 @@ import os
 import streamlit as st
 
 from trading_journal.application.multiuser import is_multiuser_mode, user_database_path, users_config_path
+from trading_journal.presentation.branding import TRADE_COMPASS_ICON
 
 __all__ = [
     "current_username",
@@ -109,7 +110,7 @@ def render_login_gate() -> str | None:
     (no per-user language is known yet at this point).
     """
 
-    st.set_page_config(page_title="Trade Compass", page_icon="📈", layout="wide")
+    st.set_page_config(page_title="Trade Compass", page_icon=TRADE_COMPASS_ICON, layout="wide")
 
     config_path = users_config_path()
     if not config_path.is_file():
