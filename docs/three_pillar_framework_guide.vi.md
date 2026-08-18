@@ -27,14 +27,20 @@ Có thể gộp các vị thế chia lệnh thành một giao dịch logic
         ↓
 Đánh giá giao dịch đã đóng theo cả ba trụ cột
         ↓
-Theo dõi 20, 30 hoặc 50 đánh giá đầy đủ gần nhất
+Theo dõi từ 10 đến 100 đánh giá đã được phê duyệt gần nhất
         ↓
 Lưu phản hồi tuần hoặc tháng
         ↓
-Chọn một hành động cải thiện và kiểm chứng nó
+Trade Compass chọn một hành động huấn luyện dựa trên bằng chứng và theo dõi qua một mẫu giao dịch đã đánh giá
 ```
 
 Nhật ký bắt đầu từ giao dịch đã đóng. Nó không tuyên bố có thể tái dựng mọi quyết định khi lệnh đang mở, rủi ro mở hay cảm xúc từ dữ liệu MT5.
+
+## Vòng lặp huấn luyện
+
+Dashboard và **Định hướng → Theo dõi** tự duy trì một **Trọng tâm huấn luyện** sau giao dịch. Ứng dụng ưu tiên lỗi quy tắc cứng đang hoạt động, sau đó đến vấn đề lặp lại, thành phần trụ cột yếu và cuối cùng là bằng chứng đánh giá còn thiếu. Mỗi trọng tâm đưa ra một hành vi thực tế cho giao dịch tiếp theo, một mục tiêu và một mẫu giao dịch đã đánh giá; nó không bao giờ phê duyệt, chặn hoặc thay đổi lệnh MT5.
+
+Thử nghiệm đang hoạt động được giữ nguyên cho đến khi mẫu đủ để phản hồi. Một trọng tâm an toàn mới do lỗi quy tắc cứng có thể thay thế trọng tâm hiện tại; trọng tâm cũ vẫn được lưu trong lịch sử. **Đánh giá nhanh** và **Đánh giá chuyên sâu** đều tiến độ trọng tâm; chỉ **Đánh giá chuyên sâu** mới ghi được chi tiết hành vi, vấn đề và bối cảnh.
 
 ## Giao dịch logic và vị thế chia lệnh
 
@@ -55,6 +61,8 @@ MT5 xuất một **vị thế** đã đóng cho mỗi dòng. Nhật ký tự án
 Chỉ có thể gộp vị thế khi chúng cùng tài khoản MT5, symbol, hướng và phiên bản chính sách rủi ro đã nhập. Nếu không nhập nhãn riêng, nhãn được tạo từ symbol, hướng và thời điểm vào đầu tiên. Nhóm trở thành một giao dịch logic có thể đánh giá và xuất hiện trong phân tích **Theo giao dịch** của dashboard khi vị thế thành viên **cuối cùng** đóng.
 
 Thành viên và nhãn giao dịch logic có thể thay đổi. Dùng **Quản lý vị thế** trong bất kỳ đánh giá nào để thêm, bỏ, tách, gộp hoặc giải thể vị thế. Thay đổi thành viên không làm thay đổi dòng MT5; thay vào đó nó thay thế các đánh giá đã lưu bị ảnh hưởng, loại chúng khỏi điểm trụ cột và bằng chứng lộ trình đang hoạt động, đồng thời yêu cầu đánh giá mới. Đánh giá bị thay thế vẫn giữ ảnh chụp thành viên ban đầu và có trong lịch sử. Chỉ đổi nhãn thì không thay thế đánh giá.
+
+Cùng vùng chọn dòng còn hỗ trợ **Đánh giá nhanh các giao dịch đã chọn**. Có thể chọn giao dịch logic một vị thế hoặc đã gộp đang **Đang chờ phê duyệt** hoặc **Cần đánh giá**. Hộp xác nhận liệt kê trạng thái bằng chứng chính sách trước khi lưu các đánh giá Tự động đã duyệt; một Đánh giá thủ công sau đó có thể thay thế chúng.
 
 ### Báo cáo theo nhóm và rủi ro tự động
 
@@ -83,9 +91,10 @@ Chính sách rủi ro có phiên bản. Một đánh giá đã hoàn tất giữ
 |---|---|---:|---|
 | Cần xem xét | Bằng chứng rủi ro tự động vượt chính sách hoặc chưa khả dụng, và chưa được phê duyệt. | Không | Xem xét nhanh để phê duyệt bằng một nhấp chuột, hoặc hoàn tất đánh giá đầy đủ sau giao dịch. |
 | Đã đánh giá tự động | Bằng chứng rủi ro tự động trong chính sách và vẫn đang chờ phê duyệt. | Không | Phê duyệt bằng một nhấp chuột, hoặc hoàn tất đánh giá đầy đủ. |
-| Đã đánh giá | Bằng chứng tự động bạn đã phê duyệt (đánh dấu **Tự động**), hoặc đánh giá đầy đủ 13 tiêu chí (đánh dấu **Thủ công**). | Có | Không cần thêm gì với mục Tự động; sửa mục Thủ công bằng cách lưu đánh giá mới. |
+| Đánh giá nhanh | Bằng chứng tự động bạn đã phê duyệt, được đánh dấu **Tự động**. | Có | Dùng khi bằng chứng rủi ro đủ để chấp nhận nhanh; Đánh giá thủ công vẫn có thể thay thế sau. |
+| Đánh giá chuyên sâu | Đánh giá thủ công đầy đủ 13 tiêu chí, được đánh dấu **Thủ công**. | Có | Dùng để ghi thẻ, hành động cải thiện, sự kiện quy tắc cứng và bối cảnh tùy chọn. |
 
-Không bằng chứng rủi ro tự động nào tự nó được tính vào điểm số các trụ cột hay lộ trình sẵn sàng — kể cả khi nó trong chính sách. Nó phải được phê duyệt rõ ràng bằng một nhấp chuột (Xem xét nhanh hoặc Phê duyệt), hoặc được thay bằng đánh giá đầy đủ, trước đã. Sau khi phê duyệt, mục **Tự động** dùng `Một phần` (trung lập) cho Tâm lý và Hệ thống. Với Quản lý rủi ro, tuân thủ chính sách là `Đạt` khi số tiền tự động trong chính sách; các tiêu chí còn lại là trung lập. Phê duyệt bằng chứng vượt chính sách ghi tuân thủ chính sách là `Không đạt`. Đánh giá đầy đủ (**Thủ công**) vẫn là cách duy nhất để ghi vi phạm hoặc sự kiện quy tắc cứng, và luôn thay thế một phê duyệt hiện có.
+Không bằng chứng rủi ro tự động nào tự nó được tính vào điểm số các trụ cột hay lộ trình sẵn sàng — kể cả khi nó trong chính sách. Nó phải được phê duyệt rõ ràng bằng một nhấp chuột, hoặc được thay bằng Đánh giá chuyên sâu, trước đã. Sau khi phê duyệt, Đánh giá nhanh dùng `Một phần` (trung lập) cho Tâm lý và Hệ thống. Với Quản lý rủi ro, tuân thủ chính sách là `Đạt` khi số tiền tự động trong chính sách; các tiêu chí còn lại là trung lập. Phê duyệt bằng chứng vượt chính sách ghi tuân thủ chính sách là `Không đạt`. Đánh giá chuyên sâu vẫn là cách duy nhất để ghi vi phạm hoặc sự kiện quy tắc cứng, và luôn thay thế một phê duyệt hiện có.
 
 ### Bằng chứng rủi ro tự động
 
@@ -216,7 +225,9 @@ Thẻ lý do cũng làm mẫu hình lặp lại hiển thị. Thẻ nghiêm tr�
 
 ## 6. Cách tính theo dõi trượt
 
-Trong **Định hướng → Theo dõi**, chọn cửa sổ trượt từ 10 đến 100 giao dịch (thanh trượt, bước 5; ô xem gọn trên Dashboard luôn hiển thị cửa sổ cố định 20 giao dịch). Đánh giá tự động, đánh giá tự động đã phê duyệt và giao dịch đánh giá thủ công đều vào cửa sổ. Bản nhập cần phê duyệt nằm ngoài đến khi được phê duyệt hoặc đánh giá đầy đủ. Cửa sổ nhỏ hơn sẽ đạt ngưỡng Cảnh báo do vi phạm nghiêm trọng lặp lại sớm hơn cửa sổ lớn hơn, vì ngưỡng này là một số đếm cố định, không phải tỷ lệ phần trăm của cửa sổ.
+Trong **Định hướng → Theo dõi**, chọn cửa sổ trượt từ 10 đến 100 giao dịch (thanh trượt, bước 5; ô xem gọn trên Dashboard luôn hiển thị cửa sổ cố định 20 giao dịch). Điểm trụ cột, mức sẵn sàng, vấn đề lặp lại và huấn luyện dùng các đánh giá Tự động đã duyệt và Thủ công gần nhất. Đánh giá nhanh vẫn hiển thị riêng dưới dạng độ phủ bằng chứng rủi ro trên các giao dịch logic đã đóng gần nhất của tài khoản. Bản nhập **Đang chờ phê duyệt** hoặc **Cần đánh giá** nằm ngoài mẫu cho đến khi được phê duyệt hoặc đánh giá chuyên sâu. Cửa sổ nhỏ hơn sẽ đạt ngưỡng Cảnh báo do vi phạm nghiêm trọng lặp lại sớm hơn cửa sổ lớn hơn, vì ngưỡng này là một số đếm cố định, không phải tỷ lệ phần trăm của cửa sổ.
+
+Theo dõi còn có **Kỳ phân tích** (Tháng này, 90 ngày qua, Tất cả thời gian hoặc Tùy chỉnh). Kỳ này chỉ thay đổi các biểu đồ mô tả; không thay đổi điểm trượt, mức sẵn sàng hoặc cổng lộ trình. Các góc nhìn Quy trình & kết quả, Rủi ro và Hệ thống & bối cảnh tách riêng chất lượng quy trình khỏi kết quả, độ phủ đánh giá khỏi bằng chứng chính sách, và quan sát bối cảnh khỏi kết luận nhân quả. Giao dịch không có 1R chuẩn dùng được bị loại khỏi biểu đồ R và được báo là thiếu bằng chứng.
 
 Theo dõi tính một bộ thành phần giai đoạn thứ hai từ cửa sổ đã đánh giá. Chúng không phải trung bình đơn giản của điểm trụ cột mỗi giao dịch nhìn thấy; chúng được thiết kế để chỉ ra hành vi lặp lại và chất lượng bằng chứng.
 
@@ -280,6 +291,12 @@ Không đổi chiến lược chỉ vì mẫu P&L gần đây nhỏ. Hãy lập 
 
 Theo dõi chỉ giữ một **Trọng tâm huấn luyện** cho toàn nhật ký. Trade Compass tự chọn trọng tâm từ bằng chứng đã đánh giá, rồi theo dõi 5, 10 hoặc 20 giao dịch mới đã đánh giá trước khi bạn ghi phản hồi kết thúc. Tâm lý dùng bằng chứng trên toàn trader; Quản lý rủi ro và Hệ thống giao dịch dùng bằng chứng của tài khoản được chọn, vì mỗi tài khoản đại diện cho một hệ thống độc lập. Ứng dụng vẫn chỉ tư vấn sau giao dịch.
 
+### Bối cảnh đánh giá thủ công
+
+Đánh giá chuyên sâu có thể ghi setup chiến lược, phiên giao dịch và chế độ thị trường tùy chọn từ các danh sách được kiểm soát trong **Cài đặt**. Các nhãn này giúp các bảng bối cảnh trong Theo dõi có thể so sánh. Chúng chỉ mang tính mô tả: mẫu nhỏ không chứng minh setup hoặc chế độ thị trường gây ra kết quả.
+
+Biểu đồ bối cảnh chỉ dùng Đánh giá thủ công vì Đánh giá nhanh không có bối cảnh tùy chọn. Hãy xem ít hơn năm Đánh giá thủ công trong một nhóm là bằng chứng định hướng, không phải kết luận hay lý do để đổi Hệ thống giao dịch.
+
 ## 8. Lộ trình cải thiện và các cổng
 
 Ba trụ cột tiến song song:
@@ -305,4 +322,4 @@ Chỉ những mục không có dữ liệu tương ứng nào trong ứng dụng
 
 ## 9. Giới hạn dữ liệu
 
-Cầu nối MT5 hiện tại chỉ cung cấp vị thế đã đóng. Nó có thể theo dõi hồi cứu R thực hiện, giới hạn ngày/tuần, drawdown, chuỗi lỗ, thông tin entry-stop đã xuất và ảnh chụp số dư tài khoản. Nó không thể chứng minh rủi ro mở lịch sử, phơi nhiễm tương quan, mọi lần chỉnh stop trong giao dịch, trạng thái tinh thần, ý định kế hoạch hay stop ban đầu thực cho bản xuất có lãi không-SL. Những giới hạn này là lý do nhật ký kết hợp bằng chứng tự động với đánh giá sau giao dịch có chủ đích của con người.
+Cầu nối MT5 sau giao dịch hiện tại chỉ cung cấp vị thế đã đóng. Nó có thể theo dõi hồi cứu R thực hiện, giới hạn ngày/tuần, drawdown, chuỗi lỗ, thông tin entry-stop đã xuất và ảnh chụp số dư tài khoản. Một luồng snapshot trực tiếp riêng hiển thị rủi ro mở hiện tại dựa trên stop và các vị thế không có bảo vệ, nhưng đó chỉ là trạng thái vận hành tạm thời: nó không trở thành bằng chứng sau giao dịch, bằng chứng tương quan lịch sử, lịch sử chỉnh stop trong giao dịch, bằng chứng trạng thái tinh thần, ý định kế hoạch hay stop ban đầu thực cho bản xuất có lãi không-SL. Những giới hạn này là lý do nhật ký kết hợp bằng chứng tự động với đánh giá sau giao dịch có chủ đích của con người.

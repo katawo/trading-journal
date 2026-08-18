@@ -29,7 +29,7 @@ Optionally group scaled positions into one logical trade
         ↓
 Review the closed trade against all three pillars
         ↓
-Monitor the latest 20, 30, or 50 full reviews
+Monitor the latest 10 to 100 approved Auto and Manual reviews
         ↓
 Save a weekly or monthly reflection
         ↓

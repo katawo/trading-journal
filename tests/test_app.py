@@ -281,6 +281,10 @@ def test_guidance_page_explains_the_post_trade_three_pillar_workflow(monkeypatch
     assert "Worked example" in guide
     assert "94.17" in guide
     assert "single source of truth" in guide
+    assert "latest 10 to 100 approved Auto and Manual reviews" in guide
+    assert "Quick Risk Check" in guide
+    assert "Deep Review" in guide
+    assert "Analysis period" in guide
     assert [item.label for item in app.selectbox] == ["Language"]
 
 
@@ -683,6 +687,10 @@ def test_language_selection_persists_and_loads_the_vietnamese_guide(monkeypatch,
     app.switch_page("app_pages/guidance.py").run()
     guide = "\n".join(item.value for item in app.markdown)
     assert "Vận hành nhật ký giao dịch ba trụ cột" in guide
+    assert "từ 10 đến 100 đánh giá đã được phê duyệt" in guide
+    assert "Đánh giá nhanh" in guide
+    assert "Đánh giá chuyên sâu" in guide
+    assert "Kỳ phân tích" in guide
 
 
 def test_review_tab_surfaces_the_last_saved_periods_priority_action(monkeypatch, tmp_path):
