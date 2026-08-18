@@ -67,6 +67,21 @@ class StrategyPerformance:
 
 
 @dataclass(frozen=True)
+class PerformanceBreakdown:
+    label: str
+    trade_count: int
+    win_count: int
+    loss_count: int
+    breakeven_count: int
+    win_rate: str
+    net_pnl: str
+    total_r: str | None
+    r_trade_count: int
+    expectancy_r: str | None
+    profit_factor: str | None
+
+
+@dataclass(frozen=True)
 class ConcentrationItem:
     label: str
     trade_count: int
@@ -94,6 +109,7 @@ class ConcentrationBreakdown:
 @dataclass(frozen=True)
 class DashboardReport:
     trade_count: int
+    cross_period_trade_count: int
     raw_position_count: int
     net_pnl: str
     total_r: str | None
@@ -109,12 +125,31 @@ class DashboardReport:
     worst_day: str | None
     profit_factor: str | None
     expectancy: str | None
+    expectancy_r: str | None
+    gross_profit: str
+    gross_loss: str
     average_win: str | None
     average_loss: str | None
+    payoff_ratio: str | None
+    win_count: int
+    loss_count: int
+    breakeven_count: int
+    active_day_count: int
+    profitable_day_count: int
+    profitable_day_rate: str
+    best_day: str | None
+    average_day: str | None
+    recovery_factor: str | None
+    current_streak_outcome: str | None
+    current_streak_count: int
+    longest_win_streak: int
+    longest_loss_streak: int
     cumulative: list[CumulativePoint]
     per_trade: list[TradePerformancePoint]
     daily: list[DailyPerformance]
     by_strategy: list[StrategyPerformance]
+    by_symbol: list[PerformanceBreakdown]
+    by_direction: list[PerformanceBreakdown]
     concentration: list[ConcentrationBreakdown]
 
 
@@ -128,12 +163,28 @@ class DashboardService:
         time_basis = settings.reporting_time_basis
         start = date.fromisoformat(start_date)
         end = date.fromisoformat(end_date)
-        dated_trades = [(trade, self._trade_date(trade, time_basis)) for trade in self._repository.list_trade_performance(account_id)]
+        all_trades = self._repository.list_trade_performance(account_id)
         dated_movements = [
             (movement, self._movement_date(movement, time_basis))
             for movement in self._repository.list_account_balance_movements(account_id)
         ]
-        trades = [trade for trade, trade_date in dated_trades if start <= trade_date <= end]
+        movement_dates_by_position = {
+            movement.position_id: movement_date
+            for movement, movement_date in dated_movements
+            if movement.position_id is not None
+        }
+
+        def member_dates(trade: TradePerformanceItem) -> tuple[date, ...]:
+            dates = tuple(movement_dates_by_position[position_id] for position_id in trade.position_ids if position_id in movement_dates_by_position)
+            return dates if len(dates) == len(trade.position_ids) else (self._trade_date(trade, time_basis),)
+
+        trade_dates = [(trade, member_dates(trade)) for trade in all_trades]
+        trades = [trade for trade, dates in trade_dates if all(start <= trade_date <= end for trade_date in dates)]
+        cross_period_trade_count = sum(
+            any(start <= trade_date <= end for trade_date in dates)
+            and not all(start <= trade_date <= end for trade_date in dates)
+            for _, dates in trade_dates
+        )
         movements = [movement for movement, movement_date in dated_movements if start <= movement_date <= end]
 
         # Monetary account facts always follow immutable MT5 positions. The
@@ -143,6 +194,8 @@ class DashboardService:
         r_values = [Decimal(trade.result_r) for trade in trades if trade.result_r is not None]
         r_total = sum(r_values, Decimal("0")) if r_values else None
         wins = sum(Decimal(trade.net_pnl) > 0 for trade in trades)
+        losses = sum(Decimal(trade.net_pnl) < 0 for trade in trades)
+        breakevens = len(trades) - wins - losses
         win_rate = Decimal(wins * 100) / Decimal(len(trades)) if trades else Decimal("0")
         winning_pnls = [Decimal(trade.net_pnl) for trade in trades if Decimal(trade.net_pnl) > 0]
         losing_pnls = [Decimal(trade.net_pnl) for trade in trades if Decimal(trade.net_pnl) < 0]
@@ -150,8 +203,11 @@ class DashboardService:
         gross_loss = -sum(losing_pnls, Decimal("0"))
         profit_factor = gross_profit / gross_loss if gross_loss > 0 else None
         expectancy = pnl_total / len(trades) if trades else None
+        expectancy_r = r_total / len(r_values) if r_total is not None else None
         average_win = gross_profit / len(winning_pnls) if winning_pnls else None
         average_loss = sum(losing_pnls, Decimal("0")) / len(losing_pnls) if losing_pnls else None
+        payoff_ratio = average_win / -average_loss if average_win is not None and average_loss is not None else None
+        current_streak_outcome, current_streak_count, longest_win_streak, longest_loss_streak = self._streaks(trades)
         daily: dict[str, Decimal] = {}
         daily_r: dict[str, Decimal] = {}
         strategies: dict[str, tuple[Decimal, Decimal | None]] = {}
@@ -280,9 +336,15 @@ class DashboardService:
         ending_balance = None if starting_balance is None else starting_balance + pnl_total
         balance_growth_percent = None if starting_balance is None else pnl_total * Decimal("100") / starting_balance
         worst_day = min(daily.values()) if daily else None
+        best_day = max(daily.values()) if daily else None
+        average_day = pnl_total / len(daily) if daily else None
+        profitable_day_count = sum(value > 0 for value in daily.values())
+        profitable_day_rate = Decimal(profitable_day_count * 100) / Decimal(len(daily)) if daily else Decimal("0")
+        recovery_factor = pnl_total / account_max_drawdown if account_max_drawdown > 0 else None
 
         return DashboardReport(
             trade_count=len(trades),
+            cross_period_trade_count=cross_period_trade_count,
             raw_position_count=len(movements),
             net_pnl=_decimal_string(pnl_total),
             total_r=None if r_total is None else _decimal_string(r_total),
@@ -298,8 +360,25 @@ class DashboardService:
             worst_day=None if worst_day is None else _decimal_string(worst_day),
             profit_factor=None if profit_factor is None else _decimal_string(profit_factor),
             expectancy=None if expectancy is None else _decimal_string(expectancy),
+            expectancy_r=None if expectancy_r is None else _decimal_string(expectancy_r),
+            gross_profit=_decimal_string(gross_profit),
+            gross_loss=_decimal_string(gross_loss),
             average_win=None if average_win is None else _decimal_string(average_win),
             average_loss=None if average_loss is None else _decimal_string(average_loss),
+            payoff_ratio=None if payoff_ratio is None else _decimal_string(payoff_ratio),
+            win_count=wins,
+            loss_count=losses,
+            breakeven_count=breakevens,
+            active_day_count=len(daily),
+            profitable_day_count=profitable_day_count,
+            profitable_day_rate=_decimal_string(profitable_day_rate),
+            best_day=None if best_day is None else _decimal_string(best_day),
+            average_day=None if average_day is None else _decimal_string(average_day),
+            recovery_factor=None if recovery_factor is None else _decimal_string(recovery_factor),
+            current_streak_outcome=current_streak_outcome,
+            current_streak_count=current_streak_count,
+            longest_win_streak=longest_win_streak,
+            longest_loss_streak=longest_loss_streak,
             cumulative=cumulative,
             per_trade=per_trade,
             daily=[DailyPerformance(day, _decimal_string(pnl), _decimal_string(daily_r[day]) if day in daily_r else None) for day, pnl in sorted(daily.items())],
@@ -312,8 +391,76 @@ class DashboardService:
                 )
                 for strategy, (pnl, total_r) in sorted(strategies.items())
             ],
+            by_symbol=self._performance_breakdowns(trades, lambda trade: trade.symbol),
+            by_direction=self._performance_breakdowns(trades, lambda trade: trade.direction),
             concentration=concentration,
         )
+
+    @staticmethod
+    def _streaks(trades: list[TradePerformanceItem]) -> tuple[str | None, int, int, int]:
+        current_outcome: str | None = None
+        current_count = 0
+        win_streak = 0
+        loss_streak = 0
+        longest_win_streak = 0
+        longest_loss_streak = 0
+        for trade in trades:
+            pnl = Decimal(trade.net_pnl)
+            outcome = "win" if pnl > 0 else "loss" if pnl < 0 else "breakeven"
+            if outcome == current_outcome:
+                current_count += 1
+            else:
+                current_outcome = outcome
+                current_count = 1
+            if outcome == "win":
+                win_streak += 1
+                loss_streak = 0
+                longest_win_streak = max(longest_win_streak, win_streak)
+            elif outcome == "loss":
+                loss_streak += 1
+                win_streak = 0
+                longest_loss_streak = max(longest_loss_streak, loss_streak)
+            else:
+                win_streak = 0
+                loss_streak = 0
+        return current_outcome, current_count, longest_win_streak, longest_loss_streak
+
+    @staticmethod
+    def _performance_breakdowns(
+        trades: list[TradePerformanceItem],
+        label_for: Callable[[TradePerformanceItem], str],
+    ) -> list[PerformanceBreakdown]:
+        grouped: dict[str, list[TradePerformanceItem]] = {}
+        for trade in trades:
+            grouped.setdefault(label_for(trade), []).append(trade)
+        results: list[PerformanceBreakdown] = []
+        for label, members in sorted(grouped.items(), key=lambda item: item[0].casefold()):
+            pnls = [Decimal(item.net_pnl) for item in members]
+            winning_pnls = [value for value in pnls if value > 0]
+            losing_pnls = [value for value in pnls if value < 0]
+            win_count = len(winning_pnls)
+            loss_count = len(losing_pnls)
+            breakeven_count = len(members) - win_count - loss_count
+            gross_profit = sum(winning_pnls, Decimal("0"))
+            gross_loss = -sum(losing_pnls, Decimal("0"))
+            r_values = [Decimal(item.result_r) for item in members if item.result_r is not None]
+            total_r = sum(r_values, Decimal("0")) if r_values else None
+            results.append(
+                PerformanceBreakdown(
+                    label=label,
+                    trade_count=len(members),
+                    win_count=win_count,
+                    loss_count=loss_count,
+                    breakeven_count=breakeven_count,
+                    win_rate=_decimal_string(Decimal(win_count * 100) / Decimal(len(members))),
+                    net_pnl=_decimal_string(sum(pnls, Decimal("0"))),
+                    total_r=None if total_r is None else _decimal_string(total_r),
+                    r_trade_count=len(r_values),
+                    expectancy_r=None if total_r is None else _decimal_string(total_r / len(r_values)),
+                    profit_factor=None if gross_loss == 0 else _decimal_string(gross_profit / gross_loss),
+                )
+            )
+        return results
 
     def earliest_trade_date(self, account_id: int | None = None) -> date | None:
         account_id = self._single_account_id(account_id)

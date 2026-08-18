@@ -13,7 +13,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from trading_journal.application.auto_sync import MT5AutoSyncResult, MT5AutoSyncService
-from trading_journal.application.dashboard import DashboardService
+from trading_journal.application.dashboard import DashboardReport, DashboardService
 from trading_journal.application.framework import FrameworkService
 from trading_journal.application.display_time import format_relative_time
 from trading_journal.application.import_mt5 import SUPPORTED_SCHEMA_VERSIONS
@@ -43,6 +43,7 @@ from trading_journal.presentation.i18n import (
 from trading_journal.presentation.formatting import (
     currency_decimal_places,
     currency_prefix,
+    format_count,
     format_currency,
     format_number,
     format_percent,
@@ -168,6 +169,132 @@ def _render_concentration_side(*, side, title: str, currency: str, positive: boo
         )
     )
     st.plotly_chart(figure, width="stretch", config={"displayModeBar": False})
+
+
+def _render_dashboard_statistics(report: DashboardReport, currency: str) -> None:
+    st.markdown(f"#### {tr('Statistics')}")
+    performance_tab, consistency_tab, breakdowns_tab = st.tabs(
+        [tr("Performance"), tr("Consistency"), tr("Breakdowns")]
+    )
+
+    with performance_tab:
+        st.caption(tr("Outcome statistics use closed logical trades in the selected period."))
+        with st.container(horizontal=True, gap="small"):
+            st.metric(tr("Gross profit"), format_currency(report.gross_profit, currency, signed=False), border=True)
+            st.metric(tr("Gross loss"), format_currency(-Decimal(report.gross_loss), currency), border=True)
+            st.metric(
+                tr("Average win"),
+                tr("No wins") if report.average_win is None else format_currency(report.average_win, currency),
+                border=True,
+            )
+            st.metric(
+                tr("Average loss"),
+                tr("No losses") if report.average_loss is None else format_currency(report.average_loss, currency),
+                border=True,
+            )
+            st.metric(
+                tr("Payoff ratio"),
+                "—" if report.payoff_ratio is None else format_number(report.payoff_ratio, 2),
+                border=True,
+            )
+            st.metric(
+                tr("Expectancy R"),
+                tr("Awaiting risk") if report.expectancy_r is None else format_r(report.expectancy_r),
+                border=True,
+            )
+        with st.container(horizontal=True, gap="small"):
+            st.metric(tr("Wins"), format_count(report.win_count), border=True)
+            st.metric(tr("Losses"), format_count(report.loss_count), border=True)
+            st.metric(tr("Breakevens"), format_count(report.breakeven_count), border=True)
+            st.metric(
+                tr("R coverage"),
+                f"{format_count(report.r_trade_count)}/{format_count(report.trade_count)}",
+                border=True,
+            )
+
+    with consistency_tab:
+        st.caption(tr("Day statistics use immutable MT5 position closes; streaks use closed logical trades."))
+        with st.container(horizontal=True, gap="small"):
+            st.metric(tr("Active trading days"), format_count(report.active_day_count), border=True)
+            st.metric(
+                tr("Profitable days"),
+                f"{format_count(report.profitable_day_count)}/{format_count(report.active_day_count)}",
+                format_percent(report.profitable_day_rate),
+                delta_color="gray",
+                delta_arrow="off",
+                border=True,
+            )
+            st.metric(tr("Best day"), "—" if report.best_day is None else format_currency(report.best_day, currency), border=True)
+            st.metric(tr("Average day"), "—" if report.average_day is None else format_currency(report.average_day, currency), border=True)
+            st.metric(tr("Worst day"), "—" if report.worst_day is None else format_currency(report.worst_day, currency), border=True)
+            st.metric(
+                tr("Recovery factor"),
+                tr("No drawdown") if report.recovery_factor is None else format_number(report.recovery_factor, 2),
+                border=True,
+            )
+        current_streak = "—"
+        if report.current_streak_outcome is not None:
+            outcome = {"win": "Win", "loss": "Loss", "breakeven": "Breakeven"}[report.current_streak_outcome]
+            current_streak = f"{format_count(report.current_streak_count)} · {tr(outcome)}"
+        with st.container(horizontal=True, gap="small"):
+            st.metric(tr("Current streak"), current_streak, border=True)
+            st.metric(tr("Longest win streak"), format_count(report.longest_win_streak), border=True)
+            st.metric(tr("Longest loss streak"), format_count(report.longest_loss_streak), border=True)
+
+    with breakdowns_tab:
+        st.caption(tr("Breakdowns use closed logical trades and preserve available R-data coverage."))
+        breakdown_view = st.segmented_control(
+            tr("Breakdown view"),
+            [tr("Symbol"), tr("Direction")],
+            default=tr("Symbol"),
+            required=True,
+            width="content",
+            key="dashboard-statistics-breakdown",
+        )
+        rows = report.by_symbol if breakdown_view == tr("Symbol") else report.by_direction
+        labels = [item.label for item in rows]
+        if breakdown_view == tr("Direction"):
+            labels = [tr(direction_tag(item.label).label) for item in rows]
+        group_column = tr("Group")
+        trades_column = tr("Trades")
+        win_rate_column = tr("Win rate")
+        pnl_column = f"{tr('Net P&L')} ({currency})"
+        total_r_column = tr("Total R")
+        expectancy_r_column = tr("Expectancy R")
+        profit_factor_column = tr("Profit factor")
+        breakdown_frame = pd.DataFrame(
+            {
+                group_column: labels,
+                trades_column: pd.Series([item.trade_count for item in rows], dtype="int64"),
+                tr("W-L-B"): [f"{item.win_count}-{item.loss_count}-{item.breakeven_count}" for item in rows],
+                win_rate_column: pd.Series([float(item.win_rate) for item in rows], dtype="float64"),
+                pnl_column: pd.Series([float(item.net_pnl) for item in rows], dtype="float64"),
+                total_r_column: pd.Series(
+                    [None if item.total_r is None else float(item.total_r) for item in rows], dtype="float64"
+                ),
+                expectancy_r_column: pd.Series(
+                    [None if item.expectancy_r is None else float(item.expectancy_r) for item in rows], dtype="float64"
+                ),
+                profit_factor_column: pd.Series(
+                    [None if item.profit_factor is None else float(item.profit_factor) for item in rows], dtype="float64"
+                ),
+                tr("R coverage"): [f"{item.r_trade_count}/{item.trade_count}" for item in rows],
+            }
+        )
+        st.dataframe(
+            breakdown_frame,
+            hide_index=True,
+            width="stretch",
+            column_config={
+                group_column: st.column_config.TextColumn(pinned=True),
+                trades_column: st.column_config.NumberColumn(format="%d"),
+                win_rate_column: st.column_config.NumberColumn(format="%.1f%%"),
+                pnl_column: st.column_config.NumberColumn(format=f"%+.{currency_decimal_places(currency)}f"),
+                total_r_column: st.column_config.NumberColumn(format="%+.2fR"),
+                expectancy_r_column: st.column_config.NumberColumn(format="%+.2fR"),
+                profit_factor_column: st.column_config.NumberColumn(format="%.2f"),
+            },
+        )
 
 
 def apply_application_style() -> None:
@@ -1285,13 +1412,22 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
         st.metric("Account drawdown", format_currency(-Decimal(report.max_drawdown), currency), border=True)
 
     st.markdown("#### Logical-trade quality")
+    if report.cross_period_trade_count:
+        st.caption(
+            tr(
+                "{count} logical trade(s) cross the selected period boundary and are excluded from logical-trade statistics; their in-period MT5 position closes remain in account and daily figures.",
+                count=report.cross_period_trade_count,
+            )
+        )
     with st.container(horizontal=True, gap="small"):
         st.metric("Total R", "Awaiting risk" if report.total_r is None else format_r(report.total_r), border=True)
         st.metric("Win rate", format_percent(report.win_rate), border=True)
         st.metric("Profit factor", "No losses" if report.profit_factor is None else format_number(report.profit_factor, 2), border=True)
         st.metric("Expectancy", "—" if report.expectancy is None else format_currency(report.expectancy, currency), border=True)
         st.metric("Worst day", "—" if report.worst_day is None else format_currency(report.worst_day, currency), border=True)
-    if report.r_trade_count < report.trade_count:
+    if report.trade_count == 0:
+        st.caption(tr("No complete logical trades fall entirely within the selected period."))
+    elif report.r_trade_count < report.trade_count:
         st.caption(f"R is based on {report.r_trade_count:,} of {report.trade_count:,} logical trades with an effective planned risk.")
     else:
         st.caption(f"All {report.trade_count:,} logical trades have an effective risk value.")
@@ -1303,6 +1439,8 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
             + (f" ({format_percent(report.current_drawdown_percent)})" if report.current_drawdown_percent is not None else "")
             + f" · Balance at period start: {format_currency_caption(report.starting_balance, currency, signed=False)}."
         )
+
+    _render_dashboard_statistics(report, currency)
 
     chart_view = st.segmented_control(
         "Chart view",

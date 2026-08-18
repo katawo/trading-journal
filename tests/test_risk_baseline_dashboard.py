@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import sqlite3
 from pathlib import Path
 
@@ -16,6 +17,7 @@ def position(
     net_pnl: str,
     exit_time: str,
     symbol: str = "XAUUSD",
+    direction: str = "long",
     strategy: str | None = None,
 ) -> MT5PositionExport:
     return MT5PositionExport(
@@ -25,7 +27,7 @@ def position(
         account_currency="USD",
         position_id=position_id,
         symbol=symbol,
-        direction="long",
+        direction=direction,
         entry_time="2026-08-01T08:00:00+00:00",
         exit_time=exit_time,
         entry_price="3300.00",
@@ -318,16 +320,44 @@ def test_dashboard_concentration_handles_profit_only_loss_only_and_breakeven_sam
     assert breakdown.profit.target_group_percent == "100"
     assert breakdown.loss.gross_amount == "0"
     assert breakdown.loss.items == []
+    assert report.payoff_ratio is None
+    assert report.profit_factor is None
+    assert report.recovery_factor is None
 
     loss_only = DashboardService(repository).build_report(start_date="2026-09-01", end_date="2026-09-30")
     loss_breakdown = {item.dimension: item for item in loss_only.concentration}["symbol"]
     assert loss_breakdown.profit.items == []
     assert loss_breakdown.loss.gross_amount == "7"
+    assert loss_only.profit_factor == "0"
+    assert loss_only.payoff_ratio is None
+    assert loss_only.recovery_factor == "-1"
 
     breakeven_only = DashboardService(repository).build_report(start_date="2026-08-02", end_date="2026-08-02")
     breakeven_breakdown = {item.dimension: item for item in breakeven_only.concentration}["symbol"]
     assert breakeven_breakdown.profit.items == []
     assert breakeven_breakdown.loss.items == []
+    assert breakeven_only.expectancy_r == "0"
+    assert breakeven_only.current_streak_outcome == "breakeven"
+    assert breakeven_only.current_streak_count == 1
+
+
+def test_dashboard_expectancy_r_uses_only_trades_with_r_coverage(tmp_path: Path, monkeypatch) -> None:
+    repository = configured_repository(tmp_path, standard_risk_percent="10")
+    original = repository.list_trade_performance
+
+    def partial_r_coverage(account_id=None):
+        trades = original(account_id)
+        return [replace(trades[0], result_r=None), trades[1]]
+
+    monkeypatch.setattr(repository, "list_trade_performance", partial_r_coverage)
+
+    report = DashboardService(repository).build_report(start_date="2026-08-01", end_date="2026-08-31")
+
+    assert report.total_r == "-0.5"
+    assert report.r_trade_count == 1
+    assert report.expectancy_r == "-0.5"
+    assert report.by_symbol[0].r_trade_count == 1
+    assert report.by_symbol[0].expectancy_r == "-0.5"
 
 
 def test_dashboard_collapses_equity_curve_to_one_point_per_day(tmp_path: Path) -> None:
@@ -361,13 +391,104 @@ def test_dashboard_calculates_balance_growth_drawdown_and_trade_quality(tmp_path
     assert report.worst_day == "-5"
     assert report.profit_factor == "4"
     assert report.expectancy == "7.5"
+    assert report.expectancy_r == "0.75"
+    assert report.gross_profit == "20"
+    assert report.gross_loss == "5"
     assert report.average_win == "20"
     assert report.average_loss == "-5"
+    assert report.payoff_ratio == "4"
+    assert (report.win_count, report.loss_count, report.breakeven_count) == (1, 1, 0)
+    assert (report.active_day_count, report.profitable_day_count, report.profitable_day_rate) == (2, 1, "50")
+    assert report.best_day == "20"
+    assert report.average_day == "7.5"
+    assert report.recovery_factor == "3"
+    assert (report.current_streak_outcome, report.current_streak_count) == ("loss", 1)
+    assert (report.longest_win_streak, report.longest_loss_streak) == (1, 1)
     assert [point.balance for point in report.cumulative] == ["120", "115"]
     assert [point.drawdown for point in report.cumulative] == ["0", "5"]
     assert [(point.position_id, point.net_pnl) for point in report.per_trade] == [("1001", "20"), ("1002", "-5")]
     assert [point.balance for point in report.per_trade] == [None, None]
     assert [point.drawdown for point in report.per_trade] == ["0", "5"]
+    assert [(item.label, item.trade_count, item.win_rate, item.net_pnl, item.total_r, item.expectancy_r, item.profit_factor) for item in report.by_symbol] == [
+        ("XAUUSD", 2, "50", "15", "1.5", "0.75", "4"),
+    ]
+    assert [(item.label, item.trade_count, item.net_pnl) for item in report.by_direction] == [("long", 2, "15")]
+
+
+def test_dashboard_statistics_handle_breakevens_streaks_and_breakdowns(tmp_path: Path) -> None:
+    repository = configured_repository(tmp_path, standard_risk_percent="10")
+    account = repository.find_active_mt5_account("123456", "DemoBroker-Live")
+    assert account is not None
+    repository.upsert_mt5_positions(
+        account.id,
+        [
+            position("1003", net_pnl="-5", exit_time="2026-08-03T09:00:00+00:00", symbol="EURUSD", direction="short"),
+            position("1004", net_pnl="0", exit_time="2026-08-04T09:00:00+00:00", symbol="EURUSD", direction="short"),
+            position("1005", net_pnl="10", exit_time="2026-08-05T09:00:00+00:00", symbol="EURUSD", direction="long"),
+            position("1006", net_pnl="5", exit_time="2026-08-06T09:00:00+00:00", symbol="XAUUSD", direction="long"),
+        ],
+        "positions.csv",
+        "enriched-statistics-hash",
+    )
+
+    report = DashboardService(repository).build_report(start_date="2026-08-01", end_date="2026-08-31")
+
+    assert (report.win_count, report.loss_count, report.breakeven_count) == (3, 2, 1)
+    assert (report.current_streak_outcome, report.current_streak_count) == ("win", 2)
+    assert (report.longest_win_streak, report.longest_loss_streak) == (2, 2)
+    assert report.active_day_count == 6
+    assert report.profitable_day_count == 3
+    assert report.profitable_day_rate == "50"
+    assert report.best_day == "20"
+    assert report.worst_day == "-5"
+    assert report.average_day == "4.166666666666666666666666667"
+    assert [(item.label, item.trade_count, item.win_count, item.loss_count, item.breakeven_count) for item in report.by_symbol] == [
+        ("EURUSD", 3, 1, 1, 1),
+        ("XAUUSD", 3, 2, 1, 0),
+    ]
+    assert [(item.label, item.trade_count, item.win_count, item.loss_count) for item in report.by_direction] == [
+        ("long", 4, 3, 1),
+        ("short", 2, 0, 1),
+    ]
+
+
+def test_dashboard_statistics_report_unavailable_ratios_without_valid_denominators(tmp_path: Path) -> None:
+    repository = configured_repository(tmp_path, standard_risk_percent="10")
+    report = DashboardService(repository).build_report(start_date="2026-08-01", end_date="2026-08-01")
+
+    assert report.loss_count == 0
+    assert report.payoff_ratio is None
+    assert report.profit_factor is None
+    assert report.recovery_factor is None
+    assert report.by_symbol[0].profit_factor is None
+
+
+def test_dashboard_excludes_cross_period_logical_trades_from_trade_statistics(tmp_path: Path) -> None:
+    repository = configured_repository(tmp_path, standard_risk_percent="10")
+    account = repository.find_active_mt5_account("123456", "DemoBroker-Live")
+    assert account is not None
+    logical_trades = repository.list_closed_trades_for_review(account.id)
+    repository.create_logical_trade_group(
+        account_id=account.id,
+        logical_trade_ids=tuple(item.id for item in logical_trades),
+        display_label="Cross-period scale",
+    )
+
+    report = DashboardService(repository).build_report(
+        account_id=account.id,
+        start_date="2026-08-02",
+        end_date="2026-08-02",
+    )
+
+    assert report.raw_position_count == 1
+    assert report.net_pnl == "-5"
+    assert report.trade_count == 0
+    assert report.cross_period_trade_count == 1
+    assert report.gross_profit == "0"
+    assert report.gross_loss == "0"
+    assert (report.win_count, report.loss_count, report.breakeven_count) == (0, 0, 0)
+    assert report.by_symbol == []
+    assert report.by_direction == []
 
 
 def test_dashboard_reports_only_the_selected_account_currency_and_trades(tmp_path: Path) -> None:

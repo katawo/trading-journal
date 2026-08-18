@@ -1676,7 +1676,14 @@ def test_dashboard_switches_to_per_trade_view(monkeypatch, tmp_path):
     chart_view.set_value("Per trade").run()
 
     assert not app.exception
-    assert len(app.dataframe) == 1
+    breakdown = next(item.value for item in app.dataframe if "Group" in item.value.columns)
+    assert breakdown["Win rate"].dtype.kind in "fi"
+    assert breakdown["Net P&L (USD)"].dtype.kind in "fi"
+    assert breakdown["Total R"].dtype.kind in "fi"
+    assert breakdown["Expectancy R"].dtype.kind in "fi"
+    assert breakdown["Profit factor"].dtype.kind in "fi"
+    assert any("Logical trade" in item.value.columns for item in app.dataframe)
+    assert {"Performance", "Consistency", "Breakdowns"}.issubset({item.label for item in app.tabs})
     assert any("current logical-trade grouping" in item.value for item in app.caption)
 
 
