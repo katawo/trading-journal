@@ -278,6 +278,22 @@ def test_reimport_refreshes_execution_data(repository: SQLiteJournalRepository, 
     assert trade.result_r is None
 
 
+def test_imports_separate_closed_records_from_one_netting_reversal(repository: SQLiteJournalRepository) -> None:
+    first = _row_dict_for_json(position_id="9001", direction="long")
+    second = _row_dict_for_json(
+        position_id="9001:2",
+        direction="short",
+        entry_time="2026-08-10T10:00:00+00:00",
+        exit_time="2026-08-10T11:00:00+00:00",
+    )
+
+    result = MT5ImportService(repository).import_json_positions([first, second], source_label="reversal-fixture")
+
+    assert result.created_count == 2
+    assert repository.get_trade_by_mt5_position("123456", "DemoBroker-Live", "9001") is not None
+    assert repository.get_trade_by_mt5_position("123456", "DemoBroker-Live", "9001:2") is not None
+
+
 def test_rejects_currency_mismatch_without_creating_trade(repository: SQLiteJournalRepository, tmp_path: Path) -> None:
     export_path = tmp_path / "positions.csv"
     write_export(export_path, currency="EUR")

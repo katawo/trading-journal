@@ -222,6 +222,9 @@ def _result_to_payload(result: MT5AutoSyncResult) -> dict[str, Any]:
         "created_count": result.created_count,
         "updated_count": result.updated_count,
         "export_updated_at": _serialize_datetime(result.export_updated_at),
+        "live_status": result.live_status,
+        "live_message": result.live_message,
+        "live_updated_at": _serialize_datetime(result.live_updated_at),
     }
 
 
@@ -241,6 +244,9 @@ def _payload_to_result(payload: object) -> MT5AutoSyncResult | None:
         created_count=payload.get("created_count") if isinstance(payload.get("created_count"), int) else 0,
         updated_count=payload.get("updated_count") if isinstance(payload.get("updated_count"), int) else 0,
         export_updated_at=_deserialize_datetime(payload.get("export_updated_at")),
+        live_status=payload.get("live_status") if isinstance(payload.get("live_status"), str) else None,
+        live_message=payload.get("live_message") if isinstance(payload.get("live_message"), str) else None,
+        live_updated_at=_deserialize_datetime(payload.get("live_updated_at")),
     )
 
 

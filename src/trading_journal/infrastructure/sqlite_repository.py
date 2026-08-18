@@ -11,7 +11,7 @@ from sqlalchemy import Boolean, ForeignKey, Index, Integer, String, Text, Unique
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
 
 from trading_journal.application.reporting_time import REPORTING_TIME_BASES, normalize_server_timestamp
-from trading_journal.domain.models import ImportResult, ImportedTradeView, MT5PositionExport
+from trading_journal.domain.models import ImportResult, ImportedTradeView, MT5LivePositionExport, MT5PositionExport
 
 
 _UNSET = object()
@@ -64,6 +64,11 @@ HARD_RULE_CODES = frozenset(
 
 def _decimal_string(value: Decimal | str) -> str:
     return str(Decimal(value))
+
+
+def _parse_live_snapshot_time(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value)
+    return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
 
 
 def normalize_strategy_name(value: str) -> str:
@@ -198,6 +203,57 @@ class Trade(Base):
     initial_reward_amount: Mapped[str | None] = mapped_column(String, nullable=True)
     pretrade_account_balance: Mapped[str | None] = mapped_column(String, nullable=True)
     auto_risk_policy_id: Mapped[int | None] = mapped_column(ForeignKey("account_risk_policies.id"), nullable=True)
+
+
+class LivePosition(Base):
+    """Ephemeral current MT5 state; deliberately unrelated to journal trades."""
+
+    __tablename__ = "live_positions"
+    __table_args__ = (UniqueConstraint("mt5_account_id", "mt5_position_id", name="uq_live_position"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    mt5_account_id: Mapped[int] = mapped_column(ForeignKey("mt5_accounts.id"), nullable=False)
+    mt5_position_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    snapshot_time: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_updated_at: Mapped[str] = mapped_column(String(64), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    direction: Mapped[str] = mapped_column(String(8), nullable=False)
+    entry_time: Mapped[str] = mapped_column(String(64), nullable=False)
+    entry_price: Mapped[str] = mapped_column(String, nullable=False)
+    current_price: Mapped[str] = mapped_column(String, nullable=False)
+    volume: Mapped[str] = mapped_column(String, nullable=False)
+    stop_price: Mapped[str | None] = mapped_column(String, nullable=True)
+    target_price: Mapped[str | None] = mapped_column(String, nullable=True)
+    net_unrealized_pnl: Mapped[str] = mapped_column(String, nullable=False)
+    risk_to_stop_amount: Mapped[str | None] = mapped_column(String, nullable=True)
+    magic_number: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+
+class LivePositionSnapshot(Base):
+    __tablename__ = "live_position_snapshots"
+
+    mt5_account_id: Mapped[int] = mapped_column(ForeignKey("mt5_accounts.id"), primary_key=True)
+    snapshot_time: Mapped[str] = mapped_column(String(64), nullable=False)
+    export_interval_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
+    source_updated_at: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_file_mtime_ns: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source_file_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class LivePositionIncident(Base):
+    """An auditable live-risk transition, never post-trade evidence."""
+
+    __tablename__ = "live_position_incidents"
+    __table_args__ = (Index("ix_live_incidents_account_key_id", "mt5_account_id", "incident_key", "id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    mt5_account_id: Mapped[int] = mapped_column(ForeignKey("mt5_accounts.id"), nullable=False)
+    incident_key: Mapped[str] = mapped_column(String(100), nullable=False)
+    category: Mapped[str] = mapped_column(String(24), nullable=False)
+    state: Mapped[str] = mapped_column(String(12), nullable=False)
+    position_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    detail: Mapped[str] = mapped_column(String(500), nullable=False)
+    occurred_at: Mapped[str] = mapped_column(String(64), nullable=False)
 
 
 class MT5ImportRun(Base):
@@ -513,6 +569,43 @@ class AccountRiskPolicyView:
 
 
 @dataclass(frozen=True)
+class LivePositionItem:
+    position_id: str
+    snapshot_time: str
+    source_updated_at: str
+    symbol: str
+    direction: str
+    entry_time: str
+    entry_price: str
+    current_price: str
+    volume: str
+    stop_price: str | None
+    target_price: str | None
+    net_unrealized_pnl: str
+    risk_to_stop_amount: str | None
+    magic_number: str | None
+
+
+@dataclass(frozen=True)
+class LivePositionIncidentItem:
+    id: int
+    category: str
+    state: str
+    position_id: str | None
+    detail: str
+    occurred_at: str
+
+
+@dataclass(frozen=True)
+class LiveSnapshotItem:
+    snapshot_time: str
+    export_interval_seconds: int
+    source_updated_at: str
+    source_file_mtime_ns: int | None
+    source_file_size: int | None
+
+
+@dataclass(frozen=True)
 class StrategyEvidenceSnapshot:
     profile_id: int
     name: str
@@ -748,6 +841,13 @@ class SQLiteJournalRepository:
                 connection.exec_driver_sql("ALTER TABLE mt5_import_runs ADD COLUMN source_file_mtime_ns INTEGER")
             if "source_file_size" not in import_columns:
                 connection.exec_driver_sql("ALTER TABLE mt5_import_runs ADD COLUMN source_file_size INTEGER")
+            live_snapshot_columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(live_position_snapshots)")}
+            if live_snapshot_columns and "source_file_mtime_ns" not in live_snapshot_columns:
+                connection.exec_driver_sql("ALTER TABLE live_position_snapshots ADD COLUMN source_file_mtime_ns INTEGER")
+            if live_snapshot_columns and "source_file_size" not in live_snapshot_columns:
+                connection.exec_driver_sql("ALTER TABLE live_position_snapshots ADD COLUMN source_file_size INTEGER")
+            if live_snapshot_columns and "export_interval_seconds" not in live_snapshot_columns:
+                connection.exec_driver_sql("ALTER TABLE live_position_snapshots ADD COLUMN export_interval_seconds INTEGER NOT NULL DEFAULT 60")
             assessment_columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(post_trade_assessments)")}
             for column_name, column_type in (
                 ("setup_snapshot", "VARCHAR(100)"),
@@ -1116,6 +1216,9 @@ class SQLiteJournalRepository:
             if session.scalar(select(Trade.id).where(Trade.mt5_account_id == account_id).limit(1)) is not None:
                 raise ValueError("An account with imported trades cannot be deleted. Deactivate it to retain its history instead")
             session.execute(delete(MT5ImportRun).where(MT5ImportRun.mt5_account_id == account_id))
+            session.execute(delete(LivePositionIncident).where(LivePositionIncident.mt5_account_id == account_id))
+            session.execute(delete(LivePosition).where(LivePosition.mt5_account_id == account_id))
+            session.execute(delete(LivePositionSnapshot).where(LivePositionSnapshot.mt5_account_id == account_id))
             session.execute(delete(AccountRiskPolicy).where(AccountRiskPolicy.mt5_account_id == account_id))
             settings = session.get(JournalSettings, 1)
             if settings is not None and settings.active_mt5_account_id == account_id:
@@ -1209,6 +1312,163 @@ class SQLiteJournalRepository:
         with self._sessions() as session:
             policy = session.get(AccountRiskPolicy, policy_id)
             return None if policy is None else self._to_risk_policy_view(policy)
+
+    def replace_live_positions(
+        self,
+        *,
+        login: str,
+        broker_server: str,
+        account_currency: str,
+        snapshot_time: str,
+        export_interval_seconds: int,
+        positions: list[MT5LivePositionExport],
+        source_file_mtime_ns: int | None = None,
+        source_file_size: int | None = None,
+    ) -> int:
+        """Atomically replace one account's disposable live MT5 snapshot."""
+        with self._sessions.begin() as session:
+            account = session.scalar(
+                select(MT5Account).where(
+                    MT5Account.login == login,
+                    MT5Account.broker_server == broker_server,
+                    MT5Account.active.is_(True),
+                )
+            )
+            if account is None:
+                raise ValueError("MT5 account is not registered or active")
+            if account.account_currency != account_currency:
+                raise ValueError("MT5 export currency does not match the registered account")
+            snapshot = session.get(LivePositionSnapshot, account.id)
+            incoming_time = _parse_live_snapshot_time(snapshot_time)
+            if snapshot is not None and incoming_time < _parse_live_snapshot_time(snapshot.snapshot_time):
+                return account.id
+            session.execute(delete(LivePosition).where(LivePosition.mt5_account_id == account.id))
+            now = datetime.now(timezone.utc).isoformat()
+            if snapshot is None:
+                session.add(LivePositionSnapshot(
+                    mt5_account_id=account.id,
+                    snapshot_time=snapshot_time,
+                    export_interval_seconds=export_interval_seconds,
+                    source_updated_at=now,
+                    source_file_mtime_ns=source_file_mtime_ns,
+                    source_file_size=source_file_size,
+                ))
+            else:
+                snapshot.snapshot_time = snapshot_time
+                snapshot.export_interval_seconds = export_interval_seconds
+                snapshot.source_updated_at = now
+                snapshot.source_file_mtime_ns = source_file_mtime_ns
+                snapshot.source_file_size = source_file_size
+            for position in positions:
+                session.add(
+                    LivePosition(
+                        mt5_account_id=account.id,
+                        mt5_position_id=position.position_id,
+                        snapshot_time=snapshot_time,
+                        source_updated_at=now,
+                        symbol=position.symbol,
+                        direction=position.direction,
+                        entry_time=position.entry_time,
+                        entry_price=_decimal_string(position.entry_price),
+                        current_price=_decimal_string(position.current_price),
+                        volume=_decimal_string(position.volume),
+                        stop_price=None if position.stop_price is None else _decimal_string(position.stop_price),
+                        target_price=None if position.target_price is None else _decimal_string(position.target_price),
+                        net_unrealized_pnl=_decimal_string(position.net_unrealized_pnl),
+                        risk_to_stop_amount=None if position.risk_to_stop_amount is None else _decimal_string(position.risk_to_stop_amount),
+                        magic_number=position.magic_number,
+                    )
+                )
+            return account.id
+
+    def get_live_snapshot(self, account_id: int) -> LiveSnapshotItem | None:
+        with self._sessions() as session:
+            snapshot = session.get(LivePositionSnapshot, account_id)
+            return None if snapshot is None else LiveSnapshotItem(
+                snapshot.snapshot_time,
+                snapshot.export_interval_seconds,
+                snapshot.source_updated_at,
+                snapshot.source_file_mtime_ns,
+                snapshot.source_file_size,
+            )
+
+    def list_live_positions(self, account_id: int) -> list[LivePositionItem]:
+        with self._sessions() as session:
+            rows = session.scalars(
+                select(LivePosition)
+                .where(LivePosition.mt5_account_id == account_id)
+                .order_by(LivePosition.symbol, LivePosition.mt5_position_id)
+            ).all()
+            return [
+                LivePositionItem(
+                    position_id=row.mt5_position_id,
+                    snapshot_time=row.snapshot_time,
+                    source_updated_at=row.source_updated_at,
+                    symbol=row.symbol,
+                    direction=row.direction,
+                    entry_time=row.entry_time,
+                    entry_price=row.entry_price,
+                    current_price=row.current_price,
+                    volume=row.volume,
+                    stop_price=row.stop_price,
+                    target_price=row.target_price,
+                    net_unrealized_pnl=row.net_unrealized_pnl,
+                    risk_to_stop_amount=row.risk_to_stop_amount,
+                    magic_number=row.magic_number,
+                )
+                for row in rows
+            ]
+
+    def record_live_incident_transitions(
+        self, account_id: int, active: dict[str, tuple[str, str | None, str]], *, occurred_at: str
+    ) -> None:
+        """Append only genuine open/resolve transitions for current live alerts."""
+        with self._sessions.begin() as session:
+            previous_rows = session.execute(
+                select(LivePositionIncident)
+                .where(LivePositionIncident.mt5_account_id == account_id)
+                .order_by(LivePositionIncident.incident_key, LivePositionIncident.id.desc())
+            ).scalars().all()
+            latest: dict[str, LivePositionIncident] = {}
+            for row in previous_rows:
+                latest.setdefault(row.incident_key, row)
+            open_keys = {key for key, row in latest.items() if row.state == "opened"}
+            for key, (category, position_id, detail) in active.items():
+                prior = latest.get(key)
+                if prior is None or prior.state == "resolved":
+                    session.add(LivePositionIncident(
+                        mt5_account_id=account_id,
+                        incident_key=key,
+                        category=category,
+                        state="opened",
+                        position_id=position_id,
+                        detail=detail,
+                        occurred_at=occurred_at,
+                    ))
+            for key in open_keys - set(active):
+                prior = latest[key]
+                session.add(LivePositionIncident(
+                    mt5_account_id=account_id,
+                    incident_key=key,
+                    category=prior.category,
+                    state="resolved",
+                    position_id=prior.position_id,
+                    detail=prior.detail,
+                    occurred_at=occurred_at,
+                ))
+
+    def list_live_position_incidents(self, account_id: int, *, limit: int = 100) -> list[LivePositionIncidentItem]:
+        with self._sessions() as session:
+            rows = session.scalars(
+                select(LivePositionIncident)
+                .where(LivePositionIncident.mt5_account_id == account_id)
+                .order_by(LivePositionIncident.id.desc())
+                .limit(limit)
+            ).all()
+            return [
+                LivePositionIncidentItem(row.id, row.category, row.state, row.position_id, row.detail, row.occurred_at)
+                for row in rows
+            ]
 
     def save_account_risk_policy(
         self,

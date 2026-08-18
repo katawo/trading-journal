@@ -5,6 +5,7 @@
 // Must match trading_journal/domain/models.py's MT5PositionExport.schema_version
 // and the versions listed in SUPPORTED_SCHEMA_VERSIONS (application/import_mt5.py).
 #define TRADING_JOURNAL_SCHEMA_VERSION 5
+#define TRADING_JOURNAL_MONEY_DIGITS 8
 
 input string CommonFilesSubfolder = "trading_journal";
 
@@ -53,11 +54,31 @@ int SymbolDigits(const string symbol)
    return SymbolInfoInteger(symbol,SYMBOL_DIGITS,digits) ? (int)digits : _Digits;
   }
 
+int VolumeDigits(const string symbol)
+  {
+   double step=SymbolInfoDouble(symbol,SYMBOL_VOLUME_STEP);
+   if(step<=0.0) return 2;
+   for(int digits=0;digits<=8;digits++)
+      if(MathAbs(step-NormalizeDouble(step,digits))<0.0000000001) return digits;
+   return 8;
+  }
+
 bool ContainsPosition(const ulong &positions[],const ulong position_id)
   {
    for(int index=0;index<ArraySize(positions);index++)
       if(positions[index]==position_id)
          return true;
+   return false;
+  }
+
+bool IsPositionIdentifierOpen(const ulong position_id)
+  {
+   for(int index=0;index<PositionsTotal();index++)
+     {
+      ulong ticket=PositionGetTicket(index);
+      if(ticket>0 && PositionSelectByTicket(ticket) && (ulong)PositionGetInteger(POSITION_IDENTIFIER)==position_id)
+         return true;
+     }
    return false;
   }
 
@@ -73,9 +94,9 @@ bool PreTradeBalance(const ulong position_id,const double current_balance,double
    double cash_flows[];
    ulong first_ticket=0;
    long first_time=0;
-   for(uint index=0;index<HistoryDealsTotal();index++)
+   for(int index=0;index<HistoryDealsTotal();index++)
      {
-      ulong ticket=HistoryDealGetTicket(index);
+      ulong ticket=HistoryDealGetTicket((uint)index);
       if(ticket==0)
          continue;
       long time_msc=HistoryDealGetInteger(ticket,DEAL_TIME_MSC);
@@ -124,97 +145,76 @@ bool PreTradeBalance(const ulong position_id,const double current_balance,double
    return false;
   }
 
-bool ExportPosition(const ulong position_id,const int handle,const double account_balance,const int server_utc_offset_minutes)
+struct CompletedPositionRecord
+  {
+   bool complete;
+   string symbol;
+   string direction;
+   datetime entry_time;
+   datetime exit_time;
+   double entry_volume;
+   double exit_volume;
+   double entry_notional;
+   double exit_notional;
+   double gross_pnl;
+   double commission;
+   double swap;
+   double fees;
+   double entry_stop;
+   double entry_target;
+   double close_stop;
+   long entry_magic;
+   long exit_reason;
+   int entry_deal_count;
+  };
+
+void StartCompletedRecord(CompletedPositionRecord &record,const string symbol,const long deal_type,const datetime time,
+                          const double volume,const double price,const double stop,const double target,const long magic)
+  {
+   record.complete=false;
+   record.symbol=symbol;
+   record.direction=(deal_type==DEAL_TYPE_BUY ? "long" : "short");
+   record.entry_time=time;
+   record.exit_time=0;
+   record.entry_volume=volume;
+   record.exit_volume=0.0;
+   record.entry_notional=volume*price;
+   record.exit_notional=0.0;
+   record.gross_pnl=0.0;
+   record.commission=0.0;
+   record.swap=0.0;
+   record.fees=0.0;
+   record.entry_stop=stop;
+   record.entry_target=target;
+   record.close_stop=0.0;
+   record.entry_magic=magic;
+   record.exit_reason=DEAL_REASON_CLIENT;
+   record.entry_deal_count=1;
+  }
+
+bool WriteCompletedRecord(const CompletedPositionRecord &record,const string exported_id,const int ordinal,
+                          const ulong position_id,const int handle,const double account_balance,const int server_utc_offset_minutes)
   {
    double pretrade_balance=0.0;
-   bool has_pretrade_balance=PreTradeBalance(position_id,account_balance,pretrade_balance);
-   if(!HistorySelectByPosition(position_id))
+   bool has_pretrade_balance=ordinal==1 && PreTradeBalance(position_id,account_balance,pretrade_balance);
+   if(!record.complete || record.entry_volume<=0.0 || record.exit_volume+0.00000001<record.entry_volume ||
+      record.entry_time==0 || record.exit_time==0 || record.direction=="")
       return false;
-
-   double entry_volume=0.0;
-   double exit_volume=0.0;
-   double entry_notional=0.0;
-   double exit_notional=0.0;
-   double gross_pnl=0.0;
-   double commission=0.0;
-   double swap=0.0;
-   double fees=0.0;
-   string symbol="";
-   string direction="";
-   datetime entry_time=0;
-   datetime exit_time=0;
-   double entry_stop=0.0;
-   double entry_target=0.0;
-   double close_stop=0.0;
-   long entry_magic=0;
-   long exit_reason=DEAL_REASON_CLIENT;
-   int entry_deal_count=0;
-
-   for(uint index=0;index<HistoryDealsTotal();index++)
-     {
-      ulong ticket=HistoryDealGetTicket(index);
-      long deal_type=HistoryDealGetInteger(ticket,DEAL_TYPE);
-      if(deal_type!=DEAL_TYPE_BUY && deal_type!=DEAL_TYPE_SELL)
-         continue;
-
-      long entry=HistoryDealGetInteger(ticket,DEAL_ENTRY);
-      double volume=HistoryDealGetDouble(ticket,DEAL_VOLUME);
-      double price=HistoryDealGetDouble(ticket,DEAL_PRICE);
-      double stop=HistoryDealGetDouble(ticket,DEAL_SL);
-      double target=HistoryDealGetDouble(ticket,DEAL_TP);
-      datetime time=(datetime)HistoryDealGetInteger(ticket,DEAL_TIME);
-      symbol=HistoryDealGetString(ticket,DEAL_SYMBOL);
-      gross_pnl+=HistoryDealGetDouble(ticket,DEAL_PROFIT);
-      commission+=HistoryDealGetDouble(ticket,DEAL_COMMISSION);
-      swap+=HistoryDealGetDouble(ticket,DEAL_SWAP);
-      fees+=HistoryDealGetDouble(ticket,DEAL_FEE);
-
-      if(entry==DEAL_ENTRY_IN)
-        {
-         entry_deal_count++;
-         entry_volume+=volume;
-         entry_notional+=volume*price;
-         if(entry_time==0)
-           {
-            entry_time=time;
-            direction=(deal_type==DEAL_TYPE_BUY ? "long" : "short");
-            entry_stop=stop;
-            entry_target=target;
-            entry_magic=HistoryDealGetInteger(ticket,DEAL_MAGIC);
-           }
-        }
-      else if(entry==DEAL_ENTRY_OUT || entry==DEAL_ENTRY_OUT_BY || entry==DEAL_ENTRY_INOUT)
-        {
-         exit_volume+=volume;
-         exit_notional+=volume*price;
-         if(time>exit_time)
-           {
-            exit_time=time;
-            close_stop=stop;
-            exit_reason=HistoryDealGetInteger(ticket,DEAL_REASON);
-           }
-        }
-     }
-
-   // Only emit positions that are flat. Open positions and non-trading account
-   // operations deliberately stay out of the journal import.
-   if(entry_volume<=0.0 || exit_volume+0.00000001<entry_volume || entry_time==0 || exit_time==0 || direction=="")
-      return false;
-
-   double net_pnl=gross_pnl+commission+swap+fees;
-   double entry_price=entry_notional/entry_volume;
-   int symbol_digits=SymbolDigits(symbol);
+   double net_pnl=record.gross_pnl+record.commission+record.swap+record.fees;
+   double entry_price=record.entry_notional/record.entry_volume;
+   int symbol_digits=SymbolDigits(record.symbol);
+   int volume_digits=VolumeDigits(record.symbol);
    double initial_risk=0.0;
    double initial_reward=0.0;
-   ENUM_ORDER_TYPE order_type=(direction=="long" ? ORDER_TYPE_BUY : ORDER_TYPE_SELL);
-   bool valid_stop=(direction=="long" ? entry_stop>0.0 && entry_stop<entry_price : entry_stop>entry_price);
-   bool valid_target=(direction=="long" ? entry_target>entry_price : entry_target>0.0 && entry_target<entry_price);
-   if(entry_deal_count==1 && valid_stop)
+   ENUM_ORDER_TYPE order_type=(record.direction=="long" ? ORDER_TYPE_BUY : ORDER_TYPE_SELL);
+   bool valid_stop=(record.direction=="long" ? record.entry_stop>0.0 && record.entry_stop<entry_price : record.entry_stop>entry_price);
+   bool valid_target=(record.direction=="long" ? record.entry_target>entry_price : record.entry_target>0.0 && record.entry_target<entry_price);
+   if(record.entry_deal_count==1 && valid_stop)
      {
       double calculated=0.0;
-      if(OrderCalcProfit(order_type,symbol,entry_volume,entry_price,entry_stop,calculated))
+      if(OrderCalcProfit(order_type,record.symbol,record.entry_volume,entry_price,record.entry_stop,calculated))
          initial_risk=MathAbs(calculated);
-      if(valid_target && OrderCalcProfit(order_type,symbol,entry_volume,entry_price,entry_target,calculated))
+      if(valid_target && OrderCalcProfit(order_type,record.symbol,record.entry_volume,entry_price,record.entry_target,calculated))
          initial_reward=MathAbs(calculated);
      }
    FileWrite(handle,
@@ -222,31 +222,137 @@ bool ExportPosition(const ulong position_id,const int handle,const double accoun
              (string)AccountInfoInteger(ACCOUNT_LOGIN),
              AccountInfoString(ACCOUNT_SERVER),
              AccountInfoString(ACCOUNT_CURRENCY),
-             (string)position_id,
-             symbol,
-             direction,
-             ServerTime(entry_time),
-             ServerTime(exit_time),
+             exported_id,
+             record.symbol,
+             record.direction,
+             ServerTime(record.entry_time),
+             ServerTime(record.exit_time),
              server_utc_offset_minutes,
              DoubleToString(entry_price,symbol_digits),
-             DoubleToString(exit_notional/exit_volume,symbol_digits),
-             DoubleToString(entry_volume,2),
-             DoubleToString(gross_pnl,2),
-             DoubleToString(commission,2),
-             DoubleToString(swap,2),
-             DoubleToString(fees,2),
-             DoubleToString(net_pnl,2),
-             OptionalNumber(entry_stop,symbol_digits),
-             OptionalNumber(entry_target,symbol_digits),
-             OptionalNumber(close_stop,symbol_digits),
-             (string)entry_magic,
-             entry_deal_count,
-             DealReasonText(exit_reason),
-             OptionalNumber(initial_risk,2),
-             OptionalNumber(initial_reward,2),
-             DoubleToString(account_balance,2),
-             has_pretrade_balance ? DoubleToString(pretrade_balance,2) : "");
+             DoubleToString(record.exit_notional/record.exit_volume,symbol_digits),
+             DoubleToString(record.entry_volume,volume_digits),
+             DoubleToString(record.gross_pnl,TRADING_JOURNAL_MONEY_DIGITS),
+             DoubleToString(record.commission,TRADING_JOURNAL_MONEY_DIGITS),
+             DoubleToString(record.swap,TRADING_JOURNAL_MONEY_DIGITS),
+             DoubleToString(record.fees,TRADING_JOURNAL_MONEY_DIGITS),
+             DoubleToString(net_pnl,TRADING_JOURNAL_MONEY_DIGITS),
+             OptionalNumber(record.entry_stop,symbol_digits),
+             OptionalNumber(record.entry_target,symbol_digits),
+             OptionalNumber(record.close_stop,symbol_digits),
+             (string)record.entry_magic,
+             record.entry_deal_count,
+             DealReasonText(record.exit_reason),
+             OptionalNumber(initial_risk,TRADING_JOURNAL_MONEY_DIGITS),
+             OptionalNumber(initial_reward,TRADING_JOURNAL_MONEY_DIGITS),
+             DoubleToString(account_balance,TRADING_JOURNAL_MONEY_DIGITS),
+             has_pretrade_balance ? DoubleToString(pretrade_balance,TRADING_JOURNAL_MONEY_DIGITS) : "");
    return true;
+  }
+
+int ExportPosition(const ulong position_id,const int handle,const double account_balance,const int server_utc_offset_minutes)
+  {
+   if(!HistorySelectByPosition(position_id)) return 0;
+   CompletedPositionRecord records[];
+   int active=-1;
+   double signed_volume=0.0;
+   for(int index=0;index<HistoryDealsTotal();index++)
+     {
+      ulong ticket=HistoryDealGetTicket((uint)index);
+      long deal_type=HistoryDealGetInteger(ticket,DEAL_TYPE);
+      if(deal_type!=DEAL_TYPE_BUY && deal_type!=DEAL_TYPE_SELL) continue;
+      long entry=HistoryDealGetInteger(ticket,DEAL_ENTRY);
+      double volume=HistoryDealGetDouble(ticket,DEAL_VOLUME);
+      double price=HistoryDealGetDouble(ticket,DEAL_PRICE);
+      double stop=HistoryDealGetDouble(ticket,DEAL_SL);
+      double target=HistoryDealGetDouble(ticket,DEAL_TP);
+      double profit=HistoryDealGetDouble(ticket,DEAL_PROFIT);
+      double commission=HistoryDealGetDouble(ticket,DEAL_COMMISSION);
+      double swap=HistoryDealGetDouble(ticket,DEAL_SWAP);
+      double fee=HistoryDealGetDouble(ticket,DEAL_FEE);
+      datetime time=(datetime)HistoryDealGetInteger(ticket,DEAL_TIME);
+      long reason=HistoryDealGetInteger(ticket,DEAL_REASON);
+      long magic=HistoryDealGetInteger(ticket,DEAL_MAGIC);
+      string symbol=HistoryDealGetString(ticket,DEAL_SYMBOL);
+      double sign=(deal_type==DEAL_TYPE_BUY ? 1.0 : -1.0);
+      if(entry==DEAL_ENTRY_IN)
+        {
+         if(active<0)
+           {
+            active=ArraySize(records);
+            ArrayResize(records,active+1);
+            StartCompletedRecord(records[active],symbol,deal_type,time,volume,price,stop,target,magic);
+            signed_volume=sign*volume;
+           }
+         else
+           {
+            records[active].entry_volume+=volume;
+            records[active].entry_notional+=volume*price;
+            records[active].entry_deal_count++;
+            signed_volume+=sign*volume;
+           }
+         records[active].gross_pnl+=profit;
+         records[active].commission+=commission;
+         records[active].swap+=swap;
+         records[active].fees+=fee;
+         continue;
+        }
+      if(active<0) continue;
+      if(entry==DEAL_ENTRY_INOUT)
+        {
+         double close_volume=MathAbs(signed_volume);
+         double open_volume=MathMax(volume-close_volume,0.0);
+         double close_ratio=(volume>0.0 ? close_volume/volume : 1.0);
+         records[active].exit_volume+=close_volume;
+         records[active].exit_notional+=close_volume*price;
+         records[active].gross_pnl+=profit;
+         records[active].commission+=commission*close_ratio;
+         records[active].swap+=swap;
+         records[active].fees+=fee*close_ratio;
+         records[active].exit_time=time;
+         records[active].close_stop=stop;
+         records[active].exit_reason=reason;
+         records[active].complete=true;
+         active=-1;
+         signed_volume=0.0;
+         if(open_volume>0.00000001)
+           {
+            active=ArraySize(records);
+            ArrayResize(records,active+1);
+            StartCompletedRecord(records[active],symbol,deal_type,time,open_volume,price,stop,target,magic);
+            records[active].commission+=commission*(1.0-close_ratio);
+            records[active].fees+=fee*(1.0-close_ratio);
+            signed_volume=sign*open_volume;
+           }
+         continue;
+        }
+      if(entry==DEAL_ENTRY_OUT || entry==DEAL_ENTRY_OUT_BY)
+        {
+         double close_volume=MathMin(volume,MathAbs(signed_volume));
+         records[active].exit_volume+=close_volume;
+         records[active].exit_notional+=close_volume*price;
+         records[active].gross_pnl+=profit;
+         records[active].commission+=commission;
+         records[active].swap+=swap;
+         records[active].fees+=fee;
+         records[active].exit_time=time;
+         records[active].close_stop=stop;
+         records[active].exit_reason=reason;
+         signed_volume+=sign*close_volume;
+         if(MathAbs(signed_volume)<=0.00000001)
+           {
+            records[active].complete=true;
+            active=-1;
+            signed_volume=0.0;
+           }
+        }
+     }
+   int exported=0;
+   for(int index=0;index<ArraySize(records);index++)
+     {
+      string exported_id=index==0 ? (string)position_id : (string)position_id+":"+(string)(index+1);
+      if(WriteCompletedRecord(records[index],exported_id,index+1,position_id,handle,account_balance,server_utc_offset_minutes)) exported++;
+     }
+   return exported;
   }
 
 void OnStart()
@@ -258,9 +364,9 @@ void OnStart()
      }
 
    ulong position_ids[];
-   for(uint index=0;index<HistoryDealsTotal();index++)
+   for(int index=0;index<HistoryDealsTotal();index++)
      {
-      ulong ticket=HistoryDealGetTicket(index);
+      ulong ticket=HistoryDealGetTicket((uint)index);
       long deal_type=HistoryDealGetInteger(ticket,DEAL_TYPE);
       long entry=HistoryDealGetInteger(ticket,DEAL_ENTRY);
       ulong position_id=(ulong)HistoryDealGetInteger(ticket,DEAL_POSITION_ID);
@@ -288,8 +394,8 @@ void OnStart()
 
    int exported=0;
    for(int index=0;index<ArraySize(position_ids);index++)
-      if(ExportPosition(position_ids[index],handle,account_balance,server_utc_offset_minutes))
-         exported++;
+      if(!IsPositionIdentifierOpen(position_ids[index]))
+         exported+=ExportPosition(position_ids[index],handle,account_balance,server_utc_offset_minutes);
    FileClose(handle);
 
    if(!FileMove(temporary_name,FILE_COMMON,export_name,FILE_COMMON|FILE_REWRITE))

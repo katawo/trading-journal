@@ -94,6 +94,34 @@ def test_ingest_rejects_an_unknown_token(monkeypatch: pytest.MonkeyPatch, tmp_pa
     assert response.status_code == 401
 
 
+def test_live_snapshot_ingest_uses_the_same_token_isolation(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _seed_multiuser_environment(monkeypatch, tmp_path)
+    client = TestClient(app)
+    snapshot = {
+        "schema_version": 1,
+        "account_login": "123456",
+        "broker_server": "DemoBroker-Live",
+        "account_currency": "USD",
+        "snapshot_time": "2026-08-18T08:00:00+00:00",
+        "positions": [{
+            "schema_version": 1, "account_login": "123456", "broker_server": "DemoBroker-Live", "account_currency": "USD",
+            "snapshot_time": "2026-08-18T08:00:00+00:00", "position_id": "live-1", "symbol": "EURUSD",
+            "direction": "long", "entry_time": "2026-08-18T07:00:00+00:00", "entry_price": "1.1",
+            "current_price": "1.101", "volume": "1", "stop_price": "1.095", "target_price": "1.11",
+            "net_unrealized_pnl": "10", "risk_to_stop_amount": "50", "magic_number": "10001",
+        }],
+    }
+
+    response = client.post("/ingest/live-positions", json={"snapshot": snapshot}, headers={"Authorization": f"Bearer {TOKEN}"})
+
+    assert response.status_code == 200
+    repository = SQLiteJournalRepository(user_database_path("alice"))
+    repository.initialize()
+    account = repository.get_active_mt5_account()
+    assert account is not None
+    assert [row.position_id for row in repository.list_live_positions(account.id)] == ["live-1"]
+
+
 def test_ingest_writes_only_into_the_tokens_own_user_database(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     _seed_multiuser_environment(monkeypatch, tmp_path)
     bob_token = "test-token-for-bob"

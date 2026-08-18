@@ -20,11 +20,11 @@ The lock is held by the operating system for as long as the application runs, so
 ## MT5 sync
 
 1. Compile and attach `mql5/TradingJournalSync.mq5` to one chart in each MT5 terminal.
-2. The EA writes `trading_journal/<MT5-login>_positions.csv` under MT5 Common Files. It exports after closed-deal events and every 60 seconds as a safety refresh.
+2. The EA writes completed positions to `trading_journal/<MT5-login>_positions.csv` after closed-deal events and every 60 seconds as a safety refresh. It independently writes temporary open positions to `<MT5-login>_open_positions.csv` every 10 seconds for the Ongoing workspace.
 3. Add each account in **Settings → MT5 Accounts**. Leave the custom export path empty to use the detected Windows or Linux/Wine Common Files location.
 4. The desktop worker checks configured exports every five seconds. **Sync MT5 now** sends an immediate local request and the result appears within one second.
 
-The worker validates schema v5, account login, broker server, and currency before importing. Invalid files only appear as a sync error; they never overwrite journal data.
+The worker checks both exports every five seconds. It validates schema, account login, broker server, and currency before importing; invalid files only appear as a sync error and never overwrite journal data. Open-position state remains isolated from completed trades and post-trade evidence. The EA uses MT5's stable position identifier, publishes an authoritative empty snapshot only while connected, and defers history/file/network work from the trade-transaction handler to its timer.
 
 ## Data and backup
 

@@ -18,6 +18,7 @@ from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError, OperationalError
 
 from trading_journal.application.import_mt5 import MT5ImportService
+from trading_journal.application.live_positions import LivePositionImportService
 from trading_journal.application.multiuser import resolve_username_for_token, user_database_path
 from trading_journal.domain.errors import ImportValidationError
 from trading_journal.domain.models import ImportResult
@@ -28,6 +29,10 @@ app = FastAPI(title="Trade Compass ingestion", docs_url=None, redoc_url=None)
 
 class IngestRequest(BaseModel):
     positions: list[dict]
+
+
+class IngestLivePositionsRequest(BaseModel):
+    snapshot: dict
 
 
 def _authenticated_username(authorization: str | None) -> str:
@@ -57,6 +62,24 @@ def ingest(request: IngestRequest, authorization: str | None = Header(default=No
         # guarantee, this endpoint can be hit concurrently - surface it as a
         # retryable conflict rather than a raw 500.
         raise HTTPException(status_code=409, detail="Conflicting concurrent import for this account, retry") from error
+    finally:
+        repository.close()
+
+
+@app.post("/ingest/live-positions")
+def ingest_live_positions(request: IngestLivePositionsRequest, authorization: str | None = Header(default=None)) -> dict[str, int]:
+    username = _authenticated_username(authorization)
+    database_path = user_database_path(username)
+    database_path.parent.mkdir(parents=True, exist_ok=True)
+    repository = SQLiteJournalRepository(database_path)
+    repository.initialize()
+    try:
+        account_id = LivePositionImportService(repository).import_snapshot(request.snapshot)
+        return {"account_id": account_id}
+    except (ImportValidationError, ValueError) as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except (IntegrityError, OperationalError) as error:
+        raise HTTPException(status_code=409, detail="Conflicting concurrent live snapshot, retry") from error
     finally:
         repository.close()
 

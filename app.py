@@ -50,7 +50,7 @@ from trading_journal.presentation.formatting import (
 from trading_journal.presentation.trade_tags import direction_tag, outcome_tag
 
 
-_AUTO_SYNC_INTERVAL_SECONDS = 15
+_AUTO_SYNC_INTERVAL_SECONDS = 5
 _FRESHNESS_INTERVAL_SECONDS = 5
 _ANALYTICS_CACHE_TTL_SECONDS = 15
 _CHART_POSITIVE = "#0e9163"
@@ -397,13 +397,15 @@ def render_auto_sync_notice() -> None:
 
 
 def render_sync_failures(results: list[MT5AutoSyncResult], *, prefix: str) -> None:
-    failures = [item for item in results if item.status == "failed"]
+    failures: list[tuple[str, str]] = []
+    for item in results:
+        if item.status == "failed":
+            failures.append((item.account_name, item.message or "Unknown error"))
+        if item.live_status == "failed":
+            failures.append((f"{item.account_name} live positions", item.live_message or "Unknown error"))
     if not failures:
         return
-    details = "; ".join(
-        f"{item.account_name}: {item.message or 'Unknown error'}"
-        for item in failures
-    )
+    details = "; ".join(f"{account_name}: {message}" for account_name, message in failures)
     st.error(f"{prefix}: {details}")
 
 
@@ -445,7 +447,7 @@ def render_manual_sync_button(repo: SQLiteJournalRepository, *, key: str) -> Non
         return
 
     imported = [item for item in results if item.status == "imported"]
-    failures = [item for item in results if item.status == "failed"]
+    failures = [item for item in results if item.status == "failed" or item.live_status == "failed"]
     waiting = [item for item in results if item.status == "waiting"]
     if imported:
         created = sum(item.created_count for item in imported)
@@ -1579,6 +1581,7 @@ def main() -> None:
     monitor_alert_count = 0
     focus_ready = False
     active_account = repo.get_active_mt5_account()
+    ongoing_count = 0 if active_account is None else len(repo.list_live_positions(active_account.id))
     database_path = getattr(repo, "database_path", None)
     if active_account is not None and database_path is not None:
         mtime = _database_mtime_ns(database_path)
@@ -1594,11 +1597,13 @@ def main() -> None:
     # checklist page - putting the badge there was a dead end.
     monitor_badge_count = monitor_alert_count + (1 if focus_ready else 0)
     monitor_title = f"{tr('Monitor')} ({monitor_badge_count})" if monitor_badge_count else tr("Monitor")
+    ongoing_title = f"Ongoing ({ongoing_count})" if ongoing_count else "Ongoing"
     improve_title = tr("Improve")
 
     page = st.navigation(
         {
             "Workspace": [
+                st.Page("app_pages/ongoing.py", title=ongoing_title, icon=":material/candlestick_chart:"),
                 st.Page("app_pages/dashboard.py", title=tr("Dashboard"), icon=":material/dashboard:", default=True),
                 # Analytics is not the current focus — hidden from the nav for now.
                 # Re-add the line above (see app_pages/analytics.py / render_strategy_analytics) when it's prioritized.

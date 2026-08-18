@@ -51,6 +51,12 @@ def format_r(value: str | Decimal) -> str:
     return format_signed(value, "R")
 
 
+def format_exposure_r(value: str | Decimal) -> str:
+    """Format a risk limit or exposure as an unsigned R magnitude."""
+
+    return f"{format_number(abs(Decimal(value)))}R"
+
+
 def format_percent(value: str | Decimal, *, signed: bool = False, decimal_places: int = 1) -> str:
     if signed:
         return format_signed(value, "%", decimal_places)

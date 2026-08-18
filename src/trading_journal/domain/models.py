@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from datetime import datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class MT5PositionExport(BaseModel):
@@ -69,6 +70,88 @@ class MT5PositionExport(BaseModel):
     @classmethod
     def blank_optional_evidence_is_none(cls, value: object) -> object:
         return None if isinstance(value, str) and not value.strip() else value
+
+
+class MT5LivePositionExport(BaseModel):
+    """One current MT5 position in a replace-on-sync live snapshot."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    schema_version: int = Field(ge=1)
+    account_login: str = Field(min_length=1)
+    broker_server: str = Field(min_length=1)
+    account_currency: str = Field(min_length=3, max_length=3)
+    snapshot_time: str = Field(min_length=1)
+    position_id: str = Field(min_length=1)
+    symbol: str = Field(min_length=1)
+    direction: str = Field(pattern="^(long|short)$")
+    entry_time: str = Field(min_length=1)
+    entry_price: Decimal
+    current_price: Decimal
+    volume: Decimal = Field(gt=0)
+    stop_price: Decimal | None = None
+    target_price: Decimal | None = None
+    net_unrealized_pnl: Decimal
+    risk_to_stop_amount: Decimal | None = Field(default=None, gt=0)
+    magic_number: str | None = None
+
+    @field_validator("account_currency")
+    @classmethod
+    def uppercase_live_currency(cls, value: str) -> str:
+        return value.upper()
+
+    @field_validator("stop_price", "target_price", "risk_to_stop_amount", "magic_number", mode="before")
+    @classmethod
+    def blank_optional_live_evidence_is_none(cls, value: object) -> object:
+        return None if isinstance(value, str) and not value.strip() else value
+
+    @field_validator("snapshot_time", "entry_time")
+    @classmethod
+    def live_timestamp_is_iso_datetime(cls, value: str) -> str:
+        try:
+            datetime.fromisoformat(value)
+        except ValueError as error:
+            raise ValueError("must be an ISO-8601 timestamp") from error
+        return value
+
+    @model_validator(mode="after")
+    def risk_requires_a_protective_stop(self) -> "MT5LivePositionExport":
+        if self.risk_to_stop_amount is None:
+            return self
+        if self.stop_price is None:
+            raise ValueError("risk_to_stop_amount requires a stop_price")
+        valid_stop = self.stop_price < self.current_price if self.direction == "long" else self.stop_price > self.current_price
+        if not valid_stop:
+            raise ValueError("risk_to_stop_amount requires a protective stop")
+        return self
+
+
+class MT5LiveSnapshotExport(BaseModel):
+    """Envelope used for empty snapshots as well as remote live ingestion."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    schema_version: int = Field(ge=1)
+    account_login: str = Field(min_length=1)
+    broker_server: str = Field(min_length=1)
+    account_currency: str = Field(min_length=3, max_length=3)
+    snapshot_time: str = Field(min_length=1)
+    export_interval_seconds: int = Field(default=60, ge=1)
+    positions: list[MT5LivePositionExport] = Field(default_factory=list)
+
+    @field_validator("account_currency")
+    @classmethod
+    def uppercase_snapshot_currency(cls, value: str) -> str:
+        return value.upper()
+
+    @field_validator("snapshot_time")
+    @classmethod
+    def snapshot_timestamp_is_iso_datetime(cls, value: str) -> str:
+        try:
+            datetime.fromisoformat(value)
+        except ValueError as error:
+            raise ValueError("must be an ISO-8601 timestamp") from error
+        return value
 
 
 class ImportedTradeView(BaseModel):

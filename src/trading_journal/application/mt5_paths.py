@@ -34,6 +34,13 @@ def mt5_export_filename(account_login: str | None = None) -> str:
     return f"{login}_positions.csv" if login.isdecimal() else LEGACY_MT5_EXPORT_FILENAME
 
 
+def mt5_live_export_filename(account_login: str) -> str:
+    """Filename of the independent current-position snapshot for one account."""
+
+    login = account_login.strip()
+    return f"{login}_open_positions.csv"
+
+
 def _wine_common_files_candidates(prefix: Path, source: str, home: Path) -> list[_Candidate]:
     users_directory = prefix / "drive_c" / "users"
     user_names = [home.name]
@@ -135,3 +142,9 @@ def resolve_account_export_path(configured_path: str, account_login: str) -> Pat
         return path
     account_specific_path = path.with_name(mt5_export_filename(account_login))
     return account_specific_path if account_specific_path.is_file() else path
+
+
+def resolve_account_live_export_path(configured_path: str, account_login: str) -> Path:
+    """Keep the live snapshot beside the configured closed-position export."""
+
+    return resolve_account_export_path(configured_path, account_login).with_name(mt5_live_export_filename(account_login))

@@ -225,6 +225,27 @@ def test_workspace_navigation_switches_from_settings_back_to_dashboard(monkeypat
     assert not any(item.label == "Account name" for item in app.text_input)
 
 
+def test_ongoing_is_first_in_navigation_while_dashboard_remains_default() -> None:
+    source = (Path(__file__).parents[1] / "app.py").read_text(encoding="utf-8")
+
+    ongoing_page = 'st.Page("app_pages/ongoing.py", title=ongoing_title'
+    dashboard_page = 'st.Page("app_pages/dashboard.py", title=tr("Dashboard"), icon=":material/dashboard:", default=True)'
+    assert source.index(ongoing_page) < source.index(dashboard_page)
+    assert 'ongoing_title = f"Ongoing ({ongoing_count})" if ongoing_count else "Ongoing"' in source
+
+
+def test_ongoing_page_renders_its_auto_refreshing_workspace(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("TRADING_JOURNAL_DB", str(tmp_path / "journal.db"))
+
+    app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
+    app.switch_page("app_pages/ongoing.py").run()
+
+    assert not app.exception
+    assert any("Ongoing positions" in item.value for item in app.markdown)
+    assert any("separate from closed-trade reporting" in item.value for item in app.caption)
+    assert any("Add and select an MT5 account" in item.value for item in app.info)
+
+
 def test_guidance_page_explains_the_post_trade_three_pillar_workflow(monkeypatch, tmp_path):
     monkeypatch.setenv("TRADING_JOURNAL_DB", str(tmp_path / "journal.db"))
 
@@ -1558,6 +1579,31 @@ def test_dashboard_surfaces_an_automatic_sync_failure(monkeypatch, tmp_path):
     assert not app.exception
     assert any("MT5 auto-sync needs attention: Primary:" in item.value for item in app.error)
     assert any("contains no completed positions" in item.value for item in app.error)
+
+
+def test_dashboard_surfaces_a_live_sync_failure_without_blocking_closed_trade_import(monkeypatch, tmp_path):
+    database_path = tmp_path / "journal.db"
+    export_path = tmp_path / "positions.csv"
+    write_auto_export(export_path)
+    (tmp_path / "123456_open_positions.csv").write_text("not,a,valid,live,snapshot\n", encoding="utf-8")
+    repository = SQLiteJournalRepository(database_path)
+    repository.initialize()
+    repository.configure_journal(reporting_time_basis="utc")
+    repository.register_mt5_account(
+        display_name="Primary",
+        login="123456",
+        broker_server="DemoBroker-Live",
+        account_currency="USD",
+        export_file_path=str(export_path),
+    )
+    monkeypatch.setenv("TRADING_JOURNAL_DB", str(database_path))
+
+    app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
+
+    assert not app.exception
+    assert repository.count_trades() == 1
+    assert any("Primary live positions" in item.value for item in app.error)
+    assert any("snapshot metadata row" in item.value for item in app.error)
 
 
 def test_dashboard_switches_to_per_trade_view(monkeypatch, tmp_path):
