@@ -12,7 +12,6 @@ LANGUAGES = {"en": "English", "vi": "Tiếng Việt"}
 # English is the source language. Keep keys as source text so new wording is
 # obvious during review and untranslated text safely remains readable.
 VI: dict[str, str] = {
-    "### 📈 Trade Compass": "### 📈 Trade Compass",
     "#### Ongoing positions": "#### Vị thế đang mở",
     "##### Current positions": "##### Vị thế hiện tại",
     "##### Live-risk incidents": "##### Sự cố rủi ro thực tế",
@@ -27,7 +26,6 @@ VI: dict[str, str] = {
     "Open positions": "Vị thế đang mở",
     "Unrealized P&L": "P&L chưa thực hiện",
     "Add and select an MT5 account in Settings to monitor live positions.": "Thêm và chọn tài khoản MT5 trong Cài đặt để theo dõi vị thế đang mở.",
-    "### 📈 Trade Compass\nLocal-first trade review, guided by discipline.": "### 📈 Trade Compass\nReview giao dịch cục bộ, dẫn dắt bởi kỷ luật.",
     "Trade Compass": "Trade Compass",
     "Local-first trade review, guided by discipline.": "Đánh giá giao dịch cục bộ, dẫn dắt bởi kỷ luật.",
     "Workspace": "Không gian làm việc",

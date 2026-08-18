@@ -16,7 +16,7 @@ import streamlit as st
 
 from trading_journal.application.multiuser import is_multiuser_mode, user_database_path, users_config_path
 from trading_journal.presentation.branding import TRADE_COMPASS_ICON
-from trading_journal.presentation.i18n import LANGUAGES, tr
+from trading_journal.presentation.i18n import tr
 
 __all__ = [
     "current_username",
@@ -107,8 +107,8 @@ def render_login_gate() -> str | None:
     the very first Streamlit command in a run, before login()'s own widgets
     (including a cookie-restored login, which still calls into st internally)
     - so the caller must NOT also call set_page_config() when this returns a
-    username in multiuser mode. The login screen uses a session-level language
-    selector because no authenticated user's saved preference is available yet.
+    username in multiuser mode. A fresh login screen defaults to English because
+    no authenticated user's saved language preference is available yet.
     """
 
     st.set_page_config(page_title="Trade Compass", page_icon=TRADE_COMPASS_ICON, layout="wide")
@@ -137,15 +137,10 @@ def render_login_gate() -> str | None:
     # column is invisible and we still fall through to the app.
     _, center, _ = st.columns([1, 1.4, 1])
     with center:
-        brand = st.empty()
-        brand.markdown(tr("### 📈 Trade Compass\nLocal-first trade review, guided by discipline."))
-        st.selectbox(
-            tr("Language"),
-            options=list(LANGUAGES),
-            format_func=LANGUAGES.get,
-            key="display_language",
-            width="stretch",
-        )
+        with st.container(horizontal=True, vertical_alignment="center", gap="small"):
+            st.image(TRADE_COMPASS_ICON, width=44)
+            st.subheader(tr("Trade Compass"))
+        st.caption(tr("Local-first trade review, guided by discipline."))
         authenticator.login("main")
         message = st.empty()
 

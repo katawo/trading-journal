@@ -1,3 +1,5 @@
+import inspect
+
 import pytest
 
 from trading_journal.presentation import multiuser_auth
@@ -38,3 +40,10 @@ def test_login_page_uses_the_trade_compass_favicon(monkeypatch, tmp_path) -> Non
 
     assert multiuser_auth.render_login_gate() is None
     assert configured["page_icon"] == TRADE_COMPASS_ICON
+
+
+def test_login_header_uses_the_current_trade_compass_icon() -> None:
+    source = inspect.getsource(multiuser_auth.render_login_gate)
+
+    assert "st.image(TRADE_COMPASS_ICON" in source
+    assert "📈" not in source
