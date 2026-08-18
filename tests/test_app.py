@@ -231,7 +231,7 @@ def test_ongoing_is_first_in_navigation_while_dashboard_remains_default() -> Non
     ongoing_page = 'st.Page("app_pages/ongoing.py", title=ongoing_title'
     dashboard_page = 'st.Page("app_pages/dashboard.py", title=tr("Dashboard"), icon=":material/dashboard:", default=True)'
     assert source.index(ongoing_page) < source.index(dashboard_page)
-    assert 'ongoing_title = f"Ongoing ({ongoing_count})" if ongoing_count else "Ongoing"' in source
+    assert 'ongoing_title = f"{tr(\'Ongoing\')} ({ongoing_count})" if ongoing_count else tr("Ongoing")' in source
 
 
 def test_ongoing_page_renders_its_auto_refreshing_workspace(monkeypatch, tmp_path) -> None:

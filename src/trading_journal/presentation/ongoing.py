@@ -10,6 +10,7 @@ import streamlit as st
 from trading_journal.application.live_positions import LivePositionService
 from trading_journal.infrastructure.sqlite_repository import AccountListItem, SQLiteJournalRepository
 from trading_journal.presentation.formatting import format_currency, format_exposure_r
+from trading_journal.presentation.i18n import tr
 
 
 ONGOING_REFRESH_INTERVAL_SECONDS = 5
@@ -18,10 +19,10 @@ ONGOING_REFRESH_INTERVAL_SECONDS = 5
 @st.fragment(run_every=ONGOING_REFRESH_INTERVAL_SECONDS)
 def render_ongoing_positions_page(repo: SQLiteJournalRepository) -> None:
     account = repo.get_active_mt5_account()
-    st.markdown("#### Ongoing positions")
-    st.caption("Live exposure is read-only and separate from closed-trade reporting, reviews, and framework scores.")
+    st.markdown(tr("#### Ongoing positions"))
+    st.caption(tr("Live exposure is read-only and separate from closed-trade reporting, reviews, and framework scores."))
     if account is None:
-        st.info("Add and select an MT5 account in Settings to monitor live positions.")
+        st.info(tr("Add and select an MT5 account in Settings to monitor live positions."))
         return
     report = LivePositionService(repo).build_report(account.id)
     _render_status(report.status, report.detail)
@@ -32,7 +33,7 @@ def render_ongoing_positions_page(repo: SQLiteJournalRepository) -> None:
     pnl_value, pnl_delta, pnl_color = _pnl_metric(report, account.account_currency)
     with st.container(horizontal=True, gap="small"):
         st.metric(
-            "Unprotected",
+            tr("Unprotected"),
             unprotected_value,
             unprotected_delta,
             delta_color=unprotected_color,
@@ -40,7 +41,7 @@ def render_ongoing_positions_page(repo: SQLiteJournalRepository) -> None:
             border=True,
         )
         st.metric(
-            "Known open risk",
+            tr("Known open risk"),
             risk_value,
             risk_delta,
             delta_color=risk_color,
@@ -48,9 +49,9 @@ def render_ongoing_positions_page(repo: SQLiteJournalRepository) -> None:
             delta_description=risk_description,
             border=True,
         )
-        st.metric("Open positions", None if report.snapshot_time is None else str(len(report.positions)), border=True)
+        st.metric(tr("Open positions"), None if report.snapshot_time is None else str(len(report.positions)), border=True)
         st.metric(
-            "Unrealized P&L",
+            tr("Unrealized P&L"),
             pnl_value,
             pnl_delta,
             delta_color=pnl_color,
@@ -121,12 +122,12 @@ def _pnl_metric(report, currency: str) -> tuple[str | None, str, str]:
 
 
 def _render_positions(report, account: AccountListItem) -> None:
-    st.markdown("##### Current positions")
+    st.markdown(tr("##### Current positions"))
     if report.snapshot_time is None:
-        st.caption("Position data will appear after the first live MT5 snapshot.")
+        st.caption(tr("Position data will appear after the first live MT5 snapshot."))
         return
     if not report.positions:
-        st.info("No open positions in the latest live snapshot.")
+        st.info(tr("No open positions in the latest live snapshot."))
         return
     rows = []
     for item in sorted(report.positions, key=_position_priority):
@@ -165,7 +166,7 @@ def _render_incidents(repo: SQLiteJournalRepository, account: AccountListItem) -
     incidents = repo.list_live_position_incidents(account.id)
     if not incidents:
         return
-    st.markdown("##### Live-risk incidents")
+    st.markdown(tr("##### Live-risk incidents"))
     frame = pd.DataFrame([
         {
             "Time": incident.occurred_at,

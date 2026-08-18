@@ -1222,13 +1222,13 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
         settings = repo.get_journal_settings()
     except RuntimeError:
         render_title()
-        st.info("Configure journal settings before viewing reports.")
+        st.info(tr("Configure journal settings before viewing reports."))
         return
 
     account = repo.get_active_mt5_account()
     if account is None:
         render_title()
-        st.info("Add an approved MT5 account in Settings before viewing reports.")
+        st.info(tr("Add an approved MT5 account in Settings before viewing reports."))
         st.page_link("app_pages/settings.py", label=tr("Go to Settings"), icon=":material/settings:")
         return
 
@@ -1271,7 +1271,7 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
         end_date=end_date.isoformat(),
     )
     if report.raw_position_count == 0:
-        st.info("No MT5 positions were closed in the selected period.")
+        st.info(tr("No MT5 positions were closed in the selected period."))
         return account
 
     period_label = f"{start_date.strftime('%d %b')} – {end_date.strftime('%d %b %Y')}"
@@ -1443,7 +1443,7 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
 
     with st.container(border=True):
         with st.container(horizontal=True, vertical_alignment="center", gap="small", width="content"):
-            st.subheader("Concentration (80/20)")
+            st.subheader(tr("Concentration (80/20)"))
             _render_help_popover("Use this outcome-only lens to prioritize a review sample. It does not prove cause, system quality, or trading readiness.")
         concentration_options = {
             tr("Trade"): "trade",
@@ -1481,18 +1481,18 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
 def render_strategy_analytics(repo: SQLiteJournalRepository) -> None:
     """Compare accounts that deliberately share one strategy, without mixing currencies."""
     st.markdown('<div class="dashboard-kicker">STRATEGY RESEARCH</div>', unsafe_allow_html=True)
-    st.subheader("Strategy analytics")
-    st.caption("Compare accounts using one trading system. Monetary results stay separated by account currency; no conversion or combined P&L is shown.")
+    st.subheader(tr("Strategy analytics"))
+    st.caption(tr("Compare accounts using one trading system. Monetary results stay separated by account currency; no conversion or combined P&L is shown."))
     profiles = [profile for profile in repo.list_strategy_profiles() if profile.name != "Journal default"]
     if not profiles:
-        st.info("Create a strategy, then bind it to an account in Settings.")
+        st.info(tr("Create a strategy, then bind it to an account in Settings."))
         st.page_link("app_pages/settings.py", label=tr("Go to Settings"), icon=":material/settings:")
         return
     profile_by_id = {profile.id: profile for profile in profiles}
     selected_id = st.selectbox("Trading system", list(profile_by_id), format_func=lambda item: profile_by_id[item].name)
     accounts = [account for account in repo.list_mt5_accounts() if account.strategy_profile_id == selected_id]
     if not accounts:
-        st.info("No active accounts are bound to this trading system.")
+        st.info(tr("No active accounts are bound to this trading system."))
         st.page_link("app_pages/settings.py", label=tr("Go to Settings"), icon=":material/settings:")
         return
     service = DashboardService(repo)
@@ -1520,7 +1520,7 @@ def render_strategy_analytics(repo: SQLiteJournalRepository) -> None:
             "Profit factor": "No losses" if report.profit_factor is None else format_number(report.profit_factor, 2),
         })
     st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
-    st.caption("Use account-level Dashboard and Bearings for execution coaching. This page is a descriptive cross-account comparison of the selected system.")
+    st.caption(tr("Use account-level Dashboard and Bearings for execution coaching. This page is a descriptive cross-account comparison of the selected system."))
 
 
 def main() -> None:
@@ -1533,9 +1533,9 @@ def main() -> None:
     except JournalDatabaseResetRequiredError as error:
         if is_desktop_mode():
             st.set_page_config(page_title="Trade Compass recovery", page_icon=TRADE_COMPASS_ICON, layout="wide")
-            st.title("Trade Compass recovery")
+            st.title(tr("Trade Compass recovery"))
             st.error(str(error))
-            st.caption("Reset the local database to start a clean journal. This cannot be undone.")
+            st.caption(tr("Reset the local database to start a clean journal. This cannot be undone."))
             render_desktop_database_reset()
             print("Trade Compass reset recovery screen active.", flush=True)
             return
@@ -1588,8 +1588,8 @@ def main() -> None:
     # them visible to AppTest, which looks for those element types specifically.
     with st.container(key="trade-compass-brand"):
         st.image(TRADE_COMPASS_ICON, width=50)
-        st.title("Trade Compass")
-    st.caption("Local-first trade review, guided by discipline.")
+        st.title(tr("Trade Compass"))
+    st.caption(tr("Local-first trade review, guided by discipline."))
 
     review_count = 0
     monitor_alert_count = 0
@@ -1611,7 +1611,7 @@ def main() -> None:
     # checklist page - putting the badge there was a dead end.
     monitor_badge_count = monitor_alert_count + (1 if focus_ready else 0)
     monitor_title = f"{tr('Monitor')} ({monitor_badge_count})" if monitor_badge_count else tr("Monitor")
-    ongoing_title = f"Ongoing ({ongoing_count})" if ongoing_count else "Ongoing"
+    ongoing_title = f"{tr('Ongoing')} ({ongoing_count})" if ongoing_count else tr("Ongoing")
     improve_title = tr("Improve")
 
     page = st.navigation(

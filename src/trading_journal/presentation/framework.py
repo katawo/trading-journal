@@ -299,13 +299,13 @@ def _render_pillar_radar(scores: tuple[PillarScore, ...]) -> None:
         if any(blocked) or any(capped) or any(score.score is None for score in scores):
             with st.popover("?", icon=":material/help:", width="content"):
                 if any(blocked) and any(capped):
-                    st.caption("Pillars marked ✕ in red have an active hard-rule failure; pillars marked ◆ in amber are capped by repeated critical violations — neither score reflects readiness.")
+                    st.caption(tr("Pillars marked ✕ in red have an active hard-rule failure; pillars marked ◆ in amber are capped by repeated critical violations — neither score reflects readiness."))
                 elif any(blocked):
-                    st.caption("Pillars marked ✕ in red have an active hard-rule failure — their score does not reflect readiness.")
+                    st.caption(tr("Pillars marked ✕ in red have an active hard-rule failure — their score does not reflect readiness."))
                 elif any(capped):
-                    st.caption("Pillars marked ◆ in amber are capped at 59 by repeated critical violations — see the detail below the score card.")
+                    st.caption(tr("Pillars marked ◆ in amber are capped at 59 by repeated critical violations — see the detail below the score card."))
                 elif any(score.score is None for score in scores):
-                    st.caption("Pillars without a scored sample yet show as 0 on this chart.")
+                    st.caption(tr("Pillars without a scored sample yet show as 0 on this chart."))
 
 
 def _render_risk_configuration_notice(service: FrameworkService, account_id: int) -> None:
@@ -322,7 +322,7 @@ def render_framework_dashboard(repo: SQLiteJournalRepository, account: AccountLi
     scores = service.pillar_scores(account.id)
     readiness = service.readiness(account.id)
     policy = repo.get_active_risk_policy(account.id)
-    st.markdown("#### Three-pillar monitor")
+    st.markdown(tr("#### Three-pillar monitor"))
     st.caption(tr("Psychology is trader-wide. Risk and System are scoped to {account}.", account=_account_label(account)))
     st.caption(tr("This compact view always uses a fixed 20-trade window. Open Bearings → Monitor to adjust the rolling sample."))
     _render_risk_configuration_notice(service, account.id)
@@ -359,8 +359,8 @@ def render_framework_dashboard(repo: SQLiteJournalRepository, account: AccountLi
 
 def _render_framework_page_header(repo: SQLiteJournalRepository) -> AccountListItem | None:
     st.markdown('<div class="dashboard-kicker">POST-TRADE JOURNAL</div>', unsafe_allow_html=True)
-    st.subheader("Three-pillar framework")
-    st.caption("Use completed MT5 trades to assess execution. Alerts are advisory; this journal never sends, blocks, or changes MT5 orders.")
+    st.subheader(tr("Three-pillar framework"))
+    st.caption(tr("Use completed MT5 trades to assess execution. Alerts are advisory; this journal never sends, blocks, or changes MT5 orders."))
     account = repo.get_active_mt5_account()
     if account is None:
         st.info(tr("Add an approved MT5 account in Settings before using the framework."))
@@ -508,8 +508,8 @@ def _render_bulk_quick_review_dialog(repo: SQLiteJournalRepository, account: Acc
     selected = [(trade, scores[trade.id]) for trade in trades if trade.id in selected_ids]
     eligible = [(trade, score) for trade, score in selected if score.review_kind in {"auto_review", "needs_approval"}]
     if not eligible:
-        st.info("None of the selected trades still has automatic evidence available for Quick Review.")
-        if st.button("Close", key=f"close-bulk-quick-review-{account.id}"):
+        st.info(tr("None of the selected trades still has automatic evidence available for Quick Review."))
+        if st.button(tr("Close"), key=f"close-bulk-quick-review-{account.id}"):
             _clear_bulk_quick_review(account.id)
             st.rerun()
         return
@@ -528,9 +528,9 @@ def _render_bulk_quick_review_dialog(repo: SQLiteJournalRepository, account: Acc
         hide_index=True,
         width="stretch",
     )
-    st.caption("Quick Review saves the displayed automatic evidence as approved review evidence. A Manual Review can still replace it later.")
+    st.caption(tr("Quick Review saves the displayed automatic evidence as approved review evidence. A Manual Review can still replace it later."))
     with st.container(horizontal=True, horizontal_alignment="right"):
-        cancel = st.button("Cancel", key=f"cancel-bulk-quick-review-{account.id}")
+        cancel = st.button(tr("Cancel"), key=f"cancel-bulk-quick-review-{account.id}")
         confirm = st.button(f"Quick review {len(eligible)} selected", key=f"confirm-bulk-quick-review-{account.id}", type="primary", icon=":material/done_all:")
     if cancel:
         _clear_bulk_quick_review(account.id)
@@ -698,7 +698,7 @@ def _render_post_trade_review_dialog(repo: SQLiteJournalRepository, account: Acc
     available_hard_rules = [
         code for code in HARD_RULE_LABELS if code in enabled_hard_rules or code in existing_hard_rules
     ]
-    st.markdown("##### Assessment")
+    st.markdown(tr("##### Assessment"))
     st.caption(f"Trading system: **{strategy.name}** (bound to this account)")
     st.caption("\\* Required")
     with st.form(f"post-trade-assessment-{trade.id}"):
@@ -735,7 +735,7 @@ def _render_post_trade_review_dialog(repo: SQLiteJournalRepository, account: Acc
                 plural="s" if exceptions != 1 else "",
             )
         )
-        st.caption("Mark a pillar as Pass, then change only the Partial or Fail exceptions.")
+        st.caption(tr("Mark a pillar as Pass, then change only the Partial or Fail exceptions."))
         st.form_submit_button(
             "Mark all criteria as Pass",
             key=f"assessment-{trade.id}-pass-all",
@@ -1392,7 +1392,7 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
 
 def _render_monitor(repo: SQLiteJournalRepository, account: AccountListItem) -> None:
     service = FrameworkService(repo)
-    st.markdown("#### Monitoring")
+    st.markdown(tr("#### Monitoring"))
     st.caption(tr("Psychology is trader-wide. Risk and System are scoped to {account}.", account=_account_label(account)))
     _render_risk_configuration_notice(service, account.id)
     controls, scope_note = st.columns((2, 3))
@@ -1411,7 +1411,7 @@ def _render_monitor(repo: SQLiteJournalRepository, account: AccountListItem) -> 
         with scope_note:
             range_value = st.date_input("Analysis date range", value=(today - timedelta(days=89), today), key=f"framework-analysis-dates-{account.id}")
         if not isinstance(range_value, tuple) or len(range_value) != 2:
-            st.info("Choose a start and end date for Monitor analysis.")
+            st.info(tr("Choose a start and end date for Monitor analysis."))
             return
         start_date, end_date = range_value
     with scope_note:
