@@ -1662,6 +1662,10 @@ def render_strategy_analytics(repo: SQLiteJournalRepository) -> None:
 
 
 def main() -> None:
+    # Configure browser branding before authentication, database access, or any
+    # other Streamlit command so loading and early-error paths never inherit
+    # Streamlit's default page title.
+    st.set_page_config(page_title="Trade Compass", page_icon=TRADE_COMPASS_ICON, layout="wide")
     if is_multiuser_mode():
         username = render_login_gate()
         if username is None:
@@ -1689,8 +1693,6 @@ def main() -> None:
     st.session_state.setdefault("display_language", settings.display_language)
     install_streamlit_translations()
     render_pending_toast()
-    if not is_multiuser_mode():
-        st.set_page_config(page_title=tr("Trade Compass"), page_icon=TRADE_COMPASS_ICON, layout="wide")
     if is_multiuser_mode():
         render_logout_control()
         if current_username() is None:

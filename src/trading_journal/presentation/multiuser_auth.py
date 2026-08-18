@@ -103,12 +103,11 @@ def render_login_gate() -> str | None:
     username - the caller's job is just to `return` early from its page while
     this is None, since the login widget has already rendered its own UI.
 
-    Calls st.set_page_config() unconditionally: Streamlit requires it to be
-    the very first Streamlit command in a run, before login()'s own widgets
-    (including a cookie-restored login, which still calls into st internally)
-    - so the caller must NOT also call set_page_config() when this returns a
-    username in multiuser mode. A fresh login screen defaults to English because
-    no authenticated user's saved language preference is available yet.
+    Calls st.set_page_config() before login()'s own widgets (including a
+    cookie-restored login, which still calls into st internally). The app entry
+    point may configure the same branding first; repeated page-config calls are
+    additive. A fresh login screen defaults to English because no authenticated
+    user's saved language preference is available yet.
     """
 
     st.set_page_config(page_title="Trade Compass", page_icon=TRADE_COMPASS_ICON, layout="wide")
