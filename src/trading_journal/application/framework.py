@@ -1351,9 +1351,16 @@ class FrameworkService:
             entry_at = self._as_utc_datetime(trade.entry_time)
             assessed = assessments.get(trade.id)
             policy = self._risk_policy_for_trade(assessed, trade, policies, active_policy)
-            fallback = self._standard_risk_amount(funded, policy)
-            risk_amount = self._risk_amount(assessed, trade, fallback, policy)
-            result_r = Decimal(trade.net_pnl) / risk_amount if risk_amount > 0 else Decimal("0")
+            standard_risk_amount = self._standard_risk_amount(funded, policy)
+            # Daily and weekly limits are expressed in policy-standard R. Keep
+            # that denominator stable across every position; trade-specific
+            # actual risk belongs to execution/adherence review and would make
+            # the account-level loss limit change meaning from trade to trade.
+            result_r = (
+                Decimal(trade.net_pnl) / standard_risk_amount
+                if standard_risk_amount > 0
+                else Decimal("0")
+            )
             trade_day = self._trade_date(trade.exit_time, trade.server_utc_offset_minutes)
             week_start = trade_day - timedelta(days=trade_day.weekday())
             entry_day = self._trade_date(trade.entry_time, trade.server_utc_offset_minutes)

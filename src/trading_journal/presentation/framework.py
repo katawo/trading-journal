@@ -33,7 +33,7 @@ from trading_journal.infrastructure.sqlite_repository import (
     SQLiteJournalRepository,
 )
 from trading_journal.presentation.i18n import queue_toast, tr
-from trading_journal.presentation.formatting import format_currency, format_exposure_r, format_percent, format_r, format_score
+from trading_journal.presentation.formatting import format_count, format_currency, format_exposure_r, format_percent, format_r, format_score
 from trading_journal.presentation.trade_tags import direction_tag, outcome_tag
 
 
@@ -112,6 +112,14 @@ def _render_help_popover(*captions: str, icon: str = ":material/help:") -> None:
 
 def _score_text(value: str | None) -> str:
     return "—" if value is None else format_score(value)
+
+
+def _focus_metric_text(value: str | None, metric_kind: str) -> str:
+    if value is None:
+        return "—"
+    if metric_kind in {"criterion", "component"}:
+        return format_score(value)
+    return format_count(int(Decimal(value)))
 
 
 def _state_label(snapshot: RiskSnapshot) -> str:
@@ -1589,11 +1597,13 @@ def _render_framework_focus(repo: SQLiteJournalRepository, account: AccountListI
             st.markdown(f"**{tr(PILLAR_NAMES[focus.pillar])} · {tr(kind)}**")
             st.write(tr(focus.action_text))
             st.caption(f"{tr('Why now:')} {tr(focus.coach_reason or focus.hypothesis)}")
-            current = "—" if progress.current_value is None else progress.current_value
+            current = _focus_metric_text(progress.current_value, focus.metric_kind)
+            baseline = _focus_metric_text(focus.baseline_value, focus.metric_kind)
+            target = _focus_metric_text(focus.target_value, focus.metric_kind)
             display_completed = min(progress.reviews_completed, progress.target_reviews)
             metric_delta = tr("Target reached") if progress.reviews_completed >= progress.target_reviews else f"{tr('Current metric:')} {current}"
             st.metric(tr("Reviewed trades collected"), f"{display_completed}/{progress.target_reviews}", metric_delta, border=True)
-            st.caption(f"{tr('Baseline:')} {focus.baseline_value or '—'} · {tr('Target:')} {focus.target_value}")
+            st.caption(f"{tr('Baseline:')} {baseline} · {tr('Target:')} {target}")
             with st.form(f"edit-framework-focus-{focus.id}", border=False):
                 action = st.text_area(tr("Tailor the next-trade action"), value=focus.action_text)
                 if st.form_submit_button(tr("Save action")):

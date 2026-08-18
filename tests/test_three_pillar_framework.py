@@ -25,6 +25,7 @@ from trading_journal.presentation.framework import (
     _default_policy_adherence_grade,
     _daily_r_metric,
     _drawdown_metric,
+    _focus_metric_text,
     _process_failure_detail,
     _readiness_metric,
     _risk_evidence_detail,
@@ -53,6 +54,13 @@ def test_monitor_metrics_distinguish_unavailable_values_and_breached_drawdown() 
     assert _daily_r_metric(None) == (None, "Unavailable", "gray")
     assert _drawdown_metric(None) == (None, "Unavailable", "gray")
     assert _drawdown_metric("0") == ("0.0%", "No drawdown", "gray")
+
+
+def test_coaching_focus_metrics_use_compact_display_formatting() -> None:
+    assert _focus_metric_text("77.777777777", "component") == "78%"
+    assert _focus_metric_text("65", "criterion") == "65%"
+    assert _focus_metric_text("9", "manual_evidence") == "9"
+    assert _focus_metric_text(None, "violation") == "—"
 
 
 def test_trade_tags_keep_direction_and_realized_outcome_separate() -> None:
@@ -125,14 +133,22 @@ def _repository(tmp_path):
     return repository, account.id
 
 
-def _policy(repository: SQLiteJournalRepository, account_id: int, *, pretrade_balance_auto_evidence_enabled: bool = False):
+def _policy(
+    repository: SQLiteJournalRepository,
+    account_id: int,
+    *,
+    pretrade_balance_auto_evidence_enabled: bool = False,
+    daily_loss_limit_r: str = "2",
+    weekly_loss_limit_r: str = "4",
+    max_drawdown_percent: str = "10",
+):
     return repository.save_account_risk_policy(
         account_id=account_id,
         standard_risk_per_trade_percent="1",
         maximum_risk_per_trade_percent="1",
-        daily_loss_limit_r="2",
-        weekly_loss_limit_r="4",
-        max_drawdown_percent="10",
+        daily_loss_limit_r=daily_loss_limit_r,
+        weekly_loss_limit_r=weekly_loss_limit_r,
+        max_drawdown_percent=max_drawdown_percent,
         max_open_risk_r="1",
         max_consecutive_losses=3,
         minimum_rr="1.5",
@@ -414,6 +430,36 @@ def test_risk_snapshot_clears_an_expired_daily_limit_breach(tmp_path) -> None:
     assert later_day.state == "clear"
 
 
+def test_risk_snapshot_accumulates_pnl_against_policy_standard_risk(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    _policy(repository, account_id)
+    _import_position(
+        repository,
+        account_id,
+        position_id="large-actual-risk-loss",
+        net_pnl="-20",
+        initial_risk_amount="40",
+        entry_stop_price="3290",
+    )
+    _import_position(
+        repository,
+        account_id,
+        position_id="small-actual-risk-win",
+        net_pnl="10",
+        initial_risk_amount="5",
+        entry_stop_price="3290",
+    )
+
+    snapshot = FrameworkService(repository).risk_snapshot(
+        account_id,
+        now=datetime(2026, 8, 10, 12, tzinfo=timezone.utc),
+    )
+
+    # Funded capital is $1,000 and standard risk is 1%, so the day's
+    # combined -$10 is -1R regardless of each trade's actual risk amount.
+    assert snapshot.daily_r == "-1"
+
+
 def test_automatic_risk_limit_is_advisory_and_flags_a_later_shutdown_candidate(tmp_path) -> None:
     repository, account_id = _repository(tmp_path)
     policy, strategy = _policy(repository, account_id), _strategy(repository)
@@ -421,7 +467,7 @@ def test_automatic_risk_limit_is_advisory_and_flags_a_later_shutdown_candidate(t
         repository,
         account_id,
         position_id="loss-1",
-        net_pnl="-20",
+        net_pnl="-10",
         entry_time="2026-08-10T08:00:00+00:00",
         exit_time="2026-08-10T09:00:00+00:00",
     )
@@ -429,7 +475,7 @@ def test_automatic_risk_limit_is_advisory_and_flags_a_later_shutdown_candidate(t
         repository,
         account_id,
         position_id="loss-2",
-        net_pnl="-20",
+        net_pnl="-10",
         entry_time="2026-08-10T09:05:00+00:00",
         exit_time="2026-08-10T10:00:00+00:00",
     )
@@ -636,7 +682,7 @@ def test_reviewed_actual_risk_replaces_automatic_policy_comparison_only(tmp_path
 
 def test_drawdown_shutdown_candidate_clears_after_balance_recovers(tmp_path) -> None:
     repository, account_id = _repository(tmp_path)
-    _policy(repository, account_id)
+    _policy(repository, account_id, daily_loss_limit_r="20", weekly_loss_limit_r="40")
     _import_position(
         repository,
         account_id,
@@ -962,7 +1008,7 @@ def test_grouping_does_not_hide_raw_position_risk_limits(tmp_path) -> None:
 
     snapshot = FrameworkService(repository).risk_snapshot(account_id, now=datetime(2026, 8, 10, 12, tzinfo=timezone.utc))
 
-    assert snapshot.daily_r == "-2"
+    assert snapshot.daily_r == "-4"
     assert snapshot.state == "stop"
 
 
