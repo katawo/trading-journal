@@ -35,6 +35,15 @@ _ALERT_BUBBLE = st.components.v2.component(
     #tj-global-framework-alert-bubble .tj-bubble:focus-visible { outline: 3px solid var(--st-primary-color, #c73545); outline-offset: 2px; }
     #tj-global-framework-alert-bubble .tj-bubble.critical { background: var(--st-red-background-color, #ffe1e5); border-color: var(--st-red-color, #c73545); color: var(--st-red-text-color, #8a1621); animation: tj-alert-pulse 1.6s ease-in-out infinite; }
     #tj-global-framework-alert-bubble .tj-bubble.dragging { cursor: grabbing; animation: none; }
+    #tj-global-framework-alert-bubble .tj-bubble-compact { display: none; }
+    @media (max-width: 640px) {
+      /* The full pill can span most of a phone's width and fully cover whatever
+         control happens to sit in its bottom-right default drop point. Collapse it
+         to an icon + count badge there instead - still draggable, far smaller. */
+      #tj-global-framework-alert-bubble .tj-bubble { padding: 0.6rem; border-radius: 999px; min-width: 2.7rem; justify-content: center; }
+      #tj-global-framework-alert-bubble .tj-bubble-full { display: none; }
+      #tj-global-framework-alert-bubble .tj-bubble-compact { display: inline; font-size: 0.95rem; }
+    }
     #tj-global-framework-alert-bubble .tj-panel {
       background: var(--st-secondary-background-color, #ffffff); border: 1px solid var(--st-border-color, #c8d0c8);
       border-radius: var(--st-base-radius, 0.5rem); box-shadow: 0 14px 36px color-mix(in srgb, var(--st-text-color, #1f2933) 28%, transparent);
@@ -89,7 +98,16 @@ _ALERT_BUBBLE = st.components.v2.component(
       button.className = `tj-bubble${data.has_critical ? ' critical' : ''}`
       button.setAttribute('aria-expanded', root.dataset.open === 'true' ? 'true' : 'false')
       button.title = data.drag_hint
-      button.textContent = `${data.has_critical ? '⨯' : '⚠'}  ${data.label}`
+      button.setAttribute('aria-label', data.label)
+      const bubbleIcon = document.createElement('span')
+      bubbleIcon.textContent = data.has_critical ? '⨯' : '⚠'
+      const bubbleFull = document.createElement('span')
+      bubbleFull.className = 'tj-bubble-full'
+      bubbleFull.textContent = data.label
+      const bubbleCompact = document.createElement('span')
+      bubbleCompact.className = 'tj-bubble-compact'
+      bubbleCompact.textContent = String(data.count)
+      button.append(bubbleIcon, bubbleFull, bubbleCompact)
       const panel = document.createElement('section')
       panel.className = 'tj-panel'
       panel.hidden = root.dataset.open !== 'true'
@@ -221,6 +239,7 @@ def render_global_alert_bubble(
             "has_critical": has_critical,
             "panel_title": panel_title,
             "drag_hint": drag_hint,
+            "count": len(alerts),
         },
         width="content",
         height="content",

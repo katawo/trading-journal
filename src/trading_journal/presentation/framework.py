@@ -967,7 +967,44 @@ def _render_logical_trade_regroup_confirmation(repo: SQLiteJournalRepository, ac
     st.rerun()
 
 
+def _mobile_field_label(container, label: str) -> None:  # type: ignore[no-untyped-def]
+    """Print a field label that only shows once the 9-column trade row has stacked.
+
+    On desktop the header row above the table already labels every column, so this
+    stays hidden there (see the CSS in _render_review_register) and only appears
+    once Streamlit's column-stacking collapses each field onto its own full-width
+    line, where the header row's labels are no longer adjacent to their values.
+    """
+    container.markdown(f'<span class="trade-review-field-label">{tr(label)}</span>', unsafe_allow_html=True)
+
+
 def _render_review_register(repo: SQLiteJournalRepository, account: AccountListItem, trades, scores: dict[int, TradeProcessScore], profiles) -> None:  # type: ignore[no-untyped-def]
+    st.html(
+        """
+        <style>
+        /* Below Streamlit's column-stacking breakpoint, the 9-column trade row
+           collapses into 9 full-width blocks in DOM order. The header row (which
+           only prints its labels once, above all rows) then reads as a detached
+           list, and every trade's values lose their labels entirely. Print a small
+           inline label ahead of each field's value - hidden on desktop, where the
+           header row already does that job - and hide the now-redundant header row
+           at that width instead. */
+        .trade-review-field-label { display: none; }
+        @media (max-width: 640px) {
+            .trade-review-field-label {
+                display: block;
+                font-size: 0.72rem;
+                font-weight: 600;
+                text-transform: uppercase;
+                letter-spacing: 0.03em;
+                opacity: 0.65;
+                margin-bottom: 0.1rem;
+            }
+            div.st-key-trade-review-table-header { display: none; }
+        }
+        </style>
+        """
+    )
     active_policy = repo.get_active_risk_policy(account.id)
     ordered = sorted(trades, key=lambda item: (item.exit_time, item.id), reverse=True)
     groups = {
@@ -1123,22 +1160,23 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
         position_by_id = {trade.id: index for index, (trade, _) in enumerate(visible)}
         start = (current_page - 1) * REVIEW_PAGE_SIZE
         page_items = visible[start : start + REVIEW_PAGE_SIZE]
-        header = st.columns([0.5, 0.85, 1.35, 1.3, 0.75, 1.1, 0.85, 0.75, 1.0])
-        for column, label in zip(
-            header,
-            ("Select", "Logical trade", "Trade", "Positions", "P&L", "Review", "Score", "Hard rules", "Actions"),
-            strict=True,
-        ):
-            if label == "Score":
-                with column:
-                    with st.container(horizontal=True, vertical_alignment="center", gap="small", width="content"):
-                        st.caption(tr(label))
-                        _render_help_popover(
-                            "P = Psychology · R = Risk management · S = Trading system. This is each trade's own 13-criterion score — the Monitor tab's rolling pillar scores use a different calculation and can show a different number.",
-                            "Classification below: first word = process quality (Good/Needs improvement/Bad), second word = P&L outcome (Win/Loss/Breakeven) — independent of each other.",
-                        )
-            else:
-                column.caption(tr(label))
+        with st.container(key="trade-review-table-header"):
+            header = st.columns([0.5, 0.85, 1.35, 1.3, 0.75, 1.1, 0.85, 0.75, 1.0])
+            for column, label in zip(
+                header,
+                ("Select", "Logical trade", "Trade", "Positions", "P&L", "Review", "Score", "Hard rules", "Actions"),
+                strict=True,
+            ):
+                if label == "Score":
+                    with column:
+                        with st.container(horizontal=True, vertical_alignment="center", gap="small", width="content"):
+                            st.caption(tr(label))
+                            _render_help_popover(
+                                "P = Psychology · R = Risk management · S = Trading system. This is each trade's own 13-criterion score — the Monitor tab's rolling pillar scores use a different calculation and can show a different number.",
+                                "Classification below: first word = process quality (Good/Needs improvement/Bad), second word = P&L outcome (Win/Loss/Breakeven) — independent of each other.",
+                            )
+                else:
+                    column.caption(tr(label))
         for trade, score in page_items:
             review = {
                 "needs_approval": "Requires review",
@@ -1165,15 +1203,21 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
                     on_change=_toggle_logical_trade_selection,
                     args=(account.id, trade.id),
                 )
+                _mobile_field_label(logical_column, "Logical trade")
                 logical_column.markdown(f"**LT-{trade.id}**")
+                _mobile_field_label(trade_column, "Trade")
                 trade_column.write(trade.display_label)
                 direction = direction_tag(trade.direction)
                 outcome = outcome_tag(trade.net_pnl)
                 trade_column.badge(tr(direction.label), color=direction.color, icon=direction.icon)
+                _mobile_field_label(positions_column, "Positions")
                 positions_column.write(", ".join(f"#{position_id}" for position_id in trade.position_ids))
+                _mobile_field_label(pnl_column, "P&L")
                 pnl_column.write(format_currency(trade.net_pnl, account.account_currency))
                 pnl_column.badge(tr(outcome.label), color=outcome.color, icon=outcome.icon)
+                _mobile_field_label(review_column, "Review")
                 review_column.write(tr(review))
+                _mobile_field_label(score_column, "Score")
                 score_column.markdown(f"**{_score_text(score.overall_score)}**")
                 psychology_flag = " ⚠" if score.psychology_hard_block else ""
                 risk_flag = " ⚠" if score.risk_hard_block else ""
@@ -1183,6 +1227,7 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
                     f"R {_score_text(score.risk_score)}{risk_flag}  \n"
                     f"S {_score_text(score.system_score)}{system_flag}"
                 )
+                _mobile_field_label(process_column, "Hard rules")
                 if score.process_status == "FAIL":
                     process_column.badge(tr("Fail"), icon=":material/error:", color="red")
                 elif score.process_status == "PASS":
@@ -1536,6 +1581,20 @@ def render_dashboard_coaching_focus(repo: SQLiteJournalRepository, account: Acco
             background-color: {background};
             box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15);
             border-radius: 0.5rem;
+        }}
+        @media (max-width: 640px) {{
+            /* Anchor to the bottom on phones instead: a top-right offset this narrow
+               lands on the logo/title row rather than clearing it. The extra bottom
+               offset leaves room for the global alert badge, which also docks in
+               the bottom-right corner on phones (see global_alert_bubble.py). */
+            div.st-key-dashboard-coaching-focus {{
+                top: auto;
+                bottom: 4.5rem;
+                right: 1rem;
+                left: 1rem;
+                width: auto;
+                max-height: 55vh;
+            }}
         }}
         </style>
         """,

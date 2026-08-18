@@ -179,6 +179,17 @@ def apply_application_style() -> None:
         h1 { font-size: 2.8rem !important; margin-bottom: 0.15rem !important; }
         h2 { margin-top: 1.35rem !important; }
         .stButton > button { border-radius: 6px; font-weight: 650; }
+        div.st-key-trade-compass-brand { flex-direction: row !important; align-items: center !important; gap: 0.65rem; }
+        div.st-key-trade-compass-brand [data-testid="stImage"] { flex: 0 0 auto; }
+        div.st-key-trade-compass-brand h1 { margin: 0 !important; }
+        /* st.tabs' row doesn't wrap on narrow viewports and clips the last label;
+           make the scroll it already supports visible so it reads as scrollable
+           instead of just cut off. */
+        [data-testid="stTabs"] [data-baseweb="tab-list"] {
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+            scrollbar-width: thin;
+        }
         [data-testid="stSidebar"] .trade-compass-build-info {
             position: fixed;
             bottom: 0;
@@ -1553,11 +1564,14 @@ def main() -> None:
     apply_application_style()
     render_build_info()
 
-    # App branding with logo
-    col_logo, col_title = st.columns([0.12, 0.88], gap="small", vertical_alignment="center")
-    with col_logo:
+    # App branding with logo. A plain container coerced into a row via CSS (rather
+    # than st.columns) keeps the logo beside the title at every width - st.columns
+    # collapses to stacked full-width blocks below Streamlit's column-stacking
+    # breakpoint, which put the logo on its own line above the title on phones.
+    # Keeping real st.image/st.title calls (instead of hand-built HTML) also keeps
+    # them visible to AppTest, which looks for those element types specifically.
+    with st.container(key="trade-compass-brand"):
         st.image(_trade_compass_svg_b64, width=50)
-    with col_title:
         st.title("Trade Compass")
     st.caption("Local-first trade review, guided by discipline.")
 
