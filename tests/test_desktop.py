@@ -31,6 +31,9 @@ from trading_journal.desktop import (
 from trading_journal.infrastructure.sqlite_repository import SQLiteJournalRepository
 
 
+pytestmark = pytest.mark.desktop
+
+
 HEADER = [
     "schema_version",
     "account_login",

@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
+import pytest
 from streamlit.testing.v1 import AppTest
 
 from trading_journal.application.display_time import format_relative_time
@@ -67,6 +68,7 @@ def test_app_requires_a_reset_for_legacy_monthly_target_data(monkeypatch, tmp_pa
     assert any(item.value == "make reset-db CONFIRM_RESET=yes" for item in app.code)
 
 
+@pytest.mark.desktop
 def test_desktop_recovery_can_request_a_reset_for_an_incompatible_database(monkeypatch, tmp_path):
     database_path = tmp_path / "journal.db"
     connection = sqlite3.connect(database_path)
@@ -98,6 +100,7 @@ def test_desktop_recovery_can_request_a_reset_for_an_incompatible_database(monke
     assert (data_directory / "reset.request").is_file()
 
 
+@pytest.mark.desktop
 def test_desktop_shows_a_diagnostic_for_a_corrupt_database(monkeypatch, tmp_path):
     database_path = tmp_path / "journal.db"
     database_path.write_bytes(b"not a sqlite database")
@@ -112,6 +115,7 @@ def test_desktop_shows_a_diagnostic_for_a_corrupt_database(monkeypatch, tmp_path
     assert not any(item.label == "Reset local database" for item in app.button)
 
 
+@pytest.mark.desktop
 def test_desktop_settings_can_request_a_database_reset(monkeypatch, tmp_path):
     data_directory = tmp_path / "desktop-data"
     monkeypatch.setenv("TRADING_JOURNAL_DB", str(tmp_path / "journal.db"))

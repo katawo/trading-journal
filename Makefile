@@ -16,7 +16,7 @@ COMPOSE := docker compose -f deploy/docker-compose.yml
 
 .DEFAULT_GOAL := help
 
-.PHONY: help venv setup run desktop bundle test check reset-db \
+.PHONY: help venv setup run desktop bundle test test-desktop check reset-db \
         deploy-systemd deploy-systemd-down deploy-docker deploy-docker-down \
         web-user web-token docker-user docker-token \
         docker-logs docker-shell docker-status \
@@ -48,6 +48,9 @@ bundle: venv ## Build a portable desktop bundle for the current operating system
 
 test: venv ## Run the automated test suite.
 	$(VENV_PYTHON) -m pytest -q
+
+test-desktop: venv ## Run the paused desktop-specific tests explicitly.
+	$(VENV_PYTHON) -m pytest -q -m desktop
 
 check: test ## Compile the application after the tests pass.
 	$(VENV_PYTHON) -m compileall -q $(APP) src

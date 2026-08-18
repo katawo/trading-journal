@@ -40,6 +40,10 @@ ingestion = [
 ]
 
 [tool.pytest.ini_options]
+addopts = "-m 'not desktop'"
+markers = [
+  "desktop: tests for the optional desktop launcher and frozen desktop workflow",
+]
 testpaths = ["tests"]
 pythonpath = ["src"]
 
