@@ -56,15 +56,15 @@ MT5 exports one completed **position** per row. The journal automatically maps e
 
 ### Create and regroup a logical trade
 
-1. In **Bearings → Review**, select two or more compatible single-position logical trades.
-2. Select **Create logical trade** and optionally add a label, such as `London breakout scale-in`.
-3. Save the group, then open the resulting logical trade and complete its one post-trade assessment.
+1. In **Bearings → Review**, select two or more compatible logical trades. A selection may contain standalone trades, existing groups, or both; every selected trade moves with all of its positions.
+2. Select **Group selected**, review the locked source-trade summary, and optionally add a label such as `London breakout scale-in`.
+3. Confirm the merge. The journal creates a new logical-trade ID, then you can open the resulting trade and complete its one post-trade assessment.
 
 Positions can be grouped only when they share the same MT5 account, symbol, direction, and imported risk-policy version. The generated label is based on symbol, direction, and first entry when no custom label is supplied. A group becomes one reviewable logical trade, and appears in the dashboard's **Per trade** analysis when its **last** member position closes.
 
 The same row selection also supports **Quick review selected**. It can include single-position or grouped logical trades that are Awaiting approval or Require review. The confirmation lists the selected policy-evidence states before saving approved Auto reviews; a later Manual Review can replace any of them.
 
-Logical-trade membership and labels are mutable. Use **Manage positions** from any review to add, remove, split, merge, or disband positions. A membership change never alters an MT5 row. Instead, it supersedes each affected saved assessment, removes it from active pillar scores and roadmap evidence, and requires a new review. The superseded review keeps its original member-position snapshot and remains available in assessment history. A label-only change does not supersede an assessment.
+Logical-trade membership and labels are mutable. **Group selected** always merges whole logical trades into a new logical-trade ID; use **Manage positions** from any review for fine-grained position changes, or to split and disband positions. A membership change never alters an MT5 row. Instead, it supersedes each affected saved assessment, removes it from active pillar scores and roadmap evidence, and requires a new review. The superseded review keeps its original member-position snapshot and remains available in assessment history. A label-only change does not supersede an assessment.
 
 ### Group reporting and automatic risk
 

@@ -751,6 +751,111 @@ def test_grouped_positions_become_one_logical_trade_for_review_and_dashboard(tmp
     ]
 
 
+def test_merging_complete_logical_trades_creates_a_new_group_and_preserves_review_history(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    first = _import_position(repository, account_id, position_id="merge-1", net_pnl="12")
+    second = _import_position(repository, account_id, position_id="merge-2", net_pnl="8")
+    third = _import_position(repository, account_id, position_id="merge-3", net_pnl="4")
+    fourth = _import_position(repository, account_id, position_id="merge-4", net_pnl="-2")
+    first_group = repository.create_logical_trade_group(
+        account_id=account_id,
+        logical_trade_ids=(first, second),
+        display_label="First scale-in",
+    )
+    second_group = repository.create_logical_trade_group(
+        account_id=account_id,
+        logical_trade_ids=(third, fourth),
+        display_label="Second scale-in",
+    )
+    _review(repository, account_id, first_group, policy, strategy)
+    _review(repository, account_id, second_group, policy, strategy)
+
+    merged_id = repository.create_logical_trade_group(
+        account_id=account_id,
+        logical_trade_ids=(first_group, second_group),
+        display_label="Combined execution",
+    )
+
+    trades = repository.list_closed_trades_for_review(account_id)
+    history = repository.list_superseded_post_trade_assessments_for_trade(
+        account_id=account_id,
+        logical_trade_id=merged_id,
+    )
+    assert merged_id not in {first_group, second_group}
+    assert len(trades) == 1
+    assert trades[0].id == merged_id
+    assert trades[0].position_ids == ("merge-1", "merge-2", "merge-3", "merge-4")
+    assert trades[0].position_count == 4
+    assert trades[0].net_pnl == "22"
+    assert trades[0].display_label == "Combined execution"
+    assert repository.list_post_trade_assessment_outcomes(account_id) == []
+    assert {item.assessed_trade_label for item in history} == {"First scale-in", "Second scale-in"}
+
+
+def test_whole_trade_merge_rejects_source_membership_changed_after_preview(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    _policy(repository, account_id)
+    first = _import_position(repository, account_id, position_id="stale-source-1")
+    second = _import_position(repository, account_id, position_id="stale-source-2")
+    third = _import_position(repository, account_id, position_id="stale-source-3")
+    first_group = repository.create_logical_trade_group(
+        account_id=account_id,
+        logical_trade_ids=(first, second),
+        display_label=None,
+    )
+    current = {item.id: item for item in repository.list_closed_trades_for_review(account_id)}
+    selected_positions = tuple(member.id for trade_id in (first_group, third) for member in current[trade_id].members)
+    preview = repository.preview_logical_trade_regroup(
+        account_id=account_id,
+        logical_trade_id=None,
+        position_trade_ids=selected_positions,
+        source_logical_trade_ids=(first_group, third),
+    )
+    repository.disband_logical_trade_group(account_id=account_id, logical_trade_id=first_group)
+
+    with pytest.raises(ValueError, match="Selected logical trades changed"):
+        repository.regroup_logical_trade(
+            account_id=account_id,
+            logical_trade_id=None,
+            position_trade_ids=selected_positions,
+            source_logical_trade_ids=(first_group, third),
+            expected_assessment_count=preview.affected_assessment_count,
+            display_label=None,
+        )
+
+    assert len(repository.list_closed_trades_for_review(account_id)) == 3
+
+
+def test_whole_trade_merge_rejects_assessment_created_after_preview(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    first = _import_position(repository, account_id, position_id="stale-review-1")
+    second = _import_position(repository, account_id, position_id="stale-review-2")
+    current = {item.id: item for item in repository.list_closed_trades_for_review(account_id)}
+    selected_positions = tuple(member.id for trade_id in (first, second) for member in current[trade_id].members)
+    preview = repository.preview_logical_trade_regroup(
+        account_id=account_id,
+        logical_trade_id=None,
+        position_trade_ids=selected_positions,
+        source_logical_trade_ids=(first, second),
+    )
+    _review(repository, account_id, first, policy, strategy)
+
+    with pytest.raises(ValueError, match="Saved assessments changed"):
+        repository.regroup_logical_trade(
+            account_id=account_id,
+            logical_trade_id=None,
+            position_trade_ids=selected_positions,
+            source_logical_trade_ids=(first, second),
+            expected_assessment_count=preview.affected_assessment_count,
+            display_label=None,
+        )
+
+    assert repository.get_post_trade_assessment_for_trade(first) is not None
+    assert len(repository.list_closed_trades_for_review(account_id)) == 2
+
+
 def test_disbanding_a_reviewed_group_supersedes_its_assessment_and_restores_singletons(tmp_path) -> None:
     repository, account_id = _repository(tmp_path)
     policy, strategy = _policy(repository, account_id), _strategy(repository)

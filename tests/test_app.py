@@ -1453,20 +1453,38 @@ def test_framework_groups_positions_through_a_confirmation_step(monkeypatch, tmp
     assert any("Page 2 of 2" in item.value for item in app.caption)
     assert len([item for item in app.checkbox if item.label.startswith("Select LT-")]) == 1
     next(item for item in app.checkbox if item.label.startswith("Select LT-")).set_value(True).run()
-    next(item for item in app.button if item.label == "Create logical trade (2)").click().run()
+    next(item for item in app.button if item.label == "Group selected (2)").click().run()
 
     assert not app.exception
-    assert any("selected single-position logical trades" in item.value for item in app.caption)
-    next(item for item in app.button if item.label == "Create logical trade").click().run()
+    assert any("selected logical trades" in item.value for item in app.caption)
+    next(item for item in app.button if item.label == "Create new logical trade").click().run()
 
     assert not app.exception
-    assert any(item.label == "Confirm regroup" for item in app.button)
-    next(item for item in app.button if item.label == "Confirm regroup").click().run()
+    assert any(item.label == "Confirm merge" for item in app.button)
+    next(item for item in app.button if item.label == "Confirm merge").click().run()
 
     assert not app.exception
     grouped = repository.list_closed_trades_for_review(account.id)
     assert len(grouped) == 25
-    assert any(item.position_count == 2 for item in grouped)
+    source_group = next(item for item in grouped if item.position_count == 2)
+    standalone = next(item for item in grouped if not item.is_group)
+
+    next(item for item in app.checkbox if item.label == f"Select LT-{source_group.id}").set_value(True).run()
+    next(item for item in app.checkbox if item.label == f"Select LT-{standalone.id}").set_value(True).run()
+    next(item for item in app.button if item.label == "Group selected (2)").click().run()
+
+    assert not app.exception
+    assert any("new logical-trade ID" in item.value for item in app.caption)
+    next(item for item in app.text_input if item.label == "Trade label (optional)").set_value("Extended logical trade").run()
+    next(item for item in app.button if item.label == "Create new logical trade").click().run()
+    next(item for item in app.button if item.label == "Confirm merge").click().run()
+
+    assert not app.exception
+    extended_trades = repository.list_closed_trades_for_review(account.id)
+    assert len(extended_trades) == 24
+    extended = next(item for item in extended_trades if item.position_count == 3)
+    assert extended.id not in {source_group.id, standalone.id}
+    assert extended.display_label == "Extended logical trade"
     next(item for item in app.button if item.label == "Ungroup").click().run()
 
     assert not app.exception

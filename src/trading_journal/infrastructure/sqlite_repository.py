@@ -1599,6 +1599,7 @@ class SQLiteJournalRepository:
         account_id: int,
         position_trade_ids: tuple[int, ...],
         logical_trade_id: int | None,
+        source_logical_trade_ids: tuple[int, ...] = (),
     ) -> LogicalTradeRegroupPreview:
         """Describe active assessments that a membership change will supersede."""
         selected = tuple(sorted(set(position_trade_ids)))
@@ -1608,6 +1609,12 @@ class SQLiteJournalRepository:
                 account_id=account_id,
                 position_trade_ids=selected,
                 logical_trade_id=logical_trade_id,
+            )
+            self._validate_complete_logical_trade_sources(
+                session,
+                account_id=account_id,
+                selected_rows=selected_rows,
+                source_logical_trade_ids=source_logical_trade_ids,
             )
             if len(selected_rows) > 1:
                 self._validate_group_members(selected_rows, account_id)
@@ -1629,6 +1636,8 @@ class SQLiteJournalRepository:
         position_trade_ids: tuple[int, ...],
         display_label: str | None,
         logical_trade_id: int | None = None,
+        source_logical_trade_ids: tuple[int, ...] = (),
+        expected_assessment_count: int | None = None,
     ) -> LogicalTradeRegroupResult:
         """Create or change a logical trade without changing immutable MT5 facts.
 
@@ -1648,6 +1657,12 @@ class SQLiteJournalRepository:
                 account_id=account_id,
                 position_trade_ids=selected,
                 logical_trade_id=logical_trade_id,
+            )
+            self._validate_complete_logical_trade_sources(
+                session,
+                account_id=account_id,
+                selected_rows=selected_rows,
+                source_logical_trade_ids=source_logical_trade_ids,
             )
             if len(selected_rows) > 1:
                 self._validate_group_members(selected_rows, account_id)
@@ -1670,6 +1685,7 @@ class SQLiteJournalRepository:
                 affected_ids,
                 superseded_at=now,
                 reason="Logical-trade membership changed",
+                expected_count=expected_assessment_count,
             )
             selected_ids = {row.id for row in selected_rows}
             remainder_rows = [row for row in destination_rows if row.id not in selected_ids]
@@ -1733,6 +1749,7 @@ class SQLiteJournalRepository:
             account_id=account_id,
             position_trade_ids=position_ids,
             display_label=display_label,
+            source_logical_trade_ids=selected,
         )
         assert result.logical_trade_id is not None
         return result.logical_trade_id
@@ -1805,6 +1822,31 @@ class SQLiteJournalRepository:
         return rows, destination, destination_rows
 
     @staticmethod
+    def _validate_complete_logical_trade_sources(
+        session,  # type: ignore[no-untyped-def]
+        *,
+        account_id: int,
+        selected_rows: list[Trade],
+        source_logical_trade_ids: tuple[int, ...],
+    ) -> None:
+        """Reject a stale whole-trade merge before it can move partial groups."""
+        if not source_logical_trade_ids:
+            return
+        source_ids = set(source_logical_trade_ids)
+        if len(source_ids) < 2:
+            raise ValueError("Select at least two logical trades to create a new logical trade")
+        if {row.logical_trade_id for row in selected_rows} != source_ids:
+            raise ValueError("Selected logical trades changed. Return to the register and select them again")
+        current_rows = session.scalars(
+            select(Trade).where(
+                Trade.mt5_account_id == account_id,
+                Trade.logical_trade_id.in_(source_ids),
+            )
+        ).all()
+        if {row.id for row in current_rows} != {row.id for row in selected_rows}:
+            raise ValueError("Selected logical trades changed. Return to the register and select them again")
+
+    @staticmethod
     def _regroup_affected_logical_trade_ids(
         selected_rows: list[Trade],
         destination: LogicalTrade | None,
@@ -1843,8 +1885,11 @@ class SQLiteJournalRepository:
         *,
         superseded_at: str,
         reason: str,
+        expected_count: int | None = None,
     ) -> int:
         assessments = self._active_assessments_for_logical_trades(session, logical_trade_ids)
+        if expected_count is not None and len(assessments) != expected_count:
+            raise ValueError("Saved assessments changed. Review the merge warning and confirm again")
         for assessment in assessments:
             assessment.superseded_at = superseded_at
             assessment.superseded_reason = reason

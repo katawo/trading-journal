@@ -887,11 +887,13 @@ def _render_logical_trade_group_dialog(
     account: AccountListItem,
     existing_group=None,
     selected_position_trade_ids: tuple[int, ...] = (),
+    selected_logical_trade_ids: tuple[int, ...] = (),
 ) -> None:  # type: ignore[no-untyped-def]
     """Create or regroup a logical trade; imported MT5 positions stay immutable."""
     existing_members = () if existing_group is None else existing_group.members
     positions = repo.list_imported_positions_for_grouping(account.id)
     units = repo.list_closed_trades_for_review(account.id)
+    unit_by_id = {unit.id: unit for unit in units}
     unit_by_position_id = {
         member.id: unit
         for unit in units
@@ -906,9 +908,19 @@ def _render_logical_trade_group_dialog(
         for position in positions
     }
     editor_id = None if existing_group is None else existing_group.id
-    selected_position_trade_ids = tuple(
-        position_id for position_id in selected_position_trade_ids if position_id in labels
+    selected_logical_trade_ids = tuple(
+        logical_trade_id for logical_trade_id in selected_logical_trade_ids if logical_trade_id in unit_by_id
     )
+    if existing_group is None and selected_logical_trade_ids:
+        selected_position_trade_ids = tuple(
+            member.id
+            for logical_trade_id in selected_logical_trade_ids
+            for member in unit_by_id[logical_trade_id].members
+        )
+    else:
+        selected_position_trade_ids = tuple(
+            position_id for position_id in selected_position_trade_ids if position_id in labels
+        )
     confirmation = st.session_state.get("logical-trade-regroup-confirmation")
     if confirmation is not None and confirmation.get("account_id") != account.id:
         _clear_group_dialog()
@@ -916,29 +928,52 @@ def _render_logical_trade_group_dialog(
     if confirmation is not None:
         _render_logical_trade_regroup_confirmation(repo, account, confirmation)
         return
-    is_selection_create = existing_group is None and bool(selected_position_trade_ids)
+    is_selection_create = existing_group is None and len(selected_logical_trade_ids) >= 2
+    if existing_group is None and selected_position_trade_ids and not is_selection_create:
+        st.warning(tr("At least two selected logical trades are required. Return to the register and select the trades again."))
+        return
     st.caption(
-        "The selected single-position logical trades will be combined into one logical trade."
+        "The selected logical trades will be combined into a new logical trade. Each selected trade moves with all of its positions."
         if is_selection_create
         else "Every imported position starts as one logical trade. Select the current members for this logical trade; "
         "selected positions may be moved from another group. Members must share account, symbol, direction, and imported Risk-policy version."
     )
+    if is_selection_create:
+        selected_units = [unit_by_id[logical_trade_id] for logical_trade_id in selected_logical_trade_ids]
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        tr("Logical trade"): f"LT-{unit.id}",
+                        tr("Trade"): unit.display_label,
+                        tr("Positions"): unit.position_count,
+                        tr("Position IDs"): ", ".join(f"#{position_id}" for position_id in unit.position_ids),
+                    }
+                    for unit in selected_units
+                ]
+            ),
+            hide_index=True,
+            width="stretch",
+        )
+        st.caption("A new logical-trade ID will be created. Source labels are not carried forward automatically.")
     with st.form(f"logical-trade-group-{account.id}-{editor_id}"):
         label = st.text_input(
             "Trade label (optional)",
             value="" if existing_group is None else existing_group.custom_label or "",
             placeholder="e.g. London breakout scale-in",
         )
-        selected = st.multiselect(
-            "Positions",
-            options=list(labels),
-            default=[member.id for member in existing_members] if existing_group is not None else list(selected_position_trade_ids),
-            format_func=labels.get,
-            placeholder="Choose two or more positions",
-            disabled=is_selection_create,
-        )
+        if is_selection_create:
+            selected = list(selected_position_trade_ids)
+        else:
+            selected = st.multiselect(
+                "Positions",
+                options=list(labels),
+                default=[member.id for member in existing_members] if existing_group is not None else [],
+                format_func=labels.get,
+                placeholder="Choose two or more positions",
+            )
         save = st.form_submit_button(
-            "Create logical trade" if existing_group is None else "Continue",
+            "Create new logical trade" if is_selection_create else "Create logical trade" if existing_group is None else "Continue",
             type="primary",
             icon=":material/group_work:",
         )
@@ -961,8 +996,9 @@ def _render_logical_trade_group_dialog(
                 account_id=account.id,
                 position_trade_ids=tuple(selected),
                 logical_trade_id=editor_id,
+                source_logical_trade_ids=selected_logical_trade_ids if is_selection_create else (),
             )
-            mode = "regroup"
+            mode = "merge" if is_selection_create else "regroup"
     except ValueError as error:
         st.error(str(error))
         return
@@ -970,6 +1006,7 @@ def _render_logical_trade_group_dialog(
         "account_id": account.id,
         "logical_trade_id": editor_id,
         "position_trade_ids": tuple(selected),
+        "source_logical_trade_ids": selected_logical_trade_ids if is_selection_create else (),
         "display_label": label,
         "mode": mode,
         "affected_assessment_count": preview.affected_assessment_count,
@@ -982,6 +1019,8 @@ def _render_logical_trade_regroup_confirmation(repo: SQLiteJournalRepository, ac
     count = confirmation["affected_assessment_count"]
     if confirmation["mode"] == "disband":
         st.warning(tr("This will split the current logical trade into individual position trades."))
+    elif confirmation["mode"] == "merge":
+        st.warning(tr("This will merge the selected logical trades into a new logical trade."))
     else:
         st.warning(tr("This will apply the selected current membership to the logical trade."))
     if count:
@@ -997,7 +1036,10 @@ def _render_logical_trade_regroup_confirmation(repo: SQLiteJournalRepository, ac
         st.caption("No active saved assessment is affected. Dashboard reporting will recalculate from the new grouping.")
     with st.container(horizontal=True, gap="small"):
         confirm = st.button(
-            "Confirm disband" if confirmation["mode"] == "disband" else "Confirm regroup",
+            {
+                "disband": "Confirm disband",
+                "merge": "Confirm merge",
+            }.get(confirmation["mode"], "Confirm regroup"),
             type="primary",
             icon=":material/check:",
         )
@@ -1021,8 +1063,14 @@ def _render_logical_trade_regroup_confirmation(repo: SQLiteJournalRepository, ac
                     logical_trade_id=confirmation["logical_trade_id"],
                     position_trade_ids=tuple(confirmation["position_trade_ids"]),
                     display_label=confirmation["display_label"],
+                    source_logical_trade_ids=tuple(confirmation.get("source_logical_trade_ids", ())),
+                    expected_assessment_count=confirmation["affected_assessment_count"],
                 )
-                notice = "Logical trade saved."
+                notice = (
+                    "Logical trades merged into a new logical trade."
+                    if confirmation["mode"] == "merge"
+                    else "Logical trade saved."
+                )
         if result.superseded_assessment_count:
             notice += f" {result.superseded_assessment_count} assessment(s) now need re-review."
     except ValueError as error:
@@ -1111,7 +1159,6 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
     if failed_only:
         visible = [(trade, score) for trade, score in visible if score.process_status == "FAIL"]
     visible_by_id = {trade.id: trade for trade, _ in visible}
-    single_position_by_id = {trade.id: trade for trade, _ in visible if not trade.is_group}
     selected_logical_trade_ids = tuple(
         trade_id
         for trade_id in st.session_state.get(_logical_trade_selection_store_key(account.id), ())
@@ -1119,8 +1166,9 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
     )
     st.session_state[_logical_trade_selection_store_key(account.id)] = selected_logical_trade_ids
     selected_position_trade_ids = tuple(
-        single_position_by_id[trade_id].members[0].id for trade_id in selected_logical_trade_ids
-        if trade_id in single_position_by_id
+        member.id
+        for trade_id in selected_logical_trade_ids
+        for member in visible_by_id[trade_id].members
     )
     selected_reviewable_count = sum(
         scores[trade_id].review_kind in {"auto_review", "needs_approval"}
@@ -1128,11 +1176,12 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
     )
     with st.container(horizontal=True, gap="small"):
         create = st.button(
-            f"Create logical trade ({len(selected_position_trade_ids)})",
+            f"Group selected ({len(selected_logical_trade_ids)})",
             key=f"create-logical-trade-{account.id}",
             icon=":material/group_work:",
             type="primary",
-            disabled=len(selected_position_trade_ids) < 2,
+            disabled=len(selected_logical_trade_ids) < 2,
+            help="Combine every position from two or more selected logical trades into a new logical trade.",
         )
         st.button(
             "Clear selection",
@@ -1193,6 +1242,7 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
             "account_id": account.id,
             "logical_trade_id": None,
             "selected_position_trade_ids": selected_position_trade_ids,
+            "selected_logical_trade_ids": selected_logical_trade_ids,
         }
         st.rerun()
     page_count = max(1, (len(visible) + REVIEW_PAGE_SIZE - 1) // REVIEW_PAGE_SIZE)
@@ -1264,9 +1314,7 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
                     key=checkbox_key,
                     label_visibility="collapsed",
                     help=(
-                        "Select this logical trade for Bulk Quick Review. Grouped trades cannot be used to create another logical trade."
-                        if trade.is_group
-                        else "Select this logical trade for Bulk Quick Review or to group it with other single-position trades."
+                        "Select this logical trade for Bulk Quick Review or to group it, with all of its positions, with other logical trades."
                     ),
                     on_change=_toggle_logical_trade_selection,
                     args=(account.id, trade.id),
@@ -1370,6 +1418,7 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
                 account,
                 group,
                 tuple(group_editor.get("selected_position_trade_ids", ())),
+                tuple(group_editor.get("selected_logical_trade_ids", ())),
             )
         else:
             _clear_group_dialog()
