@@ -27,7 +27,7 @@ VI: dict[str, str] = {
     "Unrealized P&L": "P&L chưa thực hiện",
     "Add and select an MT5 account in Settings to monitor live positions.": "Thêm và chọn tài khoản MT5 trong Cài đặt để theo dõi vị thế đang mở.",
     "Trade Compass": "Trade Compass",
-    "Local-first trade review, guided by discipline.": "Đánh giá giao dịch cục bộ, dẫn dắt bởi kỷ luật.",
+    "Survival · Consistency · Discipline": "Sinh tồn · Nhất quán · Kỷ luật",
     "Workspace": "Không gian làm việc",
     "Ongoing": "Đang diễn ra",
     "Dashboard": "Tổng quan",

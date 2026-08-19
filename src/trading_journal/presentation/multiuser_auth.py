@@ -139,7 +139,7 @@ def render_login_gate() -> str | None:
         with st.container(horizontal=True, vertical_alignment="center", gap="small"):
             st.image(TRADE_COMPASS_ICON, width=44)
             st.subheader(tr("Trade Compass"))
-        st.caption(tr("Local-first trade review, guided by discipline."))
+        st.caption(tr("Survival · Consistency · Discipline"))
         authenticator.login("main")
         message = st.empty()
 

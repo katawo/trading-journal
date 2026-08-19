@@ -1912,7 +1912,7 @@ def main() -> None:
     with st.container(key="trade-compass-brand"):
         st.image(TRADE_COMPASS_ICON, width=50)
         st.title(tr("Trade Compass"))
-    st.caption(tr("Local-first trade review, guided by discipline."))
+    st.caption(tr("Survival · Consistency · Discipline"))
 
     review_count = 0
     monitor_alert_count = 0

@@ -42,7 +42,7 @@ def test_app_renders_local_mt5_import_entrypoint(monkeypatch, tmp_path):
 
     assert not app.exception
     assert app.title[0].value == "Trade Compass"
-    assert any("Local-first" in item.value for item in app.caption)
+    assert any("Survival · Consistency · Discipline" in item.value for item in app.caption)
 
     import app as journal_app
 
