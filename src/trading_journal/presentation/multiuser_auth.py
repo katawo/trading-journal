@@ -15,7 +15,7 @@ import os
 import streamlit as st
 
 from trading_journal.application.multiuser import is_multiuser_mode, user_database_path, users_config_path
-from trading_journal.presentation.branding import TRADE_COMPASS_ICON
+from trading_journal.presentation.branding import TRADE_COMPASS_ICON, render_trade_doctrine
 from trading_journal.presentation.i18n import tr
 
 __all__ = [
@@ -139,7 +139,7 @@ def render_login_gate() -> str | None:
         with st.container(horizontal=True, vertical_alignment="center", gap="small"):
             st.image(TRADE_COMPASS_ICON, width=44)
             st.subheader(tr("Trade Compass"))
-        st.caption(tr("Survival · Consistency · Discipline"))
+        render_trade_doctrine(tr("Survival · Consistency · Discipline"))
         authenticator.login("main")
         message = st.empty()
 

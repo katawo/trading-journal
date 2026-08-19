@@ -27,7 +27,7 @@ from trading_journal.presentation.framework import (
     render_dashboard_coaching_focus,
     render_framework_dashboard,
 )
-from trading_journal.presentation.branding import TRADE_COMPASS_ICON
+from trading_journal.presentation.branding import TRADE_COMPASS_ICON, render_trade_doctrine
 from trading_journal.presentation.global_alert_bubble import GlobalAlertItem, render_global_alert_bubble
 from trading_journal.presentation.multiuser_auth import current_username, is_multiuser_mode, render_login_gate, render_logout_control, user_database_path
 from trading_journal.presentation.desktop_reset_restart import render_desktop_reset_restart_bridge
@@ -1912,7 +1912,7 @@ def main() -> None:
     with st.container(key="trade-compass-brand"):
         st.image(TRADE_COMPASS_ICON, width=50)
         st.title(tr("Trade Compass"))
-    st.caption(tr("Survival · Consistency · Discipline"))
+    render_trade_doctrine(tr("Survival · Consistency · Discipline"))
 
     review_count = 0
     monitor_alert_count = 0

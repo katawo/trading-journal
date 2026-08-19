@@ -42,7 +42,13 @@ def test_app_renders_local_mt5_import_entrypoint(monkeypatch, tmp_path):
 
     assert not app.exception
     assert app.title[0].value == "Trade Compass"
-    assert any("Survival · Consistency · Discipline" in item.value for item in app.caption)
+    from trading_journal.presentation import branding
+
+    captured = {}
+    monkeypatch.setattr(branding.st, "html", lambda value: captured.setdefault("value", value))
+    branding.render_trade_doctrine("Survival · Consistency · Discipline")
+    assert "trade-compass-doctrine" in captured["value"]
+    assert "Survival" in captured["value"]
 
     import app as journal_app
 
