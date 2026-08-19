@@ -865,7 +865,7 @@ def test_monitor_tab_shows_early_estimate_not_incomplete_for_a_partial_sample(mo
     assert "Incomplete" not in psychology.delta
     assert any(item.label == "Overall readiness" for item in app.metric)
     captions = {item.value for item in app.caption}
-    assert "Trader-wide" in captions
+    assert "Psychology: Primary · 123456 · DemoBroker-Live" in captions
     assert "Account: Primary · 123456 · DemoBroker-Live" in captions
     assert "System: Primary · 123456 · DemoBroker-Live" in captions
 

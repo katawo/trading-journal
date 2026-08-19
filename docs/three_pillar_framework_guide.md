@@ -10,7 +10,7 @@ The journal measures the *quality of a completed trade*, not only its P&L. It is
 
 | Pillar | Question | Scope in monitoring |
 |---|---|---|
-| Psychology | Did I execute myself correctly? | Trader-wide across active accounts |
+| Psychology | Did I execute myself correctly? | Selected MT5 account |
 | Risk management | Did I protect capital and follow the account policy? | Selected MT5 account |
 | Trading system | Did I execute a valid, documented setup? | Selected MT5 account (one independent system per account) |
 
@@ -240,7 +240,7 @@ The Monitor computes a second set of period components from the reviewed window.
 | Rule adherence | 35% | Average reviewed Rule adherence grade. |
 | Impulse control | 25% | Average reviewed Impulse control grade. |
 | Emotional control | 20% | Average reviewed Emotional control grade. |
-| Post-loss discipline | 20% | The next reviewed trade after a loss across all active accounts: its Impulse control grade, or 0 when tagged `post_loss_reset`. It is 100 when the sample has no eligible post-loss sequence. |
+| Post-loss discipline | 20% | The next reviewed trade after a loss on this account: its Impulse control grade, or 0 when tagged `post_loss_reset`. It is 100 when the sample has no eligible post-loss sequence. |
 
 ### Risk management monitoring score
 
@@ -291,7 +291,7 @@ Do not change a strategy solely because of a small recent P&L sample. Make one h
 
 ### Coaching focus
 
-The Monitor can hold one active journal-wide **Coaching focus**. Trade Compass automatically selects a focus from reviewed evidence, then tracks 5, 10, or 20 newly reviewed trades before it is resolved with a reflection. Psychology focuses use trader-wide evidence; Risk and Trading system focuses use the selected account, because each account represents an independent system. The app remains post-trade and advisory.
+The Monitor can hold one active journal-wide **Coaching focus**. Trade Compass automatically selects a focus from reviewed evidence, then tracks 5, 10, or 20 newly reviewed trades before it is resolved with a reflection. All three pillars' focuses use the selected account's evidence, because each account represents an independent system. The app remains post-trade and advisory.
 
 ### Optional review context
 

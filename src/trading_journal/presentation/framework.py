@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import MutableMapping, Sequence
-from datetime import date, timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 import pandas as pd
@@ -22,6 +22,7 @@ from trading_journal.application.framework import (
     RiskSnapshot,
     TradeProcessScore,
 )
+from trading_journal.application.display_time import format_relative_time
 from trading_journal.application.reporting_time import reporting_datetime
 from trading_journal.infrastructure.sqlite_repository import (
     ASSESSMENT_CRITERIA,
@@ -32,7 +33,7 @@ from trading_journal.infrastructure.sqlite_repository import (
     ReviewContextSelection,
     SQLiteJournalRepository,
 )
-from trading_journal.presentation.i18n import queue_toast, tr
+from trading_journal.presentation.i18n import format_relative_time_localized, queue_toast, tr
 from trading_journal.presentation.formatting import format_count, format_currency, format_exposure_r, format_percent, format_r, format_score
 from trading_journal.presentation.trade_tags import direction_tag, outcome_tag
 
@@ -254,10 +255,12 @@ def _reporting_time(repo: SQLiteJournalRepository, value: str, server_utc_offset
 
 def _score_scope_label(score: PillarScore, account: AccountListItem) -> str:
     """Describe the evidence scope without implying that a pillar is an aggregate."""
-    if score.pillar == "psychology":
-        return tr("Trader-wide")
     label = _account_label(account)
-    return tr("Account: {account}", account=label) if score.pillar == "risk" else tr("System: {account}", account=label)
+    if score.pillar == "risk":
+        return tr("Account: {account}", account=label)
+    if score.pillar == "system":
+        return tr("System: {account}", account=label)
+    return tr("Psychology: {account}", account=label)
 
 
 def _render_score_cards(scores: tuple[PillarScore, ...], account: AccountListItem) -> None:
@@ -337,7 +340,6 @@ def render_framework_dashboard(repo: SQLiteJournalRepository, account: AccountLi
     readiness = service.readiness(account.id)
     policy = repo.get_active_risk_policy(account.id)
     st.markdown(tr("#### Three-pillar monitor"))
-    st.caption(tr("Psychology is trader-wide. Risk and System are scoped to {account}.", account=_account_label(account)))
     st.caption(tr("This compact view always uses a fixed 20-trade window. Open Bearings → Monitor to adjust the rolling sample."))
     _render_risk_configuration_notice(service, account.id)
     readiness_value, readiness_delta, readiness_color = _readiness_metric(readiness)
@@ -1476,13 +1478,12 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
 def _render_monitor(repo: SQLiteJournalRepository, account: AccountListItem) -> None:
     service = FrameworkService(repo)
     st.markdown(tr("#### Monitoring"))
-    st.caption(tr("Psychology is trader-wide. Risk and System are scoped to {account}.", account=_account_label(account)))
     _render_risk_configuration_notice(service, account.id)
     controls, scope_note = st.columns((2, 3))
     with controls:
         window = st.slider(tr("Rolling sample"), min_value=10, max_value=100, value=20, step=5, key=f"framework-window-{account.id}")
         period = st.segmented_control("Analysis period", ["This month", "Last 90 days", "All time", "Custom"], default="Last 90 days", required=True, key=f"framework-analysis-period-{account.id}")
-    today = date.today()
+    today = service.today(account.id)
     if period == "This month":
         start_date, end_date = today.replace(day=1), today
     elif period == "Last 90 days":
@@ -1563,7 +1564,7 @@ def _render_monitor_process(service: FrameworkService, account: AccountListItem,
     if trend:
         with st.container(horizontal=True, vertical_alignment="center", gap="small", width="content"):
             st.markdown("##### Score trend")
-            _render_help_popover("Each point keeps the same approved-review scoring rules as the score cards. Psychology is trader-wide; Risk and System are selected-account only.")
+            _render_help_popover("Each point keeps the same approved-review scoring rules as the score cards.")
         frame = pd.DataFrame(trend, columns=["Closed", "Psychology", "Risk management", "Trading system"]).set_index("Closed")
         st.line_chart(frame, width="stretch")
     else:
@@ -1660,18 +1661,17 @@ def _render_framework_focus(repo: SQLiteJournalRepository, account: AccountListI
     service.ensure_coaching_focus(account.id)
     focus, progress = service.focus_progress(account.id)
     if show_heading:
-        heading = tr("🎯 Today's coaching action") if compact else tr("Coaching focus")
+        heading = tr("🎯 Current coaching focus") if compact else tr("Coaching focus")
         st.markdown(f"##### {heading}")
 
-    if focus is not None and focus.pillar in {"risk", "system"} and focus.account_id != account.id:
-        st.info(tr("An active {pillar} coaching focus applies to another account. Select that account in Settings to review it.", pillar=tr(PILLAR_NAMES[focus.pillar])))
-        return
     if focus is not None and progress is not None:
         with st.container(border=True):
             kind = {"manual_evidence": "Reviewed evidence", "component": "Pillar component", "criterion": "Criterion", "violation": "Issue"}[focus.metric_kind]
             st.markdown(f"**{tr(PILLAR_NAMES[focus.pillar])} · {tr(kind)}**")
             st.write(tr(focus.action_text))
             st.caption(f"{tr('Why now:')} {tr(focus.coach_reason or focus.hypothesis)}")
+            opened_relative = format_relative_time_localized(format_relative_time(datetime.fromisoformat(focus.created_at)))
+            st.caption(tr("Focus opened {relative} · progress advances only as you review trades, not automatically each day.", relative=opened_relative))
             current = _focus_metric_text(progress.current_value, focus.metric_kind)
             baseline = _focus_metric_text(focus.baseline_value, focus.metric_kind)
             target = _focus_metric_text(focus.target_value, focus.metric_kind)
@@ -1697,7 +1697,7 @@ def _render_framework_focus(repo: SQLiteJournalRepository, account: AccountListI
                         else:
                             queue_toast("Framework focus resolved.")
                             st.rerun()
-            history = [item for item in repo.list_framework_focuses() if item.status != "active"]
+            history = [item for item in repo.list_framework_focuses(account.id) if item.status != "active"]
             if history and not compact:
                 with st.expander(tr("Coaching history")):
                     for item in history[:5]:
@@ -1751,7 +1751,7 @@ def render_dashboard_coaching_focus(repo: SQLiteJournalRepository, account: Acco
     )
     service = FrameworkService(repo)
     scores = service.pillar_scores(account.id)
-    with st.expander(tr("🎯 Today's coaching action"), expanded=False, key="dashboard-coaching-focus"):
+    with st.expander(tr("🎯 Current coaching focus"), expanded=False, key="dashboard-coaching-focus"):
         _render_framework_focus(repo, account, service, scores, compact=True, show_heading=False)
 
 

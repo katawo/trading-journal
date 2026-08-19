@@ -10,7 +10,7 @@ Nhật ký đo lường *chất lượng của một giao dịch đã đóng*, k
 
 | Trụ cột | Câu hỏi | Phạm vi theo dõi |
 |---|---|---|
-| Tâm lý | Tôi đã thực hiện bản thân đúng cách chưa? | Toàn bộ tài khoản đang hoạt động của trader |
+| Tâm lý | Tôi đã thực hiện bản thân đúng cách chưa? | Tài khoản MT5 được chọn |
 | Quản lý rủi ro | Tôi có bảo vệ vốn và tuân thủ chính sách tài khoản không? | Tài khoản MT5 được chọn |
 | Hệ thống giao dịch | Tôi có thực hiện một setup hợp lệ, đã được ghi chép không? | Tài khoản MT5 được chọn (mỗi tài khoản là một hệ thống độc lập) |
 
@@ -238,7 +238,7 @@ Theo dõi tính một bộ thành phần giai đoạn thứ hai từ cửa sổ 
 | Tuân thủ quy tắc | 35% | Trung bình mức Tuân thủ quy tắc đã đánh giá. |
 | Kiểm soát bốc đồng | 25% | Trung bình mức Kiểm soát bốc đồng đã đánh giá. |
 | Kiểm soát cảm xúc | 20% | Trung bình mức Kiểm soát cảm xúc đã đánh giá. |
-| Kỷ luật sau lỗ | 20% | Giao dịch đã đánh giá tiếp theo sau một lỗ trên mọi tài khoản: mức Kiểm soát bốc đồng của nó, hoặc 0 khi gắn thẻ `post_loss_reset`. Là 100 khi mẫu không có chuỗi sau-lỗ đủ điều kiện. |
+| Kỷ luật sau lỗ | 20% | Giao dịch đã đánh giá tiếp theo sau một lỗ trên tài khoản này: mức Kiểm soát bốc đồng của nó, hoặc 0 khi gắn thẻ `post_loss_reset`. Là 100 khi mẫu không có chuỗi sau-lỗ đủ điều kiện. |
 
 ### Điểm theo dõi Quản lý rủi ro
 
@@ -289,7 +289,7 @@ Không đổi chiến lược chỉ vì mẫu P&L gần đây nhỏ. Hãy lập 
 
 ### Trọng tâm huấn luyện
 
-Theo dõi chỉ giữ một **Trọng tâm huấn luyện** cho toàn nhật ký. Trade Compass tự chọn trọng tâm từ bằng chứng đã đánh giá, rồi theo dõi 5, 10 hoặc 20 giao dịch mới đã đánh giá trước khi bạn ghi phản hồi kết thúc. Tâm lý dùng bằng chứng trên toàn trader; Quản lý rủi ro và Hệ thống giao dịch dùng bằng chứng của tài khoản được chọn, vì mỗi tài khoản đại diện cho một hệ thống độc lập. Ứng dụng vẫn chỉ tư vấn sau giao dịch.
+Theo dõi chỉ giữ một **Trọng tâm huấn luyện** cho toàn nhật ký. Trade Compass tự chọn trọng tâm từ bằng chứng đã đánh giá, rồi theo dõi 5, 10 hoặc 20 giao dịch mới đã đánh giá trước khi bạn ghi phản hồi kết thúc. Cả ba trụ cột đều dùng bằng chứng của tài khoản được chọn, vì mỗi tài khoản đại diện cho một hệ thống độc lập. Ứng dụng vẫn chỉ tư vấn sau giao dịch.
 
 ### Bối cảnh đánh giá thủ công
 

@@ -421,10 +421,10 @@ class PillarRoadmapEvidence(Base):
 
 
 class FrameworkFocus(Base):
-    """One deliberate, measurable improvement focus for the whole journal."""
+    """One deliberate, measurable improvement focus per account."""
 
     __tablename__ = "framework_focuses"
-    __table_args__ = (Index("uq_active_framework_focus", "scope_key", unique=True, sqlite_where=text("status = 'active'")),)
+    __table_args__ = (Index("uq_active_framework_focus", "account_id", unique=True, sqlite_where=text("status = 'active'")),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     scope_key: Mapped[str] = mapped_column(String(32), nullable=False, default="trader")
@@ -877,6 +877,11 @@ class SQLiteJournalRepository:
                 "CREATE INDEX IF NOT EXISTS ix_active_assessments_account ON post_trade_assessments (mt5_account_id) WHERE superseded_at IS NULL",
             ):
                 connection.exec_driver_sql(statement)
+            # uq_active_framework_focus used to target scope_key (one active focus in the
+            # whole app); it now targets account_id (one active focus per account) - an
+            # existing index of that name blocks create_all from redefining it, so migrate it.
+            connection.exec_driver_sql("DROP INDEX IF EXISTS uq_active_framework_focus")
+            connection.exec_driver_sql("CREATE UNIQUE INDEX IF NOT EXISTS uq_active_framework_focus ON framework_focuses (account_id) WHERE status = 'active'")
         with self._sessions.begin() as session:
             settings = session.get(JournalSettings, 1)
             if settings is None:
@@ -895,6 +900,28 @@ class SQLiteJournalRepository:
                     session.flush()
                 settings.default_strategy_profile_id = default.id
                 settings.default_strategy_name = default.name
+            # One-time reconciliation for the removed "Psychology is trader-wide" scoping:
+            # legacy rows persisted with account_id=None / scope_key="trader" for psychology
+            # must be resolved to the active account, or the now account-scoped code paths
+            # would either crash on a None account_id or silently orphan prior evidence.
+            active_account_id = settings.active_mt5_account_id
+            if active_account_id is not None:
+                stale_focus_rows = session.scalars(
+                    select(FrameworkFocus).where(
+                        FrameworkFocus.pillar == "psychology", FrameworkFocus.account_id.is_(None), FrameworkFocus.status == "active"
+                    )
+                ).all()
+                for row in stale_focus_rows:
+                    row.status = "abandoned"
+                    row.resolution_note = "Superseded: Psychology coaching focuses are now scoped to one account instead of combined across all accounts."
+                    row.resolved_at = datetime.now(timezone.utc).isoformat()
+                stale_roadmap_rows = session.scalars(
+                    select(PillarRoadmapEvidence).where(
+                        PillarRoadmapEvidence.pillar == "psychology", PillarRoadmapEvidence.scope_key == "trader"
+                    )
+                ).all()
+                for row in stale_roadmap_rows:
+                    row.scope_key = f"account:{active_account_id}"
 
     def _require_clean_framework_schema(self) -> None:
         """Greenfield-only persistence: an old database must be reset, never migrated."""
@@ -1226,6 +1253,7 @@ class SQLiteJournalRepository:
             session.execute(delete(LivePosition).where(LivePosition.mt5_account_id == account_id))
             session.execute(delete(LivePositionSnapshot).where(LivePositionSnapshot.mt5_account_id == account_id))
             session.execute(delete(AccountRiskPolicy).where(AccountRiskPolicy.mt5_account_id == account_id))
+            session.execute(delete(FrameworkFocus).where(FrameworkFocus.account_id == account_id))
             settings = session.get(JournalSettings, 1)
             if settings is not None and settings.active_mt5_account_id == account_id:
                 settings.active_mt5_account_id = None
@@ -2338,33 +2366,30 @@ class SQLiteJournalRepository:
 
     def list_pillar_roadmap_evidence(self, account_id: int) -> list[PillarRoadmapEvidenceView]:
         with self._sessions() as session:
-            account_scope = self._roadmap_scope_key("risk", account_id)
+            account_scope = self._roadmap_scope_key(account_id)
             rows = session.scalars(
                 select(PillarRoadmapEvidence)
-                .where(
-                    ((PillarRoadmapEvidence.pillar.in_(("risk", "system"))) & (PillarRoadmapEvidence.scope_key == account_scope))
-                    | ((PillarRoadmapEvidence.pillar == "psychology") & (PillarRoadmapEvidence.scope_key == "trader"))
-                )
+                .where(PillarRoadmapEvidence.scope_key == account_scope)
                 .order_by(PillarRoadmapEvidence.pillar, PillarRoadmapEvidence.level, PillarRoadmapEvidence.item_key)
             ).all()
             return [PillarRoadmapEvidenceView(row.scope_key, row.pillar, row.level, row.item_key, row.completed, row.evidence_note, row.updated_at) for row in rows]
 
-    def get_active_framework_focus(self) -> FrameworkFocusView | None:
+    def get_active_framework_focus(self, account_id: int) -> FrameworkFocusView | None:
         with self._sessions() as session:
-            row = session.scalar(select(FrameworkFocus).where(FrameworkFocus.scope_key == "trader", FrameworkFocus.status == "active"))
+            row = session.scalar(select(FrameworkFocus).where(FrameworkFocus.account_id == account_id, FrameworkFocus.status == "active"))
             return None if row is None else self._to_framework_focus_view(row)
 
-    def list_framework_focuses(self) -> list[FrameworkFocusView]:
+    def list_framework_focuses(self, account_id: int) -> list[FrameworkFocusView]:
         with self._sessions() as session:
             rows = session.scalars(
                 select(FrameworkFocus)
-                .where(FrameworkFocus.scope_key == "trader")
+                .where(FrameworkFocus.account_id == account_id)
                 .order_by(FrameworkFocus.created_at.desc(), FrameworkFocus.id.desc())
             ).all()
             return [self._to_framework_focus_view(row) for row in rows]
 
     def save_framework_focus(
-        self, *, account_id: int | None, pillar: str, metric_kind: str, metric_code: str | None,
+        self, *, account_id: int, pillar: str, metric_kind: str, metric_code: str | None,
         hypothesis: str, action_text: str, baseline_value: str | None, target_value: str, target_reviews: int,
         starting_manual_reviews: int, source: str = "manual", coach_reason: str | None = None,
     ) -> FrameworkFocusView:
@@ -2380,13 +2405,13 @@ class SQLiteJournalRepository:
             raise ValueError("Focus sample must be 5, 10, or 20 reviewed trades")
         if source not in {"manual", "coach"}:
             raise ValueError("Unknown framework focus source")
-        if pillar in {"risk", "system"} and account_id is None:
-            raise ValueError("A Risk or Trading system focus needs an account")
+        if account_id is None:
+            raise ValueError("A framework focus needs an account")
         with self._sessions.begin() as session:
-            if session.scalar(select(FrameworkFocus).where(FrameworkFocus.scope_key == "trader", FrameworkFocus.status == "active")) is not None:
+            if session.scalar(select(FrameworkFocus).where(FrameworkFocus.account_id == account_id, FrameworkFocus.status == "active")) is not None:
                 raise ValueError("Resolve the active framework focus before starting another")
             row = FrameworkFocus(
-                scope_key="trader", account_id=account_id if pillar in {"risk", "system"} else None, pillar=pillar,
+                scope_key="trader", account_id=account_id, pillar=pillar,
                 metric_kind=metric_kind, metric_code=metric_code, hypothesis=self._required_text(hypothesis, "Focus hypothesis"),
                 action_text=self._required_text(action_text, "Focus action"), baseline_value=baseline_value,
                 target_value=target_value, target_reviews=target_reviews, starting_manual_reviews=starting_manual_reviews,
@@ -2426,15 +2451,15 @@ class SQLiteJournalRepository:
         )
 
     def save_pillar_roadmap_evidence(
-        self, *, account_id: int | None = None, pillar: str, level: int, item_key: str, completed: bool, evidence_note: str | None
+        self, *, account_id: int, pillar: str, level: int, item_key: str, completed: bool, evidence_note: str | None
     ) -> PillarRoadmapEvidenceView:
         if pillar not in {"psychology", "risk", "system"} or level not in {1, 2, 3, 4, 5}:
             raise ValueError("Unknown pillar roadmap item")
         if completed and not self._optional_text(evidence_note):
             raise ValueError("An evidence note is required before completing a roadmap item")
-        if pillar in {"risk", "system"} and account_id is None:
-            raise ValueError("An account is required for Risk or Trading system roadmap evidence")
-        scope_key = self._roadmap_scope_key(pillar, account_id)
+        if account_id is None:
+            raise ValueError("An account is required for roadmap evidence")
+        scope_key = self._roadmap_scope_key(account_id)
         with self._sessions.begin() as session:
             row = session.scalar(
                 select(PillarRoadmapEvidence).where(
@@ -2455,8 +2480,8 @@ class SQLiteJournalRepository:
             return PillarRoadmapEvidenceView(row.scope_key, row.pillar, row.level, row.item_key, row.completed, row.evidence_note, row.updated_at)
 
     @staticmethod
-    def _roadmap_scope_key(pillar: str, account_id: int | None) -> str:
-        return "trader" if pillar == "psychology" else f"account:{account_id}"
+    def _roadmap_scope_key(account_id: int) -> str:
+        return f"account:{account_id}"
 
     def latest_mt5_import_hash(self, *, login: str, broker_server: str, source_file_path: str) -> str | None:
         with self._sessions() as session:
