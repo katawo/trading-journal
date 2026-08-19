@@ -32,6 +32,25 @@ def write_auto_export(path: Path) -> None:
         writer.writerow(row)
 
 
+def _review_filter_checkboxes(app):
+    return {
+        "needs_approval": next(item for item in app.checkbox if item.label.startswith("Requires review")),
+        "auto_reviewed": next(item for item in app.checkbox if item.label.startswith("Auto-reviewed")),
+        "manual_reviewed": next(item for item in app.checkbox if item.label.startswith("Reviewed (")),
+    }
+
+
+def _set_review_filters(app, *, needs_approval=None, auto_reviewed=None, manual_reviewed=None):
+    checkboxes = _review_filter_checkboxes(app)
+    if needs_approval is not None:
+        checkboxes["needs_approval"].set_value(needs_approval)
+    if auto_reviewed is not None:
+        checkboxes["auto_reviewed"].set_value(auto_reviewed)
+    if manual_reviewed is not None:
+        checkboxes["manual_reviewed"].set_value(manual_reviewed)
+    app.run()
+
+
 def test_app_renders_local_mt5_import_entrypoint(monkeypatch, tmp_path):
     monkeypatch.setenv("TRADING_JOURNAL_DB", str(tmp_path / "journal.db"))
 
@@ -1000,7 +1019,7 @@ def test_register_flags_the_specific_hard_blocked_pillar(monkeypatch, tmp_path):
 
     app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
     app.switch_page("app_pages/bearings_review.py").run()
-    next(item for item in app.segmented_control if item.label == "Review status").set_value("all").run()
+    _set_review_filters(app, auto_reviewed=True, manual_reviewed=True)
 
     assert not app.exception
     assert any("R 100% ⚠" in item.value for item in app.caption)
@@ -1072,9 +1091,13 @@ def test_framework_renders_a_filtered_review_register(monkeypatch, tmp_path):
     app.switch_page("app_pages/bearings_review.py").run()
 
     assert not app.exception
-    review_filter = next(item for item in app.segmented_control if item.label == "Review status")
-    assert review_filter.value == "needs_approval"
-    assert review_filter.options == ["Requires review (1)", "Auto-reviewed (0)", "Reviewed (0)", "All (1)"]
+    review_filters = _review_filter_checkboxes(app)
+    assert review_filters["needs_approval"].value is True
+    assert review_filters["needs_approval"].label == "Requires review (1)"
+    assert review_filters["auto_reviewed"].value is False
+    assert review_filters["auto_reviewed"].label == "Auto-reviewed (0)"
+    assert review_filters["manual_reviewed"].value is False
+    assert review_filters["manual_reviewed"].label == "Reviewed (0)"
     assert any(item.label == "Show failed only" for item in app.checkbox)
     assert any(item.label.startswith("Select LT-") for item in app.checkbox)
     assert any(item.label == "Review" for item in app.button)
@@ -1083,7 +1106,7 @@ def test_framework_renders_a_filtered_review_register(monkeypatch, tmp_path):
     assert not any(item.label == "Closed MT5 position" for item in app.selectbox)
     assert not any(item.label == "Save review" for item in app.button)
 
-    review_filter.set_value("manual_reviewed").run()
+    _set_review_filters(app, needs_approval=False, manual_reviewed=True)
 
     assert any("No reviewed trades" in item.value for item in app.info)
 
@@ -1110,7 +1133,9 @@ def test_framework_renders_a_filtered_review_register(monkeypatch, tmp_path):
     app.run()
 
     assert not app.exception
-    assert next(item for item in app.segmented_control if item.label == "Review status").value == "manual_reviewed"
+    review_filters = _review_filter_checkboxes(app)
+    assert review_filters["manual_reviewed"].value is True
+    assert review_filters["needs_approval"].value is False
     assert any(item.label == "Review" for item in app.button)
 
     next(item for item in app.checkbox if item.label == "Show failed only").set_value(True).run()
@@ -1177,15 +1202,19 @@ def test_approving_within_policy_evidence_moves_the_trade_from_auto_reviewed_to_
 
     app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
     app.switch_page("app_pages/bearings_review.py").run()
-    next(item for item in app.segmented_control if item.label == "Review status").set_value("all").run()
+    _set_review_filters(app, auto_reviewed=True, manual_reviewed=True)
 
-    review_filter = next(item for item in app.segmented_control if item.label == "Review status")
-    assert review_filter.options == ["Requires review (0)", "Auto-reviewed (1)", "Reviewed (0)", "All (1)"]
+    review_filters = _review_filter_checkboxes(app)
+    assert review_filters["needs_approval"].label == "Requires review (0)"
+    assert review_filters["auto_reviewed"].label == "Auto-reviewed (1)"
+    assert review_filters["manual_reviewed"].label == "Reviewed (0)"
 
     next(item for item in app.button if item.label == "Approve").click().run()
 
-    review_filter = next(item for item in app.segmented_control if item.label == "Review status")
-    assert review_filter.options == ["Requires review (0)", "Auto-reviewed (0)", "Reviewed (1)", "All (1)"]
+    review_filters = _review_filter_checkboxes(app)
+    assert review_filters["needs_approval"].label == "Requires review (0)"
+    assert review_filters["auto_reviewed"].label == "Auto-reviewed (0)"
+    assert review_filters["manual_reviewed"].label == "Reviewed (1)"
     active = repository.list_active_post_trade_assessments(account.id)[0]
     assert active.method == "auto"
     assert active.risk_policy_state == "within_policy"
@@ -1251,10 +1280,12 @@ def test_bulk_quick_reviewing_selected_trades_requires_confirmation(monkeypatch,
 
     app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
     app.switch_page("app_pages/bearings_review.py").run()
-    next(item for item in app.segmented_control if item.label == "Review status").set_value("auto_reviewed").run()
+    _set_review_filters(app, needs_approval=False, auto_reviewed=True)
 
-    review_filter = next(item for item in app.segmented_control if item.label == "Review status")
-    assert review_filter.options == ["Requires review (0)", "Auto-reviewed (2)", "Reviewed (0)", "All (2)"]
+    review_filters = _review_filter_checkboxes(app)
+    assert review_filters["needs_approval"].label == "Requires review (0)"
+    assert review_filters["auto_reviewed"].label == "Auto-reviewed (2)"
+    assert review_filters["manual_reviewed"].label == "Reviewed (0)"
     for checkbox in app.checkbox:
         if checkbox.label.startswith("Select LT-"):
             checkbox.set_value(True).run()
@@ -1335,7 +1366,7 @@ def test_reopening_review_after_upgrading_an_auto_review_does_not_crash(monkeypa
 
     app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
     app.switch_page("app_pages/bearings_review.py").run()
-    next(item for item in app.segmented_control if item.label == "Review status").set_value("all").run()
+    _set_review_filters(app, auto_reviewed=True, manual_reviewed=True)
     next(item for item in app.button if item.label == "Approve").click().run()
 
     next(item for item in app.button if item.label == "Review").click().run()

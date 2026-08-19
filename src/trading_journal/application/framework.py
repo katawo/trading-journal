@@ -40,7 +40,7 @@ PERIOD_WEIGHTS = {
 }
 CRITICAL_VIOLATIONS = {
     "psychology": frozenset({"revenge", "emotional_sizing", "post_loss_reset", "oversized_revenge"}),
-    "risk": frozenset({"daily_limit", "weekly_limit", "drawdown_limit", "open_exposure", "correlation_exposure", "oversized_revenge", "stop_widened", "shutdown_breach"}),
+    "risk": frozenset({"daily_limit", "weekly_limit", "drawdown_limit", "open_exposure", "correlation_exposure", "oversized_revenge", "stop_widened", "shutdown_breach", "no_stop_loss"}),
     "system": frozenset({"mandatory_setup_absent"}),
 }
 COMPONENT_CODES = {

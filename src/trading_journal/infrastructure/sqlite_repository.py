@@ -42,14 +42,20 @@ VIOLATION_CODES = frozenset(
         "revenge",
         "emotional_sizing",
         "post_loss_reset",
+        "overconfidence_streak",
+        "ignored_trade_plan",
         "daily_limit",
         "weekly_limit",
         "drawdown_limit",
         "open_exposure",
         "correlation_exposure",
         "stop_widened",
+        "no_stop_loss",
+        "overtrading_positions",
         "mandatory_setup_absent",
         "shutdown_breach",
+        "context_misread",
+        "premature_exit",
     }
 )
 HARD_RULE_CODES = frozenset(

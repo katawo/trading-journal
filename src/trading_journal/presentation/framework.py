@@ -61,14 +61,20 @@ VIOLATION_LABELS = {
     "revenge": "Revenge behavior",
     "emotional_sizing": "Emotional position sizing",
     "post_loss_reset": "Poor post-loss reset",
+    "overconfidence_streak": "Overconfidence after a winning streak",
+    "ignored_trade_plan": "Deviated from the trade plan",
     "daily_limit": "Daily limit issue",
     "weekly_limit": "Weekly limit issue",
     "drawdown_limit": "Drawdown limit issue",
     "open_exposure": "Open exposure issue",
     "correlation_exposure": "Correlation exposure issue",
     "stop_widened": "Stop widened",
+    "no_stop_loss": "No stop loss placed",
+    "overtrading_positions": "Too many concurrent open positions",
     "mandatory_setup_absent": "Mandatory setup absent",
     "shutdown_breach": "Traded after hard shutdown",
+    "context_misread": "Misread higher-timeframe context",
+    "premature_exit": "Exited before the plan's exit criteria",
 }
 HARD_RULE_LABELS = {
     "oversized_revenge": "Intentional oversized revenge trade",
@@ -748,6 +754,7 @@ def _render_post_trade_review_dialog(repo: SQLiteJournalRepository, account: Acc
             "Mark all criteria as Pass",
             key=f"assessment-{trade.id}-pass-all",
             icon=":material/done_all:",
+            type="primary",
             on_click=_set_pillar_grades_to_pass,
             args=(trade.id, ASSESSMENT_CRITERIA),
         )
@@ -759,6 +766,7 @@ def _render_post_trade_review_dialog(repo: SQLiteJournalRepository, account: Acc
                 tr("Mark {pillar} as Pass", pillar=tr(title)),
                 key=f"assessment-{trade.id}-{title}-pass-all",
                 icon=":material/done_all:",
+                type="primary",
                 on_click=_set_pillar_grades_to_pass,
                 args=(trade.id, criteria),
             )
@@ -1123,6 +1131,12 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
     )
     active_policy = repo.get_active_risk_policy(account.id)
     ordered = sorted(trades, key=lambda item: (item.exit_time, item.id), reverse=True)
+    review_kind_to_filter_key = {
+        "needs_approval": "needs_approval",
+        "auto_review": "auto_reviewed",
+        "approved_auto_review": "manual_reviewed",
+        "manual_review": "manual_reviewed",
+    }
     groups = {
         "needs_approval": [(trade, scores[trade.id]) for trade in ordered if scores[trade.id].review_kind == "needs_approval"],
         "auto_reviewed": [(trade, scores[trade.id]) for trade in ordered if scores[trade.id].review_kind == "auto_review"],
@@ -1131,31 +1145,39 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
             for trade in ordered
             if scores[trade.id].review_kind in {"approved_auto_review", "manual_review"}
         ],
-        "all": [(trade, scores[trade.id]) for trade in ordered],
     }
     _prepare_logical_trade_register_state(account.id)
+    filter_order = ("needs_approval", "auto_reviewed", "manual_reviewed")
     filter_names = {
         "needs_approval": "Requires review",
         "auto_reviewed": "Auto-reviewed",
         "manual_reviewed": "Reviewed",
-        "all": "All",
     }
     filter_labels = {key: f"{tr(filter_names[key])} ({len(items)})" for key, items in groups.items()}
-    filter_value = st.segmented_control(
-        "Review status", list(groups),
-        format_func=filter_labels.get,
-        default="needs_approval", required=True, width="content", key=f"review-filter-{account.id}",
-    )
-    selected_group = filter_value
+    with st.container(horizontal=True, gap="small"):
+        checked_by_key = {
+            key: st.checkbox(
+                filter_labels[key],
+                value=(key == "needs_approval"),
+                key=f"review-filter-{key}-{account.id}",
+            )
+            for key in filter_order
+        }
+    selected_keys = tuple(key for key in filter_order if checked_by_key[key])
     failed_only = st.checkbox("Show failed only", key=f"review-failed-only-{account.id}")
     filter_key = f"logical-trade-selection-filter-{account.id}"
-    current_filter = (selected_group, failed_only)
+    current_filter = (selected_keys, failed_only)
     previous_filter = st.session_state.get(filter_key)
     if previous_filter is not None and previous_filter != current_filter:
         _clear_logical_trade_selection(account.id)
         st.session_state[_logical_trade_page_key(account.id)] = 1
     st.session_state[filter_key] = current_filter
-    visible = groups[selected_group]
+    selected_keys_set = set(selected_keys)
+    visible = [
+        (trade, scores[trade.id])
+        for trade in ordered
+        if review_kind_to_filter_key.get(scores[trade.id].review_kind) in selected_keys_set
+    ]
     if failed_only:
         visible = [(trade, score) for trade, score in visible if score.process_status == "FAIL"]
     visible_by_id = {trade.id: trade for trade, _ in visible}
@@ -1199,21 +1221,22 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
             disabled=selected_reviewable_count == 0,
             help="Review selected Awaiting approval or Requires review trades in one confirmed action.",
         )
+        auto_reviewed_visible = [(trade, score) for trade, score in visible if score.review_kind == "auto_review"]
         bulk_approve = (
             st.button(
-                tr("Approve all visible within-policy ({count})", count=len(visible)),
+                tr("Approve all visible within-policy ({count})", count=len(auto_reviewed_visible)),
                 key=f"bulk-approve-auto-review-{account.id}",
                 icon=":material/done_all:",
                 help="Approve every within-policy auto-review trade currently shown by this filter, one click for all of them.",
             )
-            if selected_group == "auto_reviewed" and visible
+            if "auto_reviewed" in selected_keys_set and auto_reviewed_visible
             else False
         )
     if bulk_approve:
         approved_count = 0
         skipped_count = 0
         with st.spinner(tr("Saving…")):
-            for trade, score in visible:
+            for trade, score in auto_reviewed_visible:
                 try:
                     repo.approve_auto_review(
                         account_id=account.id, trade_id=trade.id, risk_policy_id=active_policy.id if active_policy else None,
@@ -1269,11 +1292,14 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
             args=(account.id, 1, page_count),
         )
     if not visible:
-        status_text = tr(filter_names[selected_group]).casefold()
-        if failed_only:
-            st.info(tr("No {status} ({qualifier}) trades for this account.", status=status_text, qualifier=tr("failed")))
+        if not selected_keys:
+            st.info(tr("Select at least one review status filter above to see trades."))
         else:
-            st.info(tr("No {status} trades for this account.", status=status_text))
+            status_text = " / ".join(tr(filter_names[key]).casefold() for key in selected_keys)
+            if failed_only:
+                st.info(tr("No {status} ({qualifier}) trades for this account.", status=status_text, qualifier=tr("failed")))
+            else:
+                st.info(tr("No {status} trades for this account.", status=status_text))
     else:
         position_by_id = {trade.id: index for index, (trade, _) in enumerate(visible)}
         start = (current_page - 1) * REVIEW_PAGE_SIZE
