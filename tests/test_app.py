@@ -10,7 +10,7 @@ from streamlit.testing.v1 import AppTest
 
 from trading_journal.application.display_time import format_relative_time
 from trading_journal.domain.models import MT5PositionExport
-from trading_journal.infrastructure.sqlite_repository import SQLiteJournalRepository
+from trading_journal.infrastructure.sqlite_repository import ASSESSMENT_CRITERIA, SQLiteJournalRepository
 
 
 def write_auto_export(path: Path) -> None:
@@ -73,6 +73,90 @@ def test_app_renders_local_mt5_import_entrypoint(monkeypatch, tmp_path):
 
     assert journal_app.application_version() == "0.1.12"
     assert journal_app.supported_mt5_schema_versions() == "5"
+
+
+def test_database_change_token_includes_sqlite_wal_changes(monkeypatch, tmp_path):
+    monkeypatch.syspath_prepend(str(Path(__file__).parents[1]))
+    import app as journal_app
+
+    database_path = tmp_path / "journal.db"
+    wal_path = tmp_path / "journal.db-wal"
+    database_path.write_bytes(b"database")
+    wal_path.write_bytes(b"wal")
+    database_path.touch()
+    before = journal_app._database_change_token(database_path)
+
+    wal_path.write_bytes(b"wal changed")
+    after = journal_app._database_change_token(database_path)
+
+    assert after != before
+    assert after[:2] == before[:2]
+    assert after[3] > before[3]
+
+
+def test_review_save_immediately_invalidates_the_menu_badge_count(monkeypatch, tmp_path):
+    monkeypatch.syspath_prepend(str(Path(__file__).parents[1]))
+    import app as journal_app
+
+    database_path = tmp_path / "journal.db"
+    repository = SQLiteJournalRepository(database_path)
+    repository.initialize()
+    repository.configure_journal(reporting_time_basis="utc")
+    repository.register_mt5_account(
+        display_name="Primary",
+        login="123456",
+        broker_server="DemoBroker-Live",
+        account_currency="USD",
+        export_file_path="",
+    )
+    account = repository.find_active_mt5_account("123456", "DemoBroker-Live")
+    assert account is not None
+    repository.upsert_mt5_positions(
+        account.id,
+        [
+            MT5PositionExport(
+                schema_version=1,
+                account_login="123456",
+                broker_server="DemoBroker-Live",
+                account_currency="USD",
+                position_id="badge-review",
+                symbol="XAUUSD",
+                direction="long",
+                entry_time="2026-08-19T08:00:00+00:00",
+                exit_time="2026-08-19T09:00:00+00:00",
+                entry_price="3300",
+                exit_price="3310",
+                volume="0.01",
+                gross_pnl="10",
+                commission="0",
+                swap="0",
+                fees="0",
+                net_pnl="10",
+            )
+        ],
+        "positions.csv",
+        "badge-review-test",
+    )
+    trade = repository.list_closed_trades_for_review(account.id)[0]
+    before = journal_app._database_change_token(database_path)
+    assert journal_app._cached_review_queue_count(str(database_path), before, account.id) == 1
+
+    repository.save_post_trade_assessment(
+        account_id=account.id,
+        trade_id=trade.id,
+        risk_policy_id=None,
+        strategy_profile_id=repository.get_account_strategy(account.id).id,
+        criterion_grades={criterion: "pass" for criterion in ASSESSMENT_CRITERIA},
+        violation_codes=(),
+        hard_rule_codes=(),
+        declared_actual_risk_amount=None,
+        post_review_note="Reviewed for menu badge invalidation.",
+        corrective_action=None,
+    )
+
+    after = journal_app._database_change_token(database_path)
+    assert after != before
+    assert journal_app._cached_review_queue_count(str(database_path), after, account.id) == 0
 
 
 def test_app_requires_a_reset_for_legacy_monthly_target_data(monkeypatch, tmp_path):
@@ -1032,6 +1116,9 @@ def test_register_flags_the_specific_hard_blocked_pillar(monkeypatch, tmp_path):
 
 
 def test_framework_renders_a_filtered_review_register(monkeypatch, tmp_path):
+    # Saving the assessment can create an alert after the badge cache is
+    # invalidated; AppTest cannot mount the v2 browser component.
+    monkeypatch.setattr("trading_journal.presentation.global_alert_bubble.render_global_alert_bubble", lambda **kwargs: None)
     database_path = tmp_path / "journal.db"
     repository = SQLiteJournalRepository(database_path)
     repository.initialize()
@@ -1227,6 +1314,9 @@ def test_approving_within_policy_evidence_moves_the_trade_from_auto_reviewed_to_
 
 
 def test_bulk_quick_reviewing_selected_trades_requires_confirmation(monkeypatch, tmp_path):
+    # This flow can create an alert after the badge cache is invalidated. The
+    # v2 browser component is not supported by AppTest's bare execution mode.
+    monkeypatch.setattr("trading_journal.presentation.global_alert_bubble.render_global_alert_bubble", lambda **kwargs: None)
     database_path = tmp_path / "journal.db"
     repository = SQLiteJournalRepository(database_path)
     repository.initialize()
@@ -1309,6 +1399,9 @@ def test_bulk_quick_reviewing_selected_trades_requires_confirmation(monkeypatch,
 
 
 def test_reopening_review_after_upgrading_an_auto_review_does_not_crash(monkeypatch, tmp_path):
+    # This flow can create an alert after the badge cache is invalidated. The
+    # v2 browser component is not supported by AppTest's bare execution mode.
+    monkeypatch.setattr("trading_journal.presentation.global_alert_bubble.render_global_alert_bubble", lambda **kwargs: None)
     database_path = tmp_path / "journal.db"
     repository = SQLiteJournalRepository(database_path)
     repository.initialize()

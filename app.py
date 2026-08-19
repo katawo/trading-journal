@@ -528,9 +528,9 @@ def render_build_info() -> None:
 
 
 @st.cache_data(ttl=_ANALYTICS_CACHE_TTL_SECONDS, max_entries=32, show_spinner=False)
-def _cached_global_framework_alerts(database_path: str, database_mtime_ns: int) -> tuple[tuple[AccountListItem, object], ...]:
+def _cached_global_framework_alerts(database_path: str, database_change_token: tuple[int, int, int, int]) -> tuple[tuple[AccountListItem, object], ...]:
     """Cache cross-account analytics until the local database changes."""
-    del database_mtime_ns
+    del database_change_token
     repo = SQLiteJournalRepository(database_path)
     return tuple(
         (account, alert)
@@ -540,27 +540,34 @@ def _cached_global_framework_alerts(database_path: str, database_mtime_ns: int) 
 
 
 @st.cache_data(ttl=_ANALYTICS_CACHE_TTL_SECONDS, max_entries=32, show_spinner=False)
-def _cached_review_queue_count(database_path: str, database_mtime_ns: int, account_id: int) -> int:
+def _cached_review_queue_count(database_path: str, database_change_token: tuple[int, int, int, int], account_id: int) -> int:
     """Cache the active account's pending-review count until the local database changes."""
-    del database_mtime_ns
+    del database_change_token
     repo = SQLiteJournalRepository(database_path)
     return sum(score.review_kind == "needs_approval" for score in FrameworkService(repo).trade_process_scores(account_id))
 
 
 @st.cache_data(ttl=_ANALYTICS_CACHE_TTL_SECONDS, max_entries=32, show_spinner=False)
-def _cached_focus_ready_to_evaluate(database_path: str, database_mtime_ns: int, account_id: int) -> bool:
+def _cached_focus_ready_to_evaluate(database_path: str, database_change_token: tuple[int, int, int, int], account_id: int) -> bool:
     """Cache whether the active account's coaching focus is ready to resolve."""
-    del database_mtime_ns
+    del database_change_token
     repo = SQLiteJournalRepository(database_path)
     _, progress = FrameworkService(repo).focus_progress(account_id)
     return bool(progress and progress.ready_to_evaluate)
 
 
-def _database_mtime_ns(database_path: Path) -> int:
-    try:
-        return database_path.stat().st_mtime_ns
-    except FileNotFoundError:
-        return 0
+def _database_change_token(database_path: Path) -> tuple[int, int, int, int]:
+    """Track committed SQLite changes in both the main file and its WAL."""
+
+    values: list[int] = []
+    for path in (database_path, Path(f"{database_path}-wal")):
+        try:
+            stat = path.stat()
+        except FileNotFoundError:
+            values.extend((0, 0))
+        else:
+            values.extend((stat.st_mtime_ns, stat.st_size))
+    return values[0], values[1], values[2], values[3]
 
 
 def render_global_framework_alert_bubble(repo: SQLiteJournalRepository) -> None:
@@ -568,7 +575,7 @@ def render_global_framework_alert_bubble(repo: SQLiteJournalRepository) -> None:
     severity_order = {"critical": 0, "warning": 1}
     database_path = getattr(repo, "database_path", None)
     source = (
-        _cached_global_framework_alerts(str(database_path), _database_mtime_ns(database_path))
+        _cached_global_framework_alerts(str(database_path), _database_change_token(database_path))
         if database_path is not None
         else tuple(
             (account, alert)
@@ -634,12 +641,12 @@ def repository() -> SQLiteJournalRepository:
 @st.cache_data(ttl=_ANALYTICS_CACHE_TTL_SECONDS, max_entries=128, show_spinner=False)
 def _cached_dashboard_report(
     database_path: str,
-    database_mtime_ns: int,
+    database_change_token: tuple[int, int, int, int],
     account_id: int,
     start_date: str,
     end_date: str,
 ):
-    del database_mtime_ns
+    del database_change_token
     return DashboardService(SQLiteJournalRepository(database_path)).build_report(
         account_id=account_id,
         start_date=start_date,
@@ -650,25 +657,28 @@ def _cached_dashboard_report(
 def build_dashboard_report(repo: SQLiteJournalRepository, *, account_id: int, start_date: str, end_date: str):
     return _cached_dashboard_report(
         str(repo.database_path),
-        _database_mtime_ns(repo.database_path),
+        _database_change_token(repo.database_path),
         account_id,
         start_date,
         end_date,
     )
 
 
-def _render_sync_results(results: list[MT5AutoSyncResult], *, notice_key: str | None = None) -> None:
+def _render_sync_results(results: list[MT5AutoSyncResult], *, notice_key: str | None = None) -> bool:
+    """Render sync state and report whether a newly imported batch needs an app rerun."""
+
     st.session_state["auto_sync_results"] = results
     render_sync_failures(results, prefix="MT5 auto-sync needs attention")
     imported = [item for item in results if item.status == "imported"]
     if not imported or notice_key is None:
-        return
+        return False
     if st.session_state.get("auto_sync_notice_key") == notice_key:
-        return
+        return False
     st.session_state["auto_sync_notice_key"] = notice_key
     created = sum(item.created_count for item in imported)
     updated = sum(item.updated_count for item in imported)
     st.session_state["auto_sync_notice"] = f"Auto-imported {created} created and {updated} updated MT5 position(s)."
+    return True
 
 
 @st.fragment(run_every=_AUTO_SYNC_INTERVAL_SECONDS)
@@ -679,7 +689,8 @@ def _monitor_local_mt5_exports(repo: SQLiteJournalRepository) -> None:
         for item in results
         if item.status == "imported"
     )
-    _render_sync_results(results, notice_key=notice_key or None)
+    if _render_sync_results(results, notice_key=notice_key or None):
+        st.rerun()
 
 
 @st.fragment(run_every=_FRESHNESS_INTERVAL_SECONDS)
@@ -687,7 +698,8 @@ def _monitor_desktop_mt5_exports() -> None:
     paths = desktop_runtime_paths()
     status = DesktopSyncStatusStore(paths.sync_status_path)
     results = status.results()
-    _render_sync_results(results, notice_key=status.last_import_at().isoformat() if status.last_import_at() else None)
+    if _render_sync_results(results, notice_key=status.last_import_at().isoformat() if status.last_import_at() else None):
+        st.rerun()
     if error := status.worker_error():
         st.error(f"MT5 desktop sync needs attention: {error}")
 
@@ -763,7 +775,8 @@ def render_manual_sync_button(repo: SQLiteJournalRepository, *, key: str) -> Non
     if imported:
         created = sum(item.created_count for item in imported)
         updated = sum(item.updated_count for item in imported)
-        st.success(f"Manual sync imported {created} created and {updated} updated MT5 position(s).")
+        st.session_state["auto_sync_notice"] = f"Manual sync imported {created} created and {updated} updated MT5 position(s)."
+        st.rerun()
     elif not failures and waiting:
         st.info(tr("MT5 sync is waiting: ") + "; ".join(item.message or item.account_name for item in waiting))
     elif not failures and results:
@@ -1921,13 +1934,13 @@ def main() -> None:
     ongoing_count = 0 if active_account is None else len(repo.list_live_positions(active_account.id))
     database_path = getattr(repo, "database_path", None)
     if active_account is not None and database_path is not None:
-        mtime = _database_mtime_ns(database_path)
-        review_count = _cached_review_queue_count(str(database_path), mtime, active_account.id)
+        change_token = _database_change_token(database_path)
+        review_count = _cached_review_queue_count(str(database_path), change_token, active_account.id)
         monitor_alert_count = sum(
             account.id == active_account.id and alert.severity in {"critical", "warning"}
-            for account, alert in _cached_global_framework_alerts(str(database_path), mtime)
+            for account, alert in _cached_global_framework_alerts(str(database_path), change_token)
         )
-        focus_ready = _cached_focus_ready_to_evaluate(str(database_path), mtime, active_account.id)
+        focus_ready = _cached_focus_ready_to_evaluate(str(database_path), change_token, active_account.id)
     review_title = f"{tr('Review')} ({review_count})" if review_count else tr("Review")
     # focus_ready's "(1)" lands on Monitor, not Improve: the coaching-focus resolve UI it
     # signals only renders on the Monitor tab / Dashboard widget, never on Improve's roadmap
