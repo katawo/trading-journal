@@ -1098,7 +1098,8 @@ def test_framework_renders_a_filtered_review_register(monkeypatch, tmp_path):
     assert review_filters["auto_reviewed"].label == "Auto-reviewed (0)"
     assert review_filters["manual_reviewed"].value is False
     assert review_filters["manual_reviewed"].label == "Reviewed (0)"
-    assert any(item.label == "Show failed only" for item in app.checkbox)
+    assert not any(item.label == "Show failed only" for item in app.checkbox)
+    assert any(item.label == "Check all" for item in app.checkbox)
     assert any(item.label.startswith("Select LT-") for item in app.checkbox)
     assert any(item.label == "Review" for item in app.button)
     assert not any(item.label == "Ungroup" for item in app.button)
@@ -1138,9 +1139,9 @@ def test_framework_renders_a_filtered_review_register(monkeypatch, tmp_path):
     assert review_filters["needs_approval"].value is False
     assert any(item.label == "Review" for item in app.button)
 
-    next(item for item in app.checkbox if item.label == "Show failed only").set_value(True).run()
-
-    assert any("No reviewed (failed) trades" in item.value for item in app.info)
+    check_all = next(item for item in app.checkbox if item.label == "Check all")
+    check_all.set_value(True).run()
+    assert all(item.value for item in app.checkbox if item.label.startswith("Select LT-"))
 
 
 def test_approving_within_policy_evidence_moves_the_trade_from_auto_reviewed_to_reviewed(monkeypatch, tmp_path):
@@ -1481,9 +1482,17 @@ def test_framework_groups_positions_through_a_confirmation_step(monkeypatch, tmp
     repository.upsert_mt5_positions(account.id, positions, "positions.csv", "group-dialog")
     monkeypatch.setenv("TRADING_JOURNAL_DB", str(database_path))
 
+    check_all_app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
+    check_all_app.switch_page("app_pages/bearings_review.py").run()
+    assert len([item for item in check_all_app.checkbox if item.label.startswith("Select LT-")]) == 25
+    next(item for item in check_all_app.checkbox if item.label == "Check all").set_value(True).run()
+    assert all(item.value for item in check_all_app.checkbox if item.label.startswith("Select LT-"))
+    next(item for item in check_all_app.button if item.label == "Next").click().run()
+    assert len([item for item in check_all_app.checkbox if item.label.startswith("Select LT-")]) == 1
+    assert next(item for item in check_all_app.checkbox if item.label.startswith("Select LT-")).value is True
+
     app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
     app.switch_page("app_pages/bearings_review.py").run()
-    assert len([item for item in app.checkbox if item.label.startswith("Select LT-")]) == 25
     next(item for item in app.checkbox if item.label.startswith("Select LT-")).set_value(True).run()
     next(item for item in app.button if item.label == "Next").click().run()
 
@@ -1497,14 +1506,18 @@ def test_framework_groups_positions_through_a_confirmation_step(monkeypatch, tmp
     next(item for item in app.button if item.label == "Create new logical trade").click().run()
 
     assert not app.exception
-    assert any(item.label == "Confirm merge" for item in app.button)
-    next(item for item in app.button if item.label == "Confirm merge").click().run()
+    assert any(item.label == "Confirm & review" for item in app.button)
+    next(item for item in app.button if item.label == "Confirm & review").click().run()
 
     assert not app.exception
     grouped = repository.list_closed_trades_for_review(account.id)
     assert len(grouped) == 25
     source_group = next(item for item in grouped if item.position_count == 2)
     standalone = next(item for item in grouped if not item.is_group)
+    assert app.session_state["post-trade-review-trade-id"] == source_group.id
+    assert any(item.label == "What happened and what did you learn? *" for item in app.text_area)
+    app.session_state["post-trade-review-trade-id"] = None
+    app.run()
 
     next(item for item in app.checkbox if item.label == f"Select LT-{source_group.id}").set_value(True).run()
     next(item for item in app.checkbox if item.label == f"Select LT-{standalone.id}").set_value(True).run()
@@ -1514,7 +1527,7 @@ def test_framework_groups_positions_through_a_confirmation_step(monkeypatch, tmp
     assert any("new logical-trade ID" in item.value for item in app.caption)
     next(item for item in app.text_input if item.label == "Trade label (optional)").set_value("Extended logical trade").run()
     next(item for item in app.button if item.label == "Create new logical trade").click().run()
-    next(item for item in app.button if item.label == "Confirm merge").click().run()
+    next(item for item in app.button if item.label == "Confirm & review").click().run()
 
     assert not app.exception
     extended_trades = repository.list_closed_trades_for_review(account.id)
@@ -1522,6 +1535,9 @@ def test_framework_groups_positions_through_a_confirmation_step(monkeypatch, tmp
     extended = next(item for item in extended_trades if item.position_count == 3)
     assert extended.id not in {source_group.id, standalone.id}
     assert extended.display_label == "Extended logical trade"
+    assert app.session_state["post-trade-review-trade-id"] == extended.id
+    app.session_state["post-trade-review-trade-id"] = None
+    app.run()
     next(item for item in app.button if item.label == "Ungroup").click().run()
 
     assert not app.exception

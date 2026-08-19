@@ -474,6 +474,10 @@ def _logical_trade_selection_store_key(account_id: int) -> str:
     return f"logical-trade-selection-{account_id}"
 
 
+def _logical_trade_select_all_key(account_id: int) -> str:
+    return f"logical-trade-select-all-{account_id}"
+
+
 def _logical_trade_page_key(account_id: int) -> str:
     return f"logical-trade-page-{account_id}"
 
@@ -482,6 +486,7 @@ def _clear_logical_trade_selection(account_id: int) -> None:
     """Clear singleton-selection widgets before their next render."""
     prefix = _logical_trade_selection_prefix(account_id)
     st.session_state.pop(_logical_trade_selection_store_key(account_id), None)
+    st.session_state.pop(_logical_trade_select_all_key(account_id), None)
     for key in [key for key in st.session_state if key.startswith(prefix)]:
         st.session_state.pop(key, None)
 
@@ -500,7 +505,11 @@ def _prepare_logical_trade_register_state(account_id: int) -> None:
         st.session_state[_logical_trade_page_key(account_id)] = 1
 
 
-def _toggle_logical_trade_selection(account_id: int, logical_trade_id: int) -> None:
+def _toggle_logical_trade_selection(
+    account_id: int,
+    logical_trade_id: int,
+    visible_trade_ids: Sequence[int] = (),
+) -> None:
     selected = set(st.session_state.get(_logical_trade_selection_store_key(account_id), ()))
     checkbox_key = f"{_logical_trade_selection_prefix(account_id)}{logical_trade_id}"
     if st.session_state.get(checkbox_key, False):
@@ -508,6 +517,20 @@ def _toggle_logical_trade_selection(account_id: int, logical_trade_id: int) -> N
     else:
         selected.discard(logical_trade_id)
     st.session_state[_logical_trade_selection_store_key(account_id)] = tuple(sorted(selected))
+    if visible_trade_ids:
+        st.session_state[_logical_trade_select_all_key(account_id)] = set(visible_trade_ids).issubset(selected)
+
+
+def _toggle_all_logical_trade_selection(account_id: int, visible_trade_ids: Sequence[int]) -> None:
+    """Select or clear every trade in the current filtered register."""
+
+    select_all_key = _logical_trade_select_all_key(account_id)
+    selected = tuple(visible_trade_ids) if st.session_state.get(select_all_key, False) else ()
+    st.session_state[_logical_trade_selection_store_key(account_id)] = selected
+    prefix = _logical_trade_selection_prefix(account_id)
+    selected_set = set(selected)
+    for trade_id in visible_trade_ids:
+        st.session_state[f"{prefix}{trade_id}"] = trade_id in selected_set
 
 
 def _change_logical_trade_page(account_id: int, change: int, page_count: int) -> None:
@@ -1048,8 +1071,8 @@ def _render_logical_trade_regroup_confirmation(repo: SQLiteJournalRepository, ac
         confirm = st.button(
             {
                 "disband": "Confirm disband",
-                "merge": "Confirm merge",
-            }.get(confirmation["mode"], "Confirm regroup"),
+                "merge": "Confirm & review",
+            }.get(confirmation["mode"], "Confirm & review"),
             type="primary",
             icon=":material/check:",
         )
@@ -1087,6 +1110,9 @@ def _render_logical_trade_regroup_confirmation(repo: SQLiteJournalRepository, ac
         st.error(str(error))
         return
     st.session_state["post-trade-review-notice"] = notice
+    if confirmation["mode"] != "disband" and result.logical_trade_id is not None:
+        st.session_state["post-trade-review-trade-id"] = result.logical_trade_id
+        st.session_state["post-trade-review-queue"] = ()
     queue_toast(tr(notice))
     _defer_logical_trade_selection_reset(account.id)
     _clear_group_dialog()
@@ -1166,9 +1192,8 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
             for key in filter_order
         }
     selected_keys = tuple(key for key in filter_order if checked_by_key[key])
-    failed_only = st.checkbox("Show failed only", key=f"review-failed-only-{account.id}")
     filter_key = f"logical-trade-selection-filter-{account.id}"
-    current_filter = (selected_keys, failed_only)
+    current_filter = selected_keys
     previous_filter = st.session_state.get(filter_key)
     if previous_filter is not None and previous_filter != current_filter:
         _clear_logical_trade_selection(account.id)
@@ -1180,8 +1205,6 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
         for trade in ordered
         if review_kind_to_filter_key.get(scores[trade.id].review_kind) in selected_keys_set
     ]
-    if failed_only:
-        visible = [(trade, score) for trade, score in visible if score.process_status == "FAIL"]
     visible_by_id = {trade.id: trade for trade, _ in visible}
     selected_logical_trade_ids = tuple(
         trade_id
@@ -1189,6 +1212,16 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
         if trade_id in visible_by_id
     )
     st.session_state[_logical_trade_selection_store_key(account.id)] = selected_logical_trade_ids
+    visible_trade_ids = tuple(visible_by_id)
+    select_all_key = _logical_trade_select_all_key(account.id)
+    st.session_state[select_all_key] = bool(visible_trade_ids) and len(selected_logical_trade_ids) == len(visible_trade_ids)
+    st.checkbox(
+        "Check all",
+        key=select_all_key,
+        disabled=not visible_trade_ids,
+        on_change=_toggle_all_logical_trade_selection,
+        args=(account.id, visible_trade_ids),
+    )
     selected_position_trade_ids = tuple(
         member.id
         for trade_id in selected_logical_trade_ids
@@ -1298,10 +1331,7 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
             st.info(tr("Select at least one review status filter above to see trades."))
         else:
             status_text = " / ".join(tr(filter_names[key]).casefold() for key in selected_keys)
-            if failed_only:
-                st.info(tr("No {status} ({qualifier}) trades for this account.", status=status_text, qualifier=tr("failed")))
-            else:
-                st.info(tr("No {status} trades for this account.", status=status_text))
+            st.info(tr("No {status} trades for this account.", status=status_text))
     else:
         position_by_id = {trade.id: index for index, (trade, _) in enumerate(visible)}
         start = (current_page - 1) * REVIEW_PAGE_SIZE
@@ -1345,7 +1375,7 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
                         "Select this logical trade for Bulk Quick Review or to group it, with all of its positions, with other logical trades."
                     ),
                     on_change=_toggle_logical_trade_selection,
-                    args=(account.id, trade.id),
+                    args=(account.id, trade.id, visible_trade_ids),
                 )
                 _mobile_field_label(logical_column, "Logical trade")
                 logical_column.markdown(f"**LT-{trade.id}**")
