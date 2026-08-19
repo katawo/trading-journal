@@ -668,6 +668,18 @@ def _grade_control(label: str, *, existing: str | None, key: str) -> str | None:
     return None if choice is None else choice.casefold()
 
 
+def _review_context_option(options: Sequence[object], saved_name: str | None) -> object | None:
+    """Restore a saved context snapshot when its active option still exists."""
+
+    if saved_name is None:
+        return None
+    return next((option for option in options if getattr(option, "name", None) == saved_name), None)
+
+
+def _review_context_option_label(option: object | None) -> str:
+    return "" if option is None else str(getattr(option, "name"))
+
+
 def _default_policy_adherence_grade(risk_policy_state: str) -> str | None:
     """Default Risk policy adherence to already-computed automatic risk evidence, for a fresh review only."""
     return {"within_policy": "pass", "over_policy": "fail"}.get(risk_policy_state)
@@ -741,20 +753,37 @@ def _render_post_trade_review_dialog(repo: SQLiteJournalRepository, account: Acc
     st.caption(f"Trading system: **{strategy.name}** (bound to this account)")
     st.caption("\\* Required")
     with st.form(f"post-trade-assessment-{trade.id}"):
-        setup_options = [None, *repo.list_strategy_setups(strategy.id)]
-        session_options = [None, *repo.list_review_context_tags("session")]
-        regime_options = [None, *repo.list_review_context_tags("regime")]
+        active_setups = repo.list_strategy_setups(strategy.id)
+        active_sessions = repo.list_review_context_tags("session")
+        active_regimes = repo.list_review_context_tags("regime")
+        setup_options = [None, *active_setups]
+        session_options = [None, *active_sessions]
+        regime_options = [None, *active_regimes]
+        context_defaults = {
+            f"assessment-{trade.id}-setup": _review_context_option(
+                active_setups, existing_manual.setup_snapshot if existing_manual else None
+            ),
+            f"assessment-{trade.id}-session": _review_context_option(
+                active_sessions, existing_manual.session_snapshot if existing_manual else None
+            ),
+            f"assessment-{trade.id}-regime": _review_context_option(
+                active_regimes, existing_manual.regime_snapshot if existing_manual else None
+            ),
+        }
+        for context_key, context_default in context_defaults.items():
+            if context_key not in st.session_state:
+                st.session_state[context_key] = context_default
         context_left, context_middle, context_right = st.columns(3)
         selected_setup = context_left.selectbox(
-            "Setup (optional)", setup_options, format_func=lambda item: "Unspecified" if item is None else item.name,
+            "Setup (optional)", setup_options, format_func=_review_context_option_label,
             key=f"assessment-{trade.id}-setup",
         )
         selected_session = context_middle.selectbox(
-            "Session (optional)", session_options, format_func=lambda item: "Unspecified" if item is None else item.name,
+            "Session (optional)", session_options, format_func=_review_context_option_label,
             key=f"assessment-{trade.id}-session",
         )
         selected_regime = context_right.selectbox(
-            "Market regime (optional)", regime_options, format_func=lambda item: "Unspecified" if item is None else item.name,
+            "Market regime (optional)", regime_options, format_func=_review_context_option_label,
             key=f"assessment-{trade.id}-regime",
         )
         pillars = (

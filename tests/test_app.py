@@ -1330,11 +1330,10 @@ def test_reopening_review_after_upgrading_an_auto_review_does_not_crash(monkeypa
         correlation_policy=None,
         starting_balance="1000",
     )
-    repository.save_strategy_profile(
-        name="Trend continuation",
-        description=None,
-        backtest_notes=None,
-    )
+    strategy = repository.get_account_strategy(account.id)
+    repository.save_strategy_setup(strategy_profile_id=strategy.id, name="London pullback")
+    repository.save_review_context_tag(kind="session", name="London")
+    repository.save_review_context_tag(kind="regime", name="Trending")
     repository.upsert_mt5_positions(
         account.id,
         [
@@ -1372,6 +1371,16 @@ def test_reopening_review_after_upgrading_an_auto_review_does_not_crash(monkeypa
 
     next(item for item in app.button if item.label == "Review").click().run()
     assert not app.exception
+    context_selectboxes = {
+        item.label: item
+        for item in app.selectbox
+        if item.label in {"Setup (optional)", "Session (optional)", "Market regime (optional)"}
+    }
+    assert all(item.value is None for item in context_selectboxes.values())
+    assert all(item.format_func(None) == "" for item in context_selectboxes.values())
+    context_selectboxes["Setup (optional)"].select("London pullback").run()
+    context_selectboxes["Session (optional)"].select("London").run()
+    context_selectboxes["Market regime (optional)"].select("Trending").run()
     next(item for item in app.button if item.label == "Mark all criteria as Pass").click().run()
     note = next(item for item in app.text_area if item.label == "What happened and what did you learn? *")
     note.set_value("Upgraded from an auto review.").run()
@@ -1382,6 +1391,16 @@ def test_reopening_review_after_upgrading_an_auto_review_does_not_crash(monkeypa
 
     assert not app.exception
     assert any("Assessment history" in item.label for item in app.expander)
+    reopened_context = {
+        item.label: item.value.name
+        for item in app.selectbox
+        if item.label in {"Setup (optional)", "Session (optional)", "Market regime (optional)"}
+    }
+    assert reopened_context == {
+        "Setup (optional)": "London pullback",
+        "Session (optional)": "London",
+        "Market regime (optional)": "Trending",
+    }
 
 
 def test_save_and_review_next_skips_a_stale_queue_entry_instead_of_dropping_the_queue(monkeypatch, tmp_path):
