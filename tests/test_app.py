@@ -1563,6 +1563,13 @@ def test_dashboard_renders_graphics_for_imported_trades(monkeypatch, tmp_path):
     assert concentration_control.options == ["Trade", "Symbol"]
     assert concentration_control.value == "Trade"
     assert any("No losing logical trades" in item.value for item in app.info)
+    assert len(app.get("plotly_chart")) >= 7
+    statistics_breakdown = next(item for item in app.segmented_control if item.label == "Breakdown view")
+    assert statistics_breakdown.options == ["Direction", "Symbol"]
+    assert statistics_breakdown.value == "Direction"
+    statistics_breakdown.set_value("Symbol").run()
+    assert not app.exception
+    concentration_control = next(item for item in app.segmented_control if item.label == "Concentration view")
     concentration_control.set_value("Symbol").run()
     assert not app.exception
     assert {item.label for item in app.metric} >= {"Account balance", "Account drawdown", "Profit factor", "Worst day"}

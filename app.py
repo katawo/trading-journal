@@ -13,7 +13,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from trading_journal.application.auto_sync import MT5AutoSyncResult, MT5AutoSyncService
-from trading_journal.application.dashboard import DashboardReport, DashboardService
+from trading_journal.application.dashboard import DashboardReport, DashboardService, PerformanceBreakdown
 from trading_journal.application.framework import FrameworkService
 from trading_journal.application.display_time import format_relative_time
 from trading_journal.application.import_mt5 import SUPPORTED_SCHEMA_VERSIONS
@@ -57,6 +57,8 @@ _FRESHNESS_INTERVAL_SECONDS = 5
 _ANALYTICS_CACHE_TTL_SECONDS = 15
 _CHART_POSITIVE = "#0e9163"
 _CHART_NEGATIVE = "#c73545"
+_CHART_NEUTRAL = "#7a828e"
+_STATISTICS_BREAKDOWN_CHART_LIMIT = 12
 
 
 def application_version() -> str:
@@ -171,6 +173,136 @@ def _render_concentration_side(*, side, title: str, currency: str, positive: boo
     st.plotly_chart(figure, width="stretch", config={"displayModeBar": False})
 
 
+def _build_outcome_mix_figure(*, win_count: int, loss_count: int, breakeven_count: int) -> go.Figure:
+    outcomes = [
+        (tr("Wins"), win_count, _CHART_POSITIVE),
+        (tr("Losses"), loss_count, _CHART_NEGATIVE),
+        (tr("Breakevens"), breakeven_count, _CHART_NEUTRAL),
+    ]
+    total = sum(count for _, count, _ in outcomes)
+    figure = go.Figure()
+    for label, count, colour in outcomes:
+        share = Decimal(count * 100) / Decimal(total)
+        figure.add_trace(
+            go.Bar(
+                name=label,
+                x=[float(share)],
+                y=[tr("Closed logical trades")],
+                orientation="h",
+                marker_color=colour,
+                marker_line_width=0,
+                customdata=[[format_count(count), format_percent(share)]],
+                text=[format_count(count) if count else ""],
+                textposition="inside",
+                insidetextanchor="middle",
+                hovertemplate="%{fullData.name}<br><b>%{customdata[0]}</b><br>%{customdata[1]}<extra></extra>",
+            )
+        )
+    figure.update_layout(
+        title=dict(text=tr("Outcome mix"), x=0.02, y=0.97),
+        height=235,
+        margin=dict(l=12, r=12, t=76, b=20),
+        barmode="stack",
+        showlegend=True,
+        legend=dict(orientation="h", yanchor="top", y=0.82, xanchor="left", x=0.01),
+        hovermode="closest",
+    )
+    figure.update_xaxes(
+        title=tr("Share of closed logical trades"),
+        range=[0, 100],
+        ticksuffix="%",
+        showgrid=False,
+        zeroline=False,
+    )
+    figure.update_yaxes(showgrid=False, zeroline=False, showticklabels=False, title=None)
+    return figure
+
+
+def _build_daily_result_range_figure(*, best_day: str, average_day: str, worst_day: str, currency: str) -> go.Figure:
+    labels = [tr("Best day"), tr("Average day"), tr("Worst day")]
+    values = [Decimal(best_day), Decimal(average_day), Decimal(worst_day)]
+    colours = [_CHART_POSITIVE if value > 0 else _CHART_NEGATIVE if value < 0 else _CHART_NEUTRAL for value in values]
+    figure = go.Figure(
+        go.Bar(
+            x=[float(value) for value in values],
+            y=labels,
+            orientation="h",
+            marker_color=colours,
+            marker_line_width=0,
+            customdata=[[format_currency(value, currency)] for value in values],
+            hovertemplate="%{y}<br><b>%{customdata[0]}</b><extra></extra>",
+        )
+    )
+    figure.update_layout(
+        title=dict(text=tr("Daily result range"), x=0.02, y=0.96),
+        height=280,
+        margin=dict(l=12, r=12, t=50, b=12),
+        showlegend=False,
+        hovermode="closest",
+    )
+    figure.update_xaxes(
+        title=f"{tr('Daily P&L')} ({currency})",
+        tickprefix=currency_prefix(currency),
+        tickformat=f",.{currency_decimal_places(currency)}f",
+        zeroline=True,
+        zerolinewidth=1,
+    )
+    figure.update_yaxes(showgrid=False, zeroline=False, autorange="reversed")
+    return figure
+
+
+def _build_breakdown_pnl_figure(
+    items: list[tuple[str, PerformanceBreakdown]],
+    *,
+    currency: str,
+    dimension: str,
+) -> tuple[go.Figure, bool]:
+    truncated = len(items) > _STATISTICS_BREAKDOWN_CHART_LIMIT
+    selected = sorted(
+        items,
+        key=lambda item: (-abs(Decimal(item[1].net_pnl)), item[0].casefold()),
+    )[:_STATISTICS_BREAKDOWN_CHART_LIMIT]
+    selected.sort(key=lambda item: (-Decimal(item[1].net_pnl), item[0].casefold()))
+    labels = [label for label, _ in selected]
+    values = [Decimal(row.net_pnl) for _, row in selected]
+    colours = [_CHART_POSITIVE if value > 0 else _CHART_NEGATIVE if value < 0 else _CHART_NEUTRAL for value in values]
+    customdata = [
+        [format_currency(value, currency), format_count(row.trade_count), format_percent(row.win_rate)]
+        for (_, row), value in zip(selected, values, strict=True)
+    ]
+    figure = go.Figure(
+        go.Bar(
+            x=[float(value) for value in values],
+            y=labels,
+            orientation="h",
+            marker_color=colours,
+            marker_line_width=0,
+            customdata=customdata,
+            hovertemplate=(
+                "%{y}<br><b>%{customdata[0]}</b>"
+                f"<br>{tr('Trades')}: %{{customdata[1]}}"
+                f"<br>{tr('Win rate')}: %{{customdata[2]}}<extra></extra>"
+            ),
+        )
+    )
+    figure.update_layout(
+        title=dict(text=tr("Net P&L by {dimension}", dimension=dimension.lower()), x=0.02, y=0.97),
+        height=min(520, max(280, len(selected) * 34 + 115)),
+        margin=dict(l=12, r=12, t=52, b=12),
+        showlegend=False,
+        hovermode="closest",
+    )
+    figure.update_xaxes(
+        title=f"{tr('Net P&L')} ({currency})",
+        tickprefix=currency_prefix(currency),
+        tickformat=f",.{currency_decimal_places(currency)}f",
+        zeroline=True,
+        zerolinewidth=1,
+    )
+    figure.update_yaxes(showgrid=False, zeroline=False, autorange="reversed")
+    return figure, truncated
+
+
 def _render_dashboard_statistics(report: DashboardReport, currency: str) -> None:
     st.markdown(f"#### {tr('Statistics')}")
     performance_tab, consistency_tab, breakdowns_tab = st.tabs(
@@ -211,6 +343,20 @@ def _render_dashboard_statistics(report: DashboardReport, currency: str) -> None
                 f"{format_count(report.r_trade_count)}/{format_count(report.trade_count)}",
                 border=True,
             )
+        if report.trade_count:
+            with st.container(border=True):
+                st.plotly_chart(
+                    _build_outcome_mix_figure(
+                        win_count=report.win_count,
+                        loss_count=report.loss_count,
+                        breakeven_count=report.breakeven_count,
+                    ),
+                    width="stretch",
+                    config={"displayModeBar": False},
+                    key="dashboard-statistics-outcome-mix",
+                )
+        else:
+            st.caption(tr("Complete logical trades will populate the outcome chart."))
 
     with consistency_tab:
         st.caption(tr("Day statistics use immutable MT5 position closes; streaks use closed logical trades."))
@@ -240,13 +386,28 @@ def _render_dashboard_statistics(report: DashboardReport, currency: str) -> None
             st.metric(tr("Current streak"), current_streak, border=True)
             st.metric(tr("Longest win streak"), format_count(report.longest_win_streak), border=True)
             st.metric(tr("Longest loss streak"), format_count(report.longest_loss_streak), border=True)
+        if report.best_day is not None and report.average_day is not None and report.worst_day is not None:
+            with st.container(border=True):
+                st.plotly_chart(
+                    _build_daily_result_range_figure(
+                        best_day=report.best_day,
+                        average_day=report.average_day,
+                        worst_day=report.worst_day,
+                        currency=currency,
+                    ),
+                    width="stretch",
+                    config={"displayModeBar": False},
+                    key="dashboard-statistics-daily-range",
+                )
+        else:
+            st.caption(tr("Closed MT5 positions will populate the daily range chart."))
 
     with breakdowns_tab:
         st.caption(tr("Breakdowns use closed logical trades and preserve available R-data coverage."))
         breakdown_view = st.segmented_control(
             tr("Breakdown view"),
-            [tr("Symbol"), tr("Direction")],
-            default=tr("Symbol"),
+            [tr("Direction"), tr("Symbol")],
+            default=tr("Direction"),
             required=True,
             width="content",
             key="dashboard-statistics-breakdown",
@@ -255,6 +416,28 @@ def _render_dashboard_statistics(report: DashboardReport, currency: str) -> None
         labels = [item.label for item in rows]
         if breakdown_view == tr("Direction"):
             labels = [tr(direction_tag(item.label).label) for item in rows]
+        if rows:
+            with st.container(border=True):
+                breakdown_figure, truncated = _build_breakdown_pnl_figure(
+                    list(zip(labels, rows, strict=True)),
+                    currency=currency,
+                    dimension=breakdown_view,
+                )
+                st.plotly_chart(
+                    breakdown_figure,
+                    width="stretch",
+                    config={"displayModeBar": False},
+                    key="dashboard-statistics-breakdown-pnl",
+                )
+                if truncated:
+                    st.caption(
+                        tr(
+                            "Chart shows the {count} groups with the largest absolute net P&L; the table includes every group.",
+                            count=format_count(_STATISTICS_BREAKDOWN_CHART_LIMIT),
+                        )
+                    )
+        else:
+            st.caption(tr("Complete logical trades will populate the breakdown chart."))
         group_column = tr("Group")
         trades_column = tr("Trades")
         win_rate_column = tr("Win rate")
