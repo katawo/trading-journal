@@ -267,16 +267,41 @@ def _render_score_cards(scores: tuple[PillarScore, ...], account: AccountListIte
     for column, score in zip(st.columns(len(scores), gap="small"), scores, strict=True):
         if score.hard_block:
             label = "FAIL"
+            delta_color = "red"
         elif score.score is None:
             label = "Incomplete"
+            delta_color = "gray"
         elif score.status == "incomplete":
             # A live percentage next to the literal word "Incomplete" reads as
             # self-contradictory — this is a partial-sample early read, not the
             # same "no evidence yet" state as score.score is None.
             label = "Early estimate"
+            delta_color = "gray"
+        elif score.status == "caution":
+            label = "Caution"
+            delta_color = "orange"
         else:
             label = score.status.capitalize()
-        column.metric(tr(PILLAR_NAMES[score.pillar]), _score_text(score.score), tr("{label} · {count} in sample", label=tr(label), count=score.sample_size), border=True)
+            delta_color = "green"
+        delta = (
+            tr(
+                "{label} · Raw {raw} · {count} in sample",
+                label=tr(label),
+                raw=_score_text(score.raw_score),
+                count=score.sample_size,
+            )
+            if score.raw_score is not None
+            and (score.status == "caution" or score.raw_score != score.score)
+            else tr("{label} · {count} in sample", label=tr(label), count=score.sample_size)
+        )
+        column.metric(
+            tr(PILLAR_NAMES[score.pillar]),
+            _score_text(score.score),
+            delta,
+            delta_color=delta_color,
+            delta_arrow="off",
+            border=True,
+        )
         column.caption(_score_scope_label(score, account))
         if score.status != "ready":
             column.caption(tr(score.detail))

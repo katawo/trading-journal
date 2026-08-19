@@ -395,6 +395,7 @@ VI: dict[str, str] = {
     "Process failed — hard-rule event: {events}. This overrides the numeric score above; the pillar(s) it affects show FAIL regardless of their percentage.": "Quy trình không đạt — sự kiện quy tắc cứng: {events}. Điều này ghi đè điểm số phía trên; trụ cột bị ảnh hưởng hiển thị Không đạt bất kể tỷ lệ phần trăm.",
     "This compact view always uses a fixed 20-trade window. Open Bearings → Monitor to adjust the rolling sample.": "Chế độ xem gọn này luôn dùng cửa sổ cố định 20 giao dịch. Mở Định hướng → Theo dõi để điều chỉnh mẫu trượt.",
     "{label} · {count} in sample": "{label} · {count} trong mẫu",
+    "{label} · Raw {raw} · {count} in sample": "{label} · Điểm gốc {raw} · {count} trong mẫu",
     "Sample size: {sample_line}": "Kích thước mẫu: {sample_line}",
     "Correct {trade}": "Sửa {trade}",
     "Review {trade}": "Đánh giá {trade}",

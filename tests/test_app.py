@@ -946,6 +946,11 @@ def test_monitor_tab_explains_why_a_pillar_is_capped(monkeypatch, tmp_path):
     app.run()
 
     assert not app.exception
+    psychology = next(item for item in app.metric if item.label == "Psychology")
+    assert psychology.value == "59%"
+    assert "Caution" in psychology.delta
+    assert "Raw 100%" in psychology.delta
+    assert "2 in sample" in psychology.delta
     assert any("cap this pillar at 59" in item.value for item in app.caption)
 
 
