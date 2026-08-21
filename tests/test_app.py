@@ -11,6 +11,7 @@ from streamlit.testing.v1 import AppTest
 from trading_journal.application.display_time import format_relative_time
 from trading_journal.domain.models import MT5PositionExport
 from trading_journal.infrastructure.sqlite_repository import ASSESSMENT_CRITERIA, SQLiteJournalRepository
+from trading_journal.presentation.framework import _format_trade_duration
 
 
 def write_auto_export(path: Path) -> None:
@@ -49,6 +50,12 @@ def _set_review_filters(app, *, needs_approval=None, auto_reviewed=None, manual_
     if manual_reviewed is not None:
         checkboxes["manual_reviewed"].set_value(manual_reviewed)
     app.run()
+
+
+def test_trade_duration_uses_compact_review_table_units():
+    assert _format_trade_duration("2026-08-10T08:00:00+00:00", "2026-08-10T08:00:30+00:00") == "<1m"
+    assert _format_trade_duration("2026-08-10T08:00:00+00:00", "2026-08-10T09:35:00+00:00") == "1h 35m"
+    assert _format_trade_duration("2026-08-10T08:00:00+00:00", "2026-08-12T11:15:00+00:00") == "2d 3h"
 
 
 def test_app_renders_local_mt5_import_entrypoint(monkeypatch, tmp_path):
@@ -1197,6 +1204,10 @@ def test_framework_renders_a_filtered_review_register(monkeypatch, tmp_path):
     assert any(item.label.startswith("Select LT-") for item in app.checkbox)
     assert any(item.label == "Review" for item in app.button)
     assert not any(item.label == "Ungroup" for item in app.button)
+    execution_labels = {item.value for item in app.caption}
+    assert {"Opened", "Entry price", "Closed", "Exit price", "Duration", "Size"} <= execution_labels
+    execution_values = {item.value for item in app.markdown}
+    assert {"**3,300**", "**3,310**", "**1h**", "**0.01 lots**"} <= execution_values
     assert any("Automatic risk evidence only counts toward scores once approved" in item.value for item in app.caption)
     assert not any(item.label == "Closed MT5 position" for item in app.selectbox)
     assert not any(item.label == "Save review" for item in app.button)

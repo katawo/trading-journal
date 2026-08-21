@@ -253,6 +253,30 @@ def _reporting_time(repo: SQLiteJournalRepository, value: str, server_utc_offset
     return reporting_datetime(value, server_utc_offset_minutes, basis).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _format_trade_duration(entry_time: str, exit_time: str) -> str:
+    """Format an imported trade's elapsed time without changing its stored timestamps."""
+    entry = datetime.fromisoformat(entry_time.replace("Z", "+00:00"))
+    exit_ = datetime.fromisoformat(exit_time.replace("Z", "+00:00"))
+    total_minutes = max(0, int((exit_ - entry).total_seconds() // 60))
+    if total_minutes == 0:
+        return "<1m"
+    days, remainder = divmod(total_minutes, 24 * 60)
+    hours, minutes = divmod(remainder, 60)
+    parts = []
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes and not days:
+        parts.append(f"{minutes}m")
+    return " ".join(parts)
+
+
+def _format_execution_number(value: str) -> str:
+    """Preserve imported precision while adding separators for execution facts."""
+    return f"{Decimal(value):,f}"
+
+
 def _score_scope_label(score: PillarScore, account: AccountListItem) -> str:
     """Describe the evidence scope without implying that a pillar is an aggregate."""
     label = _account_label(account)
@@ -1510,9 +1534,23 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
                     icon=":material/group_off:",
                 ):
                     _begin_logical_trade_disband(repo, account, trade.id)
+                opened_at = _reporting_time(repo, trade.entry_time, trade.server_utc_offset_minutes)
+                closed_at = _reporting_time(repo, trade.exit_time, trade.server_utc_offset_minutes)
+                execution_columns = st.columns([1.25, 1, 1.25, 1, 0.8, 0.8])
+                execution_values = (
+                    ("Opened", opened_at),
+                    ("Entry price", _format_execution_number(trade.entry_price)),
+                    ("Closed", closed_at),
+                    ("Exit price", _format_execution_number(trade.exit_price)),
+                    ("Duration", _format_trade_duration(trade.entry_time, trade.exit_time)),
+                    ("Size", f"{_format_execution_number(trade.volume)} {tr('lots')}"),
+                )
+                for detail_column, (label, value) in zip(execution_columns, execution_values, strict=True):
+                    detail_column.caption(tr(label))
+                    detail_column.markdown(f"**{value}**")
                 summary = (
-                    f"{trade.symbol} {trade.direction} · Closed {_reporting_time(repo, trade.exit_time, trade.server_utc_offset_minutes)} "
-                    f"· {_auto_risk_label(score)} · {tr(score.classification or 'Unclassified')}"
+                    f"{trade.symbol} {trade.direction} · {_auto_risk_label(score)} "
+                    f"· {tr(score.classification or 'Unclassified')}"
                 )
                 st.caption(summary)
                 if failure_detail := _process_failure_detail(score):
