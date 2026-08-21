@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=9,<10", "httpx>=0.28,<1"]
+dev = ["pytest>=9,<10", "httpx>=0.28,<1", "playwright>=1.62,<2"]
 desktop = [
   "pyinstaller>=6.10,<7",
   "pywebview>=5,<7",
@@ -42,6 +42,7 @@ ingestion = [
 [tool.pytest.ini_options]
 addopts = "-m 'not desktop'"
 markers = [
+  "browser: tests that execute client-side behavior in a real browser",
   "desktop: tests for the optional desktop launcher and frozen desktop workflow",
 ]
 testpaths = ["tests"]

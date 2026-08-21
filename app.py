@@ -29,6 +29,7 @@ from trading_journal.presentation.framework import (
 )
 from trading_journal.presentation.branding import TRADE_COMPASS_ICON, render_trade_doctrine
 from trading_journal.presentation.global_alert_bubble import GlobalAlertItem, render_global_alert_bubble
+from trading_journal.presentation.connection_recovery import render_connection_recovery
 from trading_journal.presentation.multiuser_auth import current_username, is_multiuser_mode, render_login_gate, render_logout_control, user_database_path
 from trading_journal.presentation.desktop_reset_restart import render_desktop_reset_restart_bridge
 from trading_journal.presentation.i18n import (
@@ -1867,6 +1868,7 @@ def main() -> None:
     if is_multiuser_mode():
         username = render_login_gate()
         if username is None:
+            render_connection_recovery()
             return
     try:
         repo = repository()
@@ -1890,6 +1892,7 @@ def main() -> None:
     settings = repo.get_journal_settings()
     st.session_state.setdefault("display_language", settings.display_language)
     install_streamlit_translations()
+    render_connection_recovery()
     render_pending_toast()
     if is_multiuser_mode():
         render_logout_control()
