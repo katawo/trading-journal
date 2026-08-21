@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import sqlite3
 from pathlib import Path
 
@@ -7,11 +8,12 @@ import pytest
 
 pytest.importorskip("fastapi", reason="fastapi is only installed via the optional 'ingestion' extra")
 
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from trading_journal.application.multiuser import generate_ingestion_token, hash_ingestion_token, ingestion_tokens_path, user_database_path
 from trading_journal.infrastructure.sqlite_repository import SQLiteJournalRepository
-from trading_journal.ingestion_api import app
+from trading_journal.ingestion_api import IngestLivePositionsRequest, IngestRequest, app, ingest, ingest_live_positions
 
 TOKEN = "test-token-for-alice"
 
@@ -174,17 +176,50 @@ def test_ingest_is_idempotent_on_repeated_pushes(monkeypatch: pytest.MonkeyPatch
     assert second.json()["updated_count"] == 1
 
 
-def test_ingest_rejects_an_unregistered_account(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_ingest_logs_safe_account_context_when_rejecting_an_unregistered_account(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     _seed_multiuser_environment(monkeypatch, tmp_path)
-    client = TestClient(app)
+    request = IngestRequest(positions=[_position_row(position_id="9002") | {"account_login": "999999"}])
 
-    response = client.post(
-        "/ingest",
-        json={"positions": [_position_row(position_id="9002") | {"account_login": "999999"}]},
-        headers={"Authorization": f"Bearer {TOKEN}"},
-    )
+    with caplog.at_level(logging.WARNING, logger="trading_journal.ingestion_api"):
+        with pytest.raises(HTTPException) as raised:
+            ingest(request, authorization=f"Bearer {TOKEN}")
 
-    assert response.status_code == 422
+    assert raised.value.status_code == 422
+    assert "endpoint=/ingest" in caplog.text
+    assert "user='alice'" in caplog.text
+    assert "account_login='999999'" in caplog.text
+    assert "broker_server='DemoBroker-Live'" in caplog.text
+    assert "item_count=1" in caplog.text
+    assert "MT5 account is not registered or is inactive" in caplog.text
+    assert TOKEN not in caplog.text
+
+
+def test_live_ingest_logs_safe_account_context_when_validation_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    _seed_multiuser_environment(monkeypatch, tmp_path)
+    snapshot = {
+        "schema_version": 1,
+        "account_login": "999999",
+        "broker_server": "WrongBroker-Live",
+        "account_currency": "USD",
+        "snapshot_time": "2026-08-18T08:00:00+00:00",
+        "positions": [],
+    }
+    request = IngestLivePositionsRequest(snapshot=snapshot)
+
+    with caplog.at_level(logging.WARNING, logger="trading_journal.ingestion_api"):
+        with pytest.raises(HTTPException) as raised:
+            ingest_live_positions(request, authorization=f"Bearer {TOKEN}")
+
+    assert raised.value.status_code == 422
+    assert "endpoint=/ingest/live-positions" in caplog.text
+    assert "account_login='999999'" in caplog.text
+    assert "broker_server='WrongBroker-Live'" in caplog.text
+    assert "item_count=0" in caplog.text
+    assert TOKEN not in caplog.text
 
 
 @pytest.mark.parametrize(

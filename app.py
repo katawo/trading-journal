@@ -983,10 +983,12 @@ def render_mt5_account_settings(repo: SQLiteJournalRepository) -> AccountListIte
     st.caption("Each account has one trading system. Its broker server confirms the export source. Funded capital can be updated later; it recalculates historical growth, drawdown, and Risk limits without changing MT5 trades. Dashboard and Framework always show the single active account below.")
     common_files_location = find_mt5_common_files()
     accounts = repo.list_mt5_accounts()
+    active_account = repo.get_active_mt5_account()
+    if active_account is not None:
+        accounts.sort(key=lambda account: account.id != active_account.id)
     strategy_profiles = [profile for profile in repo.list_strategy_profiles() if profile.name != "Journal default"]
     profiles_by_id = {profile.id: profile for profile in strategy_profiles}
     accounts_by_id = {str(account.id): account for account in accounts}
-    active_account = repo.get_active_mt5_account()
     selected_id = st.session_state.get("mt5-account-selected-id")
     if selected_id not in accounts_by_id and selected_id != "new":
         selected_id = str(accounts[0].id) if accounts else "new"

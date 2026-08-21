@@ -13,6 +13,8 @@ SQLite file - the same isolation the Streamlit login gate enforces.
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError, OperationalError
@@ -25,6 +27,7 @@ from trading_journal.domain.models import ImportResult
 from trading_journal.infrastructure.sqlite_repository import SQLiteJournalRepository
 
 app = FastAPI(title="Trade Compass ingestion", docs_url=None, redoc_url=None)
+logger = logging.getLogger(__name__)
 
 
 class IngestRequest(BaseModel):
@@ -45,6 +48,21 @@ def _authenticated_username(authorization: str | None) -> str:
     return username
 
 
+def _log_validation_rejection(*, endpoint: str, username: str, payload: dict, item_count: int, error: Exception) -> None:
+    """Log enough request metadata to diagnose a 422 without exposing trade data or credentials."""
+    logger.warning(
+        "MT5 ingestion rejected: endpoint=%s user=%r account_login=%r broker_server=%r "
+        "account_currency=%r item_count=%d reason=%r",
+        endpoint,
+        username,
+        payload.get("account_login"),
+        payload.get("broker_server"),
+        payload.get("account_currency"),
+        item_count,
+        str(error),
+    )
+
+
 @app.post("/ingest", response_model=ImportResult)
 def ingest(request: IngestRequest, authorization: str | None = Header(default=None)) -> ImportResult:
     username = _authenticated_username(authorization)
@@ -55,6 +73,14 @@ def ingest(request: IngestRequest, authorization: str | None = Header(default=No
     try:
         return MT5ImportService(repository).import_json_positions(request.positions, source_label=f"http:{username}")
     except ImportValidationError as error:
+        first_position = request.positions[0] if request.positions else {}
+        _log_validation_rejection(
+            endpoint="/ingest",
+            username=username,
+            payload=first_position,
+            item_count=len(request.positions),
+            error=error,
+        )
         raise HTTPException(status_code=422, detail=str(error)) from error
     except (IntegrityError, OperationalError) as error:
         # Two overlapping pushes for the same account can both pass the upsert's
@@ -77,6 +103,14 @@ def ingest_live_positions(request: IngestLivePositionsRequest, authorization: st
         account_id = LivePositionImportService(repository).import_snapshot(request.snapshot)
         return {"account_id": account_id}
     except (ImportValidationError, ValueError) as error:
+        positions = request.snapshot.get("positions")
+        _log_validation_rejection(
+            endpoint="/ingest/live-positions",
+            username=username,
+            payload=request.snapshot,
+            item_count=len(positions) if isinstance(positions, list) else 0,
+            error=error,
+        )
         raise HTTPException(status_code=422, detail=str(error)) from error
     except (IntegrityError, OperationalError) as error:
         raise HTTPException(status_code=409, detail="Conflicting concurrent live snapshot, retry") from error

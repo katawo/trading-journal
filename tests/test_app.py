@@ -677,6 +677,8 @@ def test_settings_can_switch_the_active_mt5_account(monkeypatch, tmp_path):
 
     assert not app.exception
     assert repository.get_active_mt5_account().display_name == "Secondary"
+    account_headings = [item.value for item in app.markdown if item.value in {"**Primary**", "**Secondary**"}]
+    assert account_headings == ["**Secondary**", "**Primary**"]
     assert any(item.label == "Set as active account" for item in app.button)
 
 
