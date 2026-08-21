@@ -1247,7 +1247,7 @@ class SQLiteJournalRepository:
             if account is None:
                 raise ValueError("The selected MT5 account no longer exists")
             if session.scalar(select(Trade.id).where(Trade.mt5_account_id == account_id).limit(1)) is not None:
-                raise ValueError("An account with imported trades cannot be deleted. Deactivate it to retain its history instead")
+                raise ValueError("An account with imported trades cannot be deleted. Disable it to retain its history instead")
             session.execute(delete(MT5ImportRun).where(MT5ImportRun.mt5_account_id == account_id))
             session.execute(delete(LivePositionIncident).where(LivePositionIncident.mt5_account_id == account_id))
             session.execute(delete(LivePosition).where(LivePosition.mt5_account_id == account_id))

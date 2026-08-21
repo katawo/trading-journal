@@ -1189,16 +1189,16 @@ def render_mt5_account_settings(repo: SQLiteJournalRepository) -> AccountListIte
 
         with st.expander("Account maintenance"):
             if has_imported_trades:
-                st.caption("This account has imported trades or reviews. Deactivate it to remove it from imports and reports while retaining its local history. Adding the same MT5 account ID later reactivates it.")
+                st.caption("This account has imported trades or reviews. Disable it to remove it from imports and reports while retaining its local history. Adding the same MT5 account ID later enables it again.")
 
-                deactivate_clicked = st.button("Deactivate account", key=f"deactivate-mt5-account-{selected.id}")
-                if deactivate_clicked:
-                    with st.spinner(tr("Deactivating account…")):
+                disable_clicked = st.button("Disable account", key=f"disable-mt5-account-{selected.id}")
+                if disable_clicked:
+                    with st.spinner(tr("Disabling account…")):
                         repo.deactivate_mt5_account(selected.id)
                     clear_account_form()
                     st.session_state["mt5-account-selected-id"] = "new"
-                    st.session_state["mt5-account-notice"] = "MT5 account deactivated."
-                    queue_toast(tr("MT5 account deactivated."), icon=":material/toggle_off:")
+                    st.session_state["mt5-account-notice"] = "MT5 account disabled."
+                    queue_toast(tr("MT5 account disabled."), icon=":material/toggle_off:")
                     st.rerun()
             else:
                 st.caption("This account has no imported trades. Deleting it permanently removes its account settings, import log, and risk-policy setup.")

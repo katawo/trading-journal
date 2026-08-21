@@ -577,7 +577,7 @@ def test_settings_locks_strategy_selection_once_trades_are_imported(monkeypatch,
     assert any("locked because trades have been imported" in item.value for item in app.caption)
 
 
-def test_settings_can_deactivate_an_imported_mt5_account(monkeypatch, tmp_path):
+def test_settings_can_disable_an_imported_mt5_account(monkeypatch, tmp_path):
     database_path = tmp_path / "journal.db"
     repository = SQLiteJournalRepository(database_path)
     repository.initialize()
@@ -619,11 +619,11 @@ def test_settings_can_deactivate_an_imported_mt5_account(monkeypatch, tmp_path):
 
     app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
     app.switch_page("app_pages/settings.py").run()
-    next(item for item in app.button if item.label == "Deactivate account").click().run()
+    next(item for item in app.button if item.label == "Disable account").click().run()
 
     assert not app.exception
     assert SQLiteJournalRepository(database_path).list_mt5_accounts() == []
-    assert any("MT5 account deactivated." in item.value for item in app.success)
+    assert any("MT5 account disabled." in item.value for item in app.success)
 
 
 def test_settings_can_delete_an_unused_mt5_account(monkeypatch, tmp_path):
