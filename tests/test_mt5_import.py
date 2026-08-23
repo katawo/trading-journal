@@ -211,6 +211,58 @@ def test_deactivating_the_active_mt5_account_falls_back_to_another(repository: S
     assert repository.get_active_mt5_account().display_name == "Secondary"
 
 
+def test_reactivating_a_disabled_mt5_account_restores_the_same_row_without_changing_selection(
+    repository: SQLiteJournalRepository,
+    tmp_path: Path,
+) -> None:
+    account = repository.list_mt5_accounts()[0]
+    repository.register_mt5_account(
+        display_name="Secondary",
+        login="654321",
+        broker_server="DemoBroker-Live",
+        account_currency="USD",
+        export_file_path="",
+    )
+    secondary = next(item for item in repository.list_mt5_accounts() if item.display_name == "Secondary")
+    repository.set_active_mt5_account(secondary.id)
+    repository.save_account_risk_policy(
+        account_id=account.id,
+        standard_risk_per_trade_percent="0.5",
+        maximum_risk_per_trade_percent="1",
+        daily_loss_limit_r="2",
+        weekly_loss_limit_r="4",
+        max_drawdown_percent="10",
+        max_open_risk_r="1",
+        max_consecutive_losses=3,
+        minimum_rr="1.5",
+        correlation_policy=None,
+        starting_balance="1000",
+    )
+    export_path = tmp_path / "positions.csv"
+    write_export(export_path)
+    MT5ImportService(repository).import_csv(export_path)
+    policy = repository.get_active_risk_policy(account.id)
+    trade = repository.get_trade_by_mt5_position("123456", "DemoBroker-Live", "9001")
+    repository.deactivate_mt5_account(account.id)
+
+    assert [item.id for item in repository.list_mt5_accounts()] == [secondary.id]
+    assert [item.id for item in repository.list_disabled_mt5_accounts()] == [account.id]
+
+    repository.reactivate_mt5_account(account.id)
+
+    restored = repository.get_active_mt5_account()
+    assert restored is not None
+    assert restored.id == secondary.id
+    assert {item.id for item in repository.list_mt5_accounts()} == {account.id, secondary.id}
+    assert repository.list_disabled_mt5_accounts() == []
+    assert repository.get_active_risk_policy(account.id) == policy
+    assert repository.get_trade_by_mt5_position("123456", "DemoBroker-Live", "9001") == trade
+
+    repository.reactivate_mt5_account(account.id)
+
+    assert repository.get_active_mt5_account().id == secondary.id
+
+
 def test_deleting_the_active_unimported_mt5_account_does_not_violate_the_foreign_key(repository: SQLiteJournalRepository) -> None:
     repository.register_mt5_account(
         display_name="Secondary",

@@ -633,6 +633,46 @@ def test_settings_can_disable_an_imported_mt5_account(monkeypatch, tmp_path):
     assert any("MT5 account disabled." in item.value for item in app.success)
 
 
+def test_settings_can_reactivate_a_disabled_mt5_account(monkeypatch, tmp_path):
+    database_path = tmp_path / "journal.db"
+    repository = SQLiteJournalRepository(database_path)
+    repository.initialize()
+    repository.register_mt5_account(
+        display_name="Retained account",
+        login="123456",
+        broker_server="DemoBroker-Live",
+        account_currency="USD",
+        export_file_path="",
+    )
+    account = repository.list_mt5_accounts()[0]
+    repository.register_mt5_account(
+        display_name="Current account",
+        login="654321",
+        broker_server="DemoBroker-Live",
+        account_currency="USD",
+        export_file_path="",
+    )
+    current = next(item for item in repository.list_mt5_accounts() if item.display_name == "Current account")
+    repository.set_active_mt5_account(current.id)
+    repository.deactivate_mt5_account(account.id)
+    monkeypatch.setenv("TRADING_JOURNAL_DB", str(database_path))
+
+    app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
+    app.switch_page("app_pages/settings.py").run()
+
+    assert any("Retained account" in item.value for item in app.markdown)
+    next(item for item in app.button if item.label == "Reactivate").click().run()
+
+    reopened = SQLiteJournalRepository(database_path)
+    restored = reopened.get_active_mt5_account()
+    assert not app.exception
+    assert restored is not None
+    assert restored.id == current.id
+    assert {item.id for item in reopened.list_mt5_accounts()} == {account.id, current.id}
+    assert reopened.list_disabled_mt5_accounts() == []
+    assert any("was reactivated" in item.value for item in app.success)
+
+
 def test_settings_can_delete_an_unused_mt5_account(monkeypatch, tmp_path):
     database_path = tmp_path / "journal.db"
     repository = SQLiteJournalRepository(database_path)

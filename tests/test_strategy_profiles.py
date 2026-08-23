@@ -108,6 +108,31 @@ def test_configured_account_creation_rolls_back_on_invalid_risk_policy(tmp_path)
     assert [profile.name for profile in repository.list_strategy_profiles()] == ["Journal default"]
 
 
+def test_configured_account_creation_directs_a_disabled_login_to_reactivation(tmp_path) -> None:
+    repository = _repository(tmp_path)
+    profile = repository.save_strategy_profile(
+        name="London continuation", description="Trade documented continuation rules.", backtest_notes=None,
+    )
+    repository.register_mt5_account(
+        display_name="Retained", login="123456", broker_server="DemoBroker-Live", account_currency="USD",
+        export_file_path="", strategy_profile_id=profile.id,
+    )
+    account = repository.list_mt5_accounts()[0]
+    repository.deactivate_mt5_account(account.id)
+
+    with pytest.raises(ValueError, match="disabled.*Reactivate"):
+        repository.create_configured_mt5_account(
+            display_name="Replacement", login="123456", broker_server="DemoBroker-Live", account_currency="USD",
+            export_file_path="", funded_capital="10000", strategy_profile_id=profile.id,
+            strategy_name=None, strategy_description=None,
+            standard_risk_per_trade_percent="1", maximum_risk_per_trade_percent="1", daily_loss_limit_r="2",
+            weekly_loss_limit_r="4", max_drawdown_percent="10", max_open_risk_r="1", max_consecutive_losses=3,
+            minimum_rr="1.5", correlation_policy=None,
+        )
+
+    assert [item.id for item in repository.list_disabled_mt5_accounts()] == [account.id]
+
+
 def test_update_mt5_account_can_change_the_bound_strategy_before_trades_import(tmp_path) -> None:
     repository = _repository(tmp_path)
     first = repository.save_strategy_profile(

@@ -984,6 +984,7 @@ def render_mt5_account_settings(repo: SQLiteJournalRepository) -> AccountListIte
     st.caption("Each account has one trading system. Its broker server confirms the export source. Funded capital can be updated later; it recalculates historical growth, drawdown, and Risk limits without changing MT5 trades. Dashboard and Framework always show the single active account below.")
     common_files_location = find_mt5_common_files()
     accounts = repo.list_mt5_accounts()
+    disabled_accounts = repo.list_disabled_mt5_accounts()
     active_account = repo.get_active_mt5_account()
     if active_account is not None:
         accounts.sort(key=lambda account: account.id != active_account.id)
@@ -1004,6 +1005,14 @@ def render_mt5_account_settings(repo: SQLiteJournalRepository) -> AccountListIte
         repo.set_active_mt5_account(account_id)
         st.session_state["mt5-account-notice"] = tr("{account} is now the active account.", account=display_name)
         queue_toast(st.session_state["mt5-account-notice"], icon=":material/toggle_on:")
+
+    def reactivate_account(account_id: int, display_name: str) -> None:
+        repo.reactivate_mt5_account(account_id)
+        st.session_state["mt5-account-selected-id"] = str(account_id)
+        st.session_state["mt5-account-notice"] = tr(
+            "{account} was reactivated and is available for imports and reports.", account=display_name
+        )
+        queue_toast(st.session_state["mt5-account-notice"], icon=":material/restore:")
 
     master, detail = st.columns([2, 3], gap="large")
     with master:
@@ -1038,6 +1047,25 @@ def render_mt5_account_settings(repo: SQLiteJournalRepository) -> AccountListIte
                             st.rerun()
         else:
             st.caption("No accounts yet. Create the first one to start importing MT5 trades.")
+        if disabled_accounts:
+            with st.expander(f"{tr('Disabled accounts')} ({len(disabled_accounts)})"):
+                st.caption(
+                    tr(
+                        "Disabled accounts retain their imported trades, reviews, trading system, and risk policy."
+                    )
+                )
+                for account in disabled_accounts:
+                    with st.container(border=True):
+                        st.markdown(f"**{account.display_name}**")
+                        st.caption(f"{account.strategy_name} · {account.login} · {account.broker_server}")
+                        st.button(
+                            tr("Reactivate"),
+                            icon=":material/restore:",
+                            key=f"reactivate-mt5-account-{account.id}",
+                            width="stretch",
+                            on_click=reactivate_account,
+                            args=(account.id, account.display_name),
+                        )
 
     if st.session_state.get("account-onboarding-open"):
         _render_account_onboarding_dialog(repo, strategy_profiles, common_files_location)
@@ -1190,7 +1218,7 @@ def render_mt5_account_settings(repo: SQLiteJournalRepository) -> AccountListIte
 
         with st.expander("Account maintenance"):
             if has_imported_trades:
-                st.caption("This account has imported trades or reviews. Disable it to remove it from imports and reports while retaining its local history. Adding the same MT5 account ID later enables it again.")
+                st.caption("This account has imported trades or reviews. Disable it to remove it from imports and reports while retaining its local history. Reactivate it later from Disabled accounts.")
 
                 disable_clicked = st.button("Disable account", key=f"disable-mt5-account-{selected.id}")
                 if disable_clicked:

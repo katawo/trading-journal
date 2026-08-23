@@ -1119,6 +1119,8 @@ class SQLiteJournalRepository:
         with self._sessions.begin() as session:
             duplicate = session.scalar(select(MT5Account).where(MT5Account.login == clean_login))
             if duplicate is not None:
+                if not duplicate.active:
+                    raise ValueError("This MT5 account ID is disabled. Reactivate it from Disabled accounts")
                 raise ValueError("This MT5 account ID is already registered")
             if creating_strategy:
                 if session.scalar(select(StrategyProfile.id).where(StrategyProfile.normalized_name == normalized_strategy_name)) is not None:
@@ -1240,6 +1242,16 @@ class SQLiteJournalRepository:
             if settings is not None and settings.active_mt5_account_id == account_id:
                 settings.active_mt5_account_id = None
 
+    def reactivate_mt5_account(self, account_id: int) -> None:
+        """Restore a disabled account without rewriting history or changing account selection."""
+        with self._sessions.begin() as session:
+            account = session.get(MT5Account, account_id)
+            if account is None:
+                raise ValueError("The selected MT5 account no longer exists")
+            if account.active:
+                return
+            account.active = True
+
     def delete_mt5_account(self, account_id: int) -> None:
         """Permanently delete an unimported account and its account-only setup."""
         with self._sessions.begin() as session:
@@ -1291,6 +1303,12 @@ class SQLiteJournalRepository:
     def list_mt5_accounts(self) -> list[AccountListItem]:
         with self._sessions() as session:
             accounts = session.scalars(select(MT5Account).where(MT5Account.active.is_(True)).order_by(MT5Account.display_name)).all()
+            return [self._to_account_list_item(account) for account in accounts]
+
+    def list_disabled_mt5_accounts(self) -> list[AccountListItem]:
+        """List retained accounts that are currently excluded from imports and reports."""
+        with self._sessions() as session:
+            accounts = session.scalars(select(MT5Account).where(MT5Account.active.is_(False)).order_by(MT5Account.display_name)).all()
             return [self._to_account_list_item(account) for account in accounts]
 
     def get_active_mt5_account(self) -> AccountListItem | None:
