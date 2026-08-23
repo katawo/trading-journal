@@ -271,6 +271,8 @@ The Monitor computes a second set of period components from the reviewed window.
 
 ## 7. Use the weekly or monthly review to improve one thing
 
+The Monitor separates the **ongoing week and month** from the **latest completed week and month**. Ongoing cards show closed, reviewed, and pending trade counts plus the date when the review opens. Completed cards show whether the period has no activity, still needs trade reviews, has a period review due, or is up to date. For an imported account with no saved period reviews, the initial backlog is bounded to the latest **8 active weeks** and **3 active months** so old history does not become years of overdue work. After the first review is saved for a cadence, every later active period remains in the attention backlog until saved. The oldest reviewable period is selected by default, and the period picker changes the single review form instead of rendering one form per backlog row. A period reflection becomes reviewable only after every known closed logical trade in that period has an approved Quick Risk Check or Deep Review, preventing an incomplete immutable snapshot. Saved weekly and monthly reflections remain available in the review-history table with their snapshotted scores, issues, alerts, note, and priority action.
+
 When a weekly or monthly review is due, save:
 
 - a concise reflection on the completed period;

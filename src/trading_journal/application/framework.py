@@ -38,6 +38,7 @@ PERIOD_WEIGHTS = {
     "risk": (Decimal("0.35"), Decimal("0.25"), Decimal("0.25"), Decimal("0.15")),
     "system": (Decimal("0.20"), Decimal("0.20"), Decimal("0.15"), Decimal("0.20"), Decimal("0.25")),
 }
+INITIAL_PERIOD_REVIEW_BACKLOG_LIMITS = {"weekly": 8, "monthly": 3}
 CRITICAL_VIOLATIONS = {
     "psychology": frozenset({"revenge", "emotional_sizing", "post_loss_reset", "oversized_revenge"}),
     "risk": frozenset({"daily_limit", "weekly_limit", "drawdown_limit", "open_exposure", "correlation_exposure", "oversized_revenge", "stop_widened", "shutdown_breach", "no_stop_loss"}),
@@ -313,6 +314,16 @@ class PeriodReviewStatus:
 
 
 @dataclass(frozen=True)
+class OngoingPeriodStatus:
+    cadence: str
+    period_start: str
+    period_end: str
+    review_opens_on: str
+    reviewed_trades: int
+    closed_trades: int
+
+
+@dataclass(frozen=True)
 class RoadmapItemStatus:
     item_key: str
     label: str
@@ -397,22 +408,14 @@ class FrameworkService:
                 alerts.append(FrameworkAlert("warning", f"{score.pillar}_developing", f"{PILLAR_NAMES[score.pillar]} is below 70 in the rolling sample."))
         if include_period_review_due:
             for cadence in ("weekly", "monthly"):
-                status = self.period_review_status(account_id, cadence, now=now)
-                if status.due:
-                    alerts.append(FrameworkAlert("warning", f"{cadence}_review_due", f"{cadence.capitalize()} review due for {status.period_start} to {status.period_end}."))
+                due = next((status for status in self.period_review_backlog(account_id, cadence, now=now) if status.due), None)
+                if due is not None:
+                    alerts.append(FrameworkAlert("warning", f"{cadence}_review_due", f"{cadence.capitalize()} review due for {due.period_start} to {due.period_end}."))
         return tuple(alerts)
 
     def period_review_status(self, account_id: int, cadence: str, *, now: datetime | None = None) -> PeriodReviewStatus:
         current = self._current_report_date(now or datetime.now(timezone.utc), account_id)
-        if cadence == "weekly":
-            end = current - timedelta(days=current.weekday() + 1)
-            start = end - timedelta(days=6)
-        elif cadence == "monthly":
-            first = current.replace(day=1)
-            end = first - timedelta(days=1)
-            start = end.replace(day=1)
-        else:
-            raise ValueError("Period review cadence must be weekly or monthly")
+        start, end = self._period_bounds(current, cadence, completed=True)
         # trade_process_scores() sees every closed trade regardless of review status (unlike
         # list_post_trade_assessment_outcomes(), which only sees already-reviewed ones) - so a
         # single pass over it distinguishes "nothing closed this period" from "closed trades
@@ -422,7 +425,96 @@ class FrameworkService:
         reviewed = [item for item in in_period if item.review_kind in REVIEWED_KINDS]
         existing = self._repository.list_framework_period_reviews(account_id, cadence)
         saved = any(item.period_start == start.isoformat() and item.period_end == end.isoformat() for item in existing)
-        return PeriodReviewStatus(cadence, start.isoformat(), end.isoformat(), bool(reviewed) and not saved, len(reviewed), len(in_period))
+        complete = bool(in_period) and len(reviewed) == len(in_period)
+        return PeriodReviewStatus(cadence, start.isoformat(), end.isoformat(), complete and not saved, len(reviewed), len(in_period))
+
+    def period_review_backlog(self, account_id: int, cadence: str, *, now: datetime | None = None) -> tuple[PeriodReviewStatus, ...]:
+        """Return completed active periods inside the account's review-tracking horizon.
+
+        Imported accounts have no reliable date that says when period-review tracking
+        began. Until the first review is saved, expose a finite set of recent active
+        periods instead of turning the entire imported history into overdue work. Once
+        a review exists, every later active period remains actionable until it is saved.
+        """
+        if cadence not in INITIAL_PERIOD_REVIEW_BACKLOG_LIMITS:
+            raise ValueError("Period review cadence must be weekly or monthly")
+        current = self._current_report_date(now or datetime.now(timezone.utc), account_id)
+        scores = self.trade_process_scores(account_id)
+        saved_reviews = self._repository.list_framework_period_reviews(account_id, cadence)
+        saved_periods = {
+            (item.period_start, item.period_end)
+            for item in saved_reviews
+        }
+        periods: dict[tuple[date, date], list[TradeProcessScore]] = {}
+        for item in scores:
+            trade_date = self._trade_date(item.exit_time, item.server_utc_offset_minutes)
+            start, end = self._period_bounds(trade_date, cadence, completed=False)
+            if end >= current:
+                continue
+            periods.setdefault((start, end), []).append(item)
+
+        active_periods = sorted(periods.items())
+        if saved_reviews:
+            latest_saved_end = max(date.fromisoformat(item.period_end) for item in saved_reviews)
+            active_periods = [item for item in active_periods if item[0][1] > latest_saved_end]
+        else:
+            active_periods = active_periods[-INITIAL_PERIOD_REVIEW_BACKLOG_LIMITS[cadence] :]
+
+        backlog: list[PeriodReviewStatus] = []
+        for (start, end), in_period in active_periods:
+            period_key = (start.isoformat(), end.isoformat())
+            if period_key in saved_periods:
+                continue
+            reviewed = [item for item in in_period if item.review_kind in REVIEWED_KINDS]
+            backlog.append(
+                PeriodReviewStatus(
+                    cadence,
+                    period_key[0],
+                    period_key[1],
+                    len(reviewed) == len(in_period),
+                    len(reviewed),
+                    len(in_period),
+                )
+            )
+        return tuple(backlog)
+
+    def ongoing_period_status(self, account_id: int, cadence: str, *, now: datetime | None = None) -> OngoingPeriodStatus:
+        """Return progress for the active calendar period, which cannot be reviewed yet."""
+        current = self._current_report_date(now or datetime.now(timezone.utc), account_id)
+        start, end = self._period_bounds(current, cadence, completed=False)
+        in_period = [
+            item
+            for item in self.trade_process_scores(account_id)
+            if start <= self._trade_date(item.exit_time, item.server_utc_offset_minutes) <= end
+        ]
+        reviewed = [item for item in in_period if item.review_kind in REVIEWED_KINDS]
+        return OngoingPeriodStatus(
+            cadence,
+            start.isoformat(),
+            end.isoformat(),
+            (end + timedelta(days=1)).isoformat(),
+            len(reviewed),
+            len(in_period),
+        )
+
+    @staticmethod
+    def _period_bounds(current: date, cadence: str, *, completed: bool) -> tuple[date, date]:
+        if cadence == "weekly":
+            ongoing_start = current - timedelta(days=current.weekday())
+            ongoing_end = ongoing_start + timedelta(days=6)
+            if not completed:
+                return ongoing_start, ongoing_end
+            end = ongoing_start - timedelta(days=1)
+            return end - timedelta(days=6), end
+        if cadence == "monthly":
+            ongoing_start = current.replace(day=1)
+            next_month = (ongoing_start + timedelta(days=32)).replace(day=1)
+            ongoing_end = next_month - timedelta(days=1)
+            if not completed:
+                return ongoing_start, ongoing_end
+            end = ongoing_start - timedelta(days=1)
+            return end.replace(day=1), end
+        raise ValueError("Period review cadence must be weekly or monthly")
 
     def save_period_review(
         self,
@@ -431,11 +523,29 @@ class FrameworkService:
         cadence: str,
         review_note: str,
         priority_action: str,
+        period_start: str | None = None,
+        period_end: str | None = None,
         now: datetime | None = None,
     ) -> None:
-        status = self.period_review_status(account_id, cadence, now=now)
-        if not status.reviewed_trades:
-            raise ValueError("A period review requires at least one complete post-trade assessment in that period")
+        if (period_start is None) != (period_end is None):
+            raise ValueError("Period start and end must be supplied together")
+        if period_start is None:
+            status = self.period_review_status(account_id, cadence, now=now)
+        else:
+            status = next(
+                (
+                    item
+                    for item in self.period_review_backlog(account_id, cadence, now=now)
+                    if item.period_start == period_start and item.period_end == period_end
+                ),
+                None,
+            )
+            if status is None:
+                raise ValueError("This completed period is not available for review")
+        if not status.closed_trades:
+            raise ValueError("A period review requires at least one closed trade in that period")
+        if status.reviewed_trades != status.closed_trades:
+            raise ValueError("Review every closed trade in the period before saving its weekly or monthly reflection")
         period_end = date.fromisoformat(status.period_end)
         scores = self.pillar_scores(account_id, as_of=period_end)
         readiness = self.readiness(account_id, as_of=period_end)

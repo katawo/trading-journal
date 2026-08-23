@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 import sqlite3
 
@@ -1238,6 +1238,175 @@ def test_period_review_status_distinguishes_pending_from_no_activity(tmp_path) -
     assert status.closed_trades == 1
     assert status.reviewed_trades == 0
     assert not status.due
+
+
+def test_ongoing_period_status_reports_dates_review_progress_and_open_date(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    reviewed_trade = _import_position(repository, account_id, position_id="ongoing-reviewed", exit_time="2026-08-21T09:00:00+00:00")
+    _review(repository, account_id, reviewed_trade, policy, strategy)
+    _import_position(repository, account_id, position_id="ongoing-pending", exit_time="2026-08-23T09:00:00+00:00")
+
+    service = FrameworkService(repository)
+    weekly = service.ongoing_period_status(account_id, "weekly", now=datetime(2026, 8, 23, tzinfo=timezone.utc))
+    monthly = service.ongoing_period_status(account_id, "monthly", now=datetime(2026, 8, 23, tzinfo=timezone.utc))
+
+    assert (weekly.period_start, weekly.period_end, weekly.review_opens_on) == ("2026-08-17", "2026-08-23", "2026-08-24")
+    assert (weekly.reviewed_trades, weekly.closed_trades) == (1, 2)
+    assert (monthly.period_start, monthly.period_end, monthly.review_opens_on) == ("2026-08-01", "2026-08-31", "2026-09-01")
+    assert (monthly.reviewed_trades, monthly.closed_trades) == (1, 2)
+
+
+def test_period_review_backlog_keeps_older_unsaved_periods_actionable(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    for position_id, exit_time in (
+        ("older-week", "2026-08-05T09:00:00+00:00"),
+        ("recent-week", "2026-08-20T09:00:00+00:00"),
+    ):
+        trade_id = _import_position(repository, account_id, position_id=position_id, exit_time=exit_time)
+        _review(repository, account_id, trade_id, policy, strategy)
+
+    service = FrameworkService(repository)
+    backlog = service.period_review_backlog(account_id, "weekly", now=datetime(2026, 8, 31, tzinfo=timezone.utc))
+
+    assert [(item.period_start, item.period_end) for item in backlog] == [
+        ("2026-08-03", "2026-08-09"),
+        ("2026-08-17", "2026-08-23"),
+    ]
+    service.save_period_review(
+        account_id=account_id,
+        cadence="weekly",
+        period_start="2026-08-03",
+        period_end="2026-08-09",
+        review_note="Older week reviewed.",
+        priority_action="Keep the reviewed process.",
+        now=datetime(2026, 8, 31, tzinfo=timezone.utc),
+    )
+
+    remaining = service.period_review_backlog(account_id, "weekly", now=datetime(2026, 8, 31, tzinfo=timezone.utc))
+    assert [(item.period_start, item.period_end) for item in remaining] == [("2026-08-17", "2026-08-23")]
+
+
+def test_initial_period_review_backlog_is_bounded_then_tracks_every_later_period(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    first_monday = date(2026, 1, 5)
+
+    for index in range(12):
+        trade_date = first_monday + timedelta(weeks=index, days=1)
+        trade_id = _import_position(
+            repository,
+            account_id,
+            position_id=f"initial-week-{index}",
+            exit_time=f"{trade_date.isoformat()}T09:00:00+00:00",
+        )
+        _review(repository, account_id, trade_id, policy, strategy)
+
+    service = FrameworkService(repository)
+    initial = service.period_review_backlog(
+        account_id,
+        "weekly",
+        now=datetime(2026, 3, 30, tzinfo=timezone.utc),
+    )
+
+    assert len(initial) == 8
+    assert initial[0].period_start == "2026-02-02"
+    assert initial[-1].period_start == "2026-03-23"
+
+    service.save_period_review(
+        account_id=account_id,
+        cadence="weekly",
+        period_start=initial[0].period_start,
+        period_end=initial[0].period_end,
+        review_note="Start weekly tracking here.",
+        priority_action="Keep reviewing each active week.",
+        now=datetime(2026, 3, 30, tzinfo=timezone.utc),
+    )
+    for index in range(12, 17):
+        trade_date = first_monday + timedelta(weeks=index, days=1)
+        trade_id = _import_position(
+            repository,
+            account_id,
+            position_id=f"later-week-{index}",
+            exit_time=f"{trade_date.isoformat()}T09:00:00+00:00",
+        )
+        _review(repository, account_id, trade_id, policy, strategy)
+
+    later = FrameworkService(repository).period_review_backlog(
+        account_id,
+        "weekly",
+        now=datetime(2026, 5, 4, tzinfo=timezone.utc),
+    )
+
+    assert len(later) == 12
+    assert later[0].period_start == "2026-02-09"
+    assert later[-1].period_start == "2026-04-27"
+
+
+def test_initial_monthly_review_backlog_is_bounded_to_three_active_months(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    for month in range(1, 7):
+        trade_id = _import_position(
+            repository,
+            account_id,
+            position_id=f"initial-month-{month}",
+            exit_time=f"2026-{month:02d}-15T09:00:00+00:00",
+        )
+        _review(repository, account_id, trade_id, policy, strategy)
+
+    backlog = FrameworkService(repository).period_review_backlog(
+        account_id,
+        "monthly",
+        now=datetime(2026, 7, 1, tzinfo=timezone.utc),
+    )
+
+    assert [(item.period_start, item.period_end) for item in backlog] == [
+        ("2026-04-01", "2026-04-30"),
+        ("2026-05-01", "2026-05-31"),
+        ("2026-06-01", "2026-06-30"),
+    ]
+
+
+def test_period_review_backlog_rejects_invalid_cadence_without_trades(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+
+    with pytest.raises(ValueError, match="weekly or monthly"):
+        FrameworkService(repository).period_review_backlog(account_id, "quarterly")
+
+
+def test_period_review_cannot_snapshot_while_closed_trades_are_pending(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    reviewed_trade = _import_position(repository, account_id, position_id="reviewed", exit_time="2026-08-20T09:00:00+00:00")
+    _review(repository, account_id, reviewed_trade, policy, strategy)
+    _import_position(repository, account_id, position_id="pending", exit_time="2026-08-21T09:00:00+00:00")
+
+    service = FrameworkService(repository)
+    status = service.period_review_status(account_id, "weekly", now=datetime(2026, 8, 24, tzinfo=timezone.utc))
+
+    assert (status.reviewed_trades, status.closed_trades) == (1, 2)
+    assert not status.due
+    with pytest.raises(ValueError, match="Review every closed trade"):
+        service.save_period_review(
+            account_id=account_id,
+            cadence="weekly",
+            review_note="Incomplete period.",
+            priority_action="Should not save.",
+            now=datetime(2026, 8, 24, tzinfo=timezone.utc),
+        )
+
+
+def test_period_boundaries_cover_leap_month_and_year_rollover(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    service = FrameworkService(repository)
+
+    december = service.ongoing_period_status(account_id, "monthly", now=datetime(2026, 12, 31, tzinfo=timezone.utc))
+    leap_february = service.period_review_status(account_id, "monthly", now=datetime(2028, 3, 1, tzinfo=timezone.utc))
+
+    assert (december.period_start, december.period_end, december.review_opens_on) == ("2026-12-01", "2026-12-31", "2027-01-01")
+    assert (leap_february.period_start, leap_february.period_end) == ("2028-02-01", "2028-02-29")
 
 
 def test_today_reflects_the_accounts_server_reporting_basis(monkeypatch, tmp_path) -> None:

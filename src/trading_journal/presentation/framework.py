@@ -89,6 +89,19 @@ AUTOMATIC_RISK_EVENT_LABELS = {
     "drawdown_limit": "Maximum drawdown limit",
     "loss_streak": "Maximum losing-streak limit",
 }
+PERIOD_ALERT_LABELS = {
+    "risk_stop": "Risk stop",
+    "risk_caution": "Risk caution",
+    "risk_unconfigured": "Risk policy not configured",
+    "psychology_hard_rule": "Psychology hard-rule failure",
+    "risk_hard_rule": "Risk hard-rule failure",
+    "system_hard_rule": "Trading system hard-rule failure",
+    "psychology_developing": "Psychology developing",
+    "risk_developing": "Risk management developing",
+    "system_developing": "Trading system developing",
+    "weekly_review_due": "Weekly review due",
+    "monthly_review_due": "Monthly review due",
+}
 COMPONENT_DEFINITIONS = {
     "Rule adherence": "Average reviewed Rule adherence grade.",
     "Impulse control": "Average reviewed Impulse control grade.",
@@ -119,6 +132,12 @@ def _render_help_popover(*captions: str, icon: str = ":material/help:") -> None:
 
 def _score_text(value: str | None) -> str:
     return "—" if value is None else format_score(value)
+
+
+def _review_history_code_label(code: str, *, alert: bool = False) -> str:
+    if alert:
+        return tr(PERIOD_ALERT_LABELS.get(code, code.replace("_", " ").capitalize()))
+    return tr(VIOLATION_LABELS.get(code, HARD_RULE_LABELS.get(code, code.replace("_", " ").capitalize())))
 
 
 def _focus_metric_text(value: str | None, metric_kind: str) -> str:
@@ -1878,7 +1897,35 @@ def render_dashboard_coaching_focus(repo: SQLiteJournalRepository, account: Acco
 
 
 def _render_period_reviews(repo: SQLiteJournalRepository, account: AccountListItem, service: FrameworkService) -> None:
-    st.markdown("##### Weekly and monthly review")
+    st.markdown(f"##### {tr('Weekly and monthly reviews')}")
+    st.caption(
+        tr(
+            "Track the active calendar periods now, then reflect after each period closes. Period reviews assess process evidence; they are not profit-based pass/fail tests."
+        )
+    )
+
+    st.markdown(f"###### {tr('Ongoing periods')}")
+    ongoing_statuses = [service.ongoing_period_status(account.id, cadence) for cadence in ("weekly", "monthly")]
+    with st.container(horizontal=True, gap="small"):
+        for status in ongoing_statuses:
+            pending = status.closed_trades - status.reviewed_trades
+            with st.container(border=True):
+                st.markdown(f"**{tr(f'Ongoing {status.cadence}')}**")
+                st.caption(f"{status.period_start} to {status.period_end}")
+                if status.closed_trades:
+                    st.write(
+                        tr(
+                            "{reviewed} of {closed} closed trades reviewed · {pending} pending",
+                            reviewed=format_count(status.reviewed_trades),
+                            closed=format_count(status.closed_trades),
+                            pending=format_count(pending),
+                        )
+                    )
+                else:
+                    st.write(tr("No closed trades yet"))
+                st.caption(tr("Review opens {date}.", date=status.review_opens_on))
+
+    st.markdown(f"###### {tr('Latest completed periods')}")
     statuses = [service.period_review_status(account.id, cadence) for cadence in ("weekly", "monthly")]
     with st.container(horizontal=True, gap="small"):
         for status in statuses:
@@ -1890,31 +1937,110 @@ def _render_period_reviews(repo: SQLiteJournalRepository, account: AccountListIt
                 status_label = tr("Due")
             else:
                 status_label = tr("Up to date")
-            st.metric(tr(f"{status.cadence.capitalize()} review"), status_label, f"{status.period_start} to {status.period_end}", border=True)
-    due = next((status for status in statuses if status.due), None)
-    if due is not None:
-        with st.form(f"period-review-{account.id}-{due.cadence}"):
+            with st.container(border=True):
+                st.metric(tr(f"Last completed {status.cadence}"), status_label)
+                st.caption(f"{status.period_start} to {status.period_end}")
+                st.caption(
+                    tr(
+                        "{reviewed} reviewed · {closed} closed",
+                        reviewed=format_count(status.reviewed_trades),
+                        closed=format_count(status.closed_trades),
+                    )
+                )
+
+    backlog = sorted(
+        (
+            status
+            for cadence in ("weekly", "monthly")
+            for status in service.period_review_backlog(account.id, cadence)
+        ),
+        key=lambda status: (status.period_end, status.cadence),
+    )
+    if backlog:
+        st.markdown(f"###### {tr('Past periods requiring attention')}")
+        st.caption(
+            tr(
+                "Before the first saved review, the backlog starts with the latest 8 active weeks and 3 active months. After that, every later active period stays here until saved."
+            )
+        )
+        attention = pd.DataFrame(
+            [
+                {
+                    tr("Cadence"): tr(f"{status.cadence.capitalize()} review"),
+                    tr("Period"): f"{status.period_start} to {status.period_end}",
+                    tr("Status"): tr("Review due" if status.due else "Review trades first"),
+                    tr("Reviewed"): status.reviewed_trades,
+                    tr("Closed"): status.closed_trades,
+                    tr("Pending"): status.closed_trades - status.reviewed_trades,
+                }
+                for status in backlog
+            ]
+        )
+        st.dataframe(attention, hide_index=True, width="stretch")
+
+    reviewable = [status for status in backlog if status.due]
+    if reviewable:
+        due = reviewable[0]
+        if len(reviewable) > 1:
+            due = st.selectbox(
+                tr("Choose a period to review"),
+                reviewable,
+                format_func=lambda status: tr(
+                    "{cadence} · {start} to {end}",
+                    cadence=tr(f"{status.cadence.capitalize()} review"),
+                    start=status.period_start,
+                    end=status.period_end,
+                ),
+                key=f"period-review-selection-{account.id}",
+            )
+        with st.form(f"period-review-{account.id}-{due.cadence}-{due.period_end}", border=True):
+            st.markdown(f"**{tr(f'{due.cadence.capitalize()} review due')}**")
             st.caption(tr("Save the {cadence} reflection for {start} to {end}.", cadence=tr(due.cadence), start=due.period_start, end=due.period_end))
             note = st.text_area("Review note", placeholder="What pattern did the data reveal?")
             action = st.text_area("One priority corrective action", placeholder="Choose one focused action for the next period.")
             submitted = st.form_submit_button("Save period review", type="primary")
-        if submitted:
-            try:
-                with st.spinner(tr("Saving…")):
-                    service.save_period_review(account_id=account.id, cadence=due.cadence, review_note=note, priority_action=action)
-            except ValueError as error:
-                st.error(str(error))
-            else:
-                queue_toast(tr("Period review saved."))
-                st.success("Period review saved.")
-                st.rerun()
+            if submitted:
+                try:
+                    with st.spinner(tr("Saving…")):
+                        service.save_period_review(
+                            account_id=account.id,
+                            cadence=due.cadence,
+                            period_start=due.period_start,
+                            period_end=due.period_end,
+                            review_note=note,
+                            priority_action=action,
+                        )
+                except ValueError as error:
+                    st.error(str(error))
+                else:
+                    queue_toast(tr("Period review saved."))
+                    st.success("Period review saved.")
+                    st.rerun()
+
     reviews = repo.list_framework_period_reviews(account.id)
     if reviews:
-        latest = reviews[0]
-        with st.expander("Latest saved period review"):
-            st.caption(f"{tr(latest.cadence.capitalize())} · {latest.period_start} to {latest.period_end} · {tr('Readiness').casefold()} {_score_text(latest.readiness_score)}")
-            st.write(latest.review_note)
-            st.markdown(f"**{tr('Priority action:')}** {latest.priority_action}")
+        st.markdown(f"###### {tr('Saved review history')}")
+        history = pd.DataFrame(
+            [
+                {
+                    tr("Cadence"): tr(f"{review.cadence.capitalize()} review"),
+                    tr("Period"): f"{review.period_start} to {review.period_end}",
+                    tr("Psychology"): _score_text(review.psychology_score),
+                    tr("Risk management"): _score_text(review.risk_score),
+                    tr("Trading system"): _score_text(review.system_score),
+                    tr("Readiness"): _score_text(review.readiness_score),
+                    tr("Recurring issues"): ", ".join(_review_history_code_label(code) for code in review.recurring_issues) or "—",
+                    tr("Alerts"): ", ".join(_review_history_code_label(code, alert=True) for code in review.alert_codes) or "—",
+                    tr("Review note"): review.review_note,
+                    tr("Priority action"): review.priority_action,
+                    tr("Saved"): review.created_at,
+                }
+                for review in reviews
+            ]
+        )
+        st.dataframe(history, hide_index=True, width="stretch")
+    else:
+        st.caption(tr("No weekly or monthly reviews have been saved yet."))
 
 
 def _render_roadmap(repo: SQLiteJournalRepository, account: AccountListItem) -> None:

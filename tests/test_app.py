@@ -914,6 +914,25 @@ def test_monitor_tab_shows_early_estimate_not_incomplete_for_a_partial_sample(mo
                 account_login="123456",
                 broker_server="DemoBroker-Live",
                 account_currency="USD",
+                position_id="9009",
+                symbol="XAUUSD",
+                direction="long",
+                entry_time="2026-07-14T08:00:00+00:00",
+                exit_time="2026-07-14T09:00:00+00:00",
+                entry_price="3250",
+                exit_price="3260",
+                volume="0.1",
+                gross_pnl="10",
+                commission="0",
+                swap="0",
+                fees="0",
+                net_pnl="10",
+            ),
+            MT5PositionExport(
+                schema_version=5,
+                account_login="123456",
+                broker_server="DemoBroker-Live",
+                account_currency="USD",
                 position_id="9010",
                 symbol="XAUUSD",
                 direction="long",
@@ -932,18 +951,32 @@ def test_monitor_tab_shows_early_estimate_not_incomplete_for_a_partial_sample(mo
         "positions.csv",
         "early-estimate-test",
     )
-    trade = repository.list_closed_trades_for_review(account.id)[0]
-    repository.save_post_trade_assessment(
+    for trade in repository.list_closed_trades_for_review(account.id):
+        repository.save_post_trade_assessment(
+            account_id=account.id,
+            trade_id=trade.id,
+            risk_policy_id=None,
+            strategy_profile_id=strategy.id,
+            criterion_grades=all_pass,
+            violation_codes=(),
+            hard_rule_codes=(),
+            declared_actual_risk_amount=None,
+            post_review_note="Reviewed independently of trade P&L.",
+            corrective_action=None,
+        )
+    repository.save_framework_period_review(
         account_id=account.id,
-        trade_id=trade.id,
-        risk_policy_id=None,
-        strategy_profile_id=strategy.id,
-        criterion_grades=all_pass,
-        violation_codes=(),
-        hard_rule_codes=(),
-        declared_actual_risk_amount=None,
-        post_review_note="Reviewed independently of trade P&L.",
-        corrective_action=None,
+        cadence="monthly",
+        period_start="2026-06-01",
+        period_end="2026-06-30",
+        psychology_score="90",
+        risk_score="80",
+        system_score="70",
+        readiness_score="70",
+        alert_codes=("risk_stop",),
+        recurring_issues=("stop_widened",),
+        review_note="Historical review note.",
+        priority_action="Keep the original stop.",
     )
     monkeypatch.setenv("TRADING_JOURNAL_DB", str(database_path))
 
@@ -961,6 +994,17 @@ def test_monitor_tab_shows_early_estimate_not_incomplete_for_a_partial_sample(mo
     assert "Psychology: Primary · 123456 · DemoBroker-Live" in captions
     assert "Account: Primary · 123456 · DemoBroker-Live" in captions
     assert "System: Primary · 123456 · DemoBroker-Live" in captions
+    markdown = {item.value for item in app.markdown}
+    assert any("Ongoing periods" in value for value in markdown)
+    assert any("Latest completed periods" in value for value in markdown)
+    assert any("Past periods requiring attention" in value for value in markdown)
+    assert any(value.startswith("Review opens ") for value in captions)
+    assert any(item.label == "Choose a period to review" for item in app.selectbox)
+    assert sum(item.label == "Save period review" for item in app.button) == 1
+    history = next(item.value for item in app.dataframe if "Review note" in item.value.columns)
+    assert history.iloc[0]["Cadence"] == "Monthly review"
+    assert history.iloc[0]["Recurring issues"] == "Stop widened"
+    assert history.iloc[0]["Alerts"] == "Risk stop"
 
 
 def test_monitor_tab_explains_why_a_pillar_is_capped(monkeypatch, tmp_path):
