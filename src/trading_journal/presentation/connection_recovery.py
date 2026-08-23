@@ -125,19 +125,18 @@ _CONNECTION_RECOVERY_JS = """
       const appRoot = document.querySelector('[data-testid="stAppViewContainer"]')
       const appWasInert = Boolean(appRoot?.inert)
       const state = {
-        stopped: false, checking: false, failures: 0, attempts: 0, visible: false,
+        stopped: false, checking: false, attempts: 0, visible: false,
         recovering: false, timer: null, disconnectTimer: null, reloadTimer: null,
       }
-      const healthyIntervalMs = Number(data.healthy_interval_ms ?? 5000)
       const retryIntervalMs = Number(data.retry_interval_ms ?? 2000)
+      const maxRetryIntervalMs = Number(data.max_retry_interval_ms ?? 30000)
       const requestTimeoutMs = Number(data.request_timeout_ms ?? 2500)
-      const failureThreshold = Number(data.failure_threshold ?? 2)
       const disconnectGraceMs = Number(data.disconnect_grace_ms ?? 1500)
-      const initialCheckDelayMs = Number(data.initial_check_delay_ms ?? 1000)
       const reloadCooldownMs = Number(data.reload_cooldown_ms ?? 30000)
       const reloadDelayMs = Number(data.reload_delay_ms ?? 650)
       const reloadStorageKey = 'trade-compass:connection-recovery:last-reload'
       const connectedStates = new Set(['CONNECTED', 'STATIC_CONNECTED'])
+      const healthUrl = new URL(data.health_url, window.location.origin).toString()
 
       const retryText = () => data.retrying_status.replace('{attempt}', String(state.attempts))
       const setStatus = (message) => { status.textContent = message }
@@ -147,8 +146,9 @@ _CONNECTION_RECOVERY_JS = """
       const rememberReload = () => {
         try { window.sessionStorage.setItem(reloadStorageKey, String(Date.now())) } catch { /* best effort */ }
       }
-      const schedule = (delay) => {
-        if (state.stopped) return
+      const schedule = () => {
+        if (state.stopped || !state.visible || state.recovering) return
+        const delay = Math.min(retryIntervalMs * (2 ** Math.max(0, state.attempts - 1)), maxRetryIntervalMs)
         window.clearTimeout(state.timer)
         state.timer = window.setTimeout(check, delay)
       }
@@ -167,6 +167,7 @@ _CONNECTION_RECOVERY_JS = """
       const recover = () => {
         if (state.recovering) return
         state.recovering = true
+        window.clearTimeout(state.timer)
         title.textContent = data.recovered_title
         detail.textContent = data.recovered_detail
         retryButton.hidden = true
@@ -183,7 +184,7 @@ _CONNECTION_RECOVERY_JS = """
         state.reloadTimer = window.setTimeout(() => window.location.reload(), reloadDelayMs)
       }
       async function check() {
-        if (state.stopped || state.checking) return
+        if (state.stopped || state.checking || state.recovering || !state.visible) return
         state.checking = true
         if (state.visible) {
           state.attempts += 1
@@ -192,37 +193,30 @@ _CONNECTION_RECOVERY_JS = """
         const controller = new AbortController()
         const timeout = window.setTimeout(() => controller.abort(), requestTimeoutMs)
         try {
-          const response = await fetch(data.health_url, {
+          const response = await fetch(healthUrl, {
             cache: 'no-store', credentials: 'same-origin', signal: controller.signal,
           })
           if (!response.ok) throw new Error(`Health check returned ${response.status}`)
-          state.failures = 0
-          if (state.visible) recover()
-          else schedule(healthyIntervalMs)
+          recover()
         } catch {
-          state.failures += 1
-          if (!navigator.onLine || state.failures >= failureThreshold) {
-            if (!state.visible) state.attempts = 1
-            showDisconnected(navigator.onLine ? retryText() : data.offline_status)
-          }
-          schedule(retryIntervalMs)
+          showDisconnected(navigator.onLine ? retryText() : data.offline_status)
+          schedule()
         } finally {
           window.clearTimeout(timeout)
           state.checking = false
         }
       }
       const onOffline = () => {
-        state.failures = failureThreshold
         state.attempts = Math.max(1, state.attempts)
         showDisconnected(data.offline_status)
-        schedule(retryIntervalMs)
+        schedule()
       }
       const onOnline = () => {
         if (state.visible) setStatus(data.checking_status)
-        check()
+        if (state.visible) check()
       }
       const onVisibilityChange = () => {
-        if (document.visibilityState === 'visible') check()
+        if (document.visibilityState === 'visible' && state.visible) check()
       }
       const connectionState = () => streamlitRoot?.getAttribute('data-test-connection-state') ?? 'CONNECTED'
       const onStreamlitConnectionChange = () => {
@@ -238,6 +232,7 @@ _CONNECTION_RECOVERY_JS = """
           if (state.stopped || connectedStates.has(connectionState())) return
           if (!state.visible) state.attempts = 1
           showDisconnected(data.websocket_status)
+          schedule()
         }, disconnectGraceMs)
       }
       const onRetry = () => {
@@ -270,7 +265,6 @@ _CONNECTION_RECOVERY_JS = """
       const connectionObserver = streamlitRoot ? new MutationObserver(onStreamlitConnectionChange) : null
       connectionObserver?.observe(streamlitRoot, { attributes: true, attributeFilter: ['data-test-connection-state'] })
       onStreamlitConnectionChange()
-      schedule(initialCheckDelayMs)
 
       anchor._cleanup = () => {
         state.stopped = true
