@@ -35,6 +35,7 @@ from trading_journal.infrastructure.sqlite_repository import (
 )
 from trading_journal.presentation.i18n import format_relative_time_localized, queue_toast, tr
 from trading_journal.presentation.formatting import format_count, format_currency, format_exposure_r, format_percent, format_r, format_score
+from trading_journal.presentation.browser_timezone import browser_timezone
 from trading_journal.presentation.trade_tags import direction_tag, outcome_tag
 
 
@@ -1617,7 +1618,9 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
 
 
 def _render_monitor(repo: SQLiteJournalRepository, account: AccountListItem) -> None:
-    service = FrameworkService(repo)
+    settings = repo.get_journal_settings()
+    local_zone = browser_timezone() if settings.reporting_time_basis == "local" else None
+    service = FrameworkService(repo, local_zone=local_zone)
     st.markdown(tr("#### Monitoring"))
     _render_risk_configuration_notice(service, account.id)
     controls, scope_note = st.columns((2, 3))
@@ -1903,6 +1906,26 @@ def _render_period_reviews(repo: SQLiteJournalRepository, account: AccountListIt
             "Track the active calendar periods now, then reflect after each period closes. Period reviews assess process evidence; they are not profit-based pass/fail tests."
         )
     )
+    basis = repo.get_journal_settings().reporting_time_basis
+    basis_label = {
+        "server": tr("MT5 server time"),
+        "utc": "UTC",
+        "local": tr("local computer time"),
+    }[basis]
+    st.info(
+        tr(
+            "Review calendar: {basis}. Calendar today is {date}; a period becomes reviewable on the next calendar day.",
+            basis=basis_label,
+            date=service.today(account.id).isoformat(),
+        ),
+        icon=":material/calendar_today:",
+    )
+    if basis != "local":
+        st.page_link(
+            "app_pages/settings.py",
+            label=tr("Use this device's local calendar in Settings"),
+            icon=":material/settings:",
+        )
 
     st.markdown(f"###### {tr('Ongoing periods')}")
     ongoing_statuses = [service.ongoing_period_status(account.id, cadence) for cadence in ("weekly", "monthly")]
@@ -1929,7 +1952,11 @@ def _render_period_reviews(repo: SQLiteJournalRepository, account: AccountListIt
     statuses = [service.period_review_status(account.id, cadence) for cadence in ("weekly", "monthly")]
     with st.container(horizontal=True, gap="small"):
         for status in statuses:
-            if status.closed_trades == 0:
+            if status.disposition == "skipped":
+                status_label = tr("Skipped")
+            elif status.disposition == "reviewed":
+                status_label = tr("Reviewed")
+            elif status.closed_trades == 0:
                 status_label = tr("No activity")
             elif status.reviewed_trades == 0:
                 status_label = tr("Pending review")
@@ -1960,7 +1987,7 @@ def _render_period_reviews(repo: SQLiteJournalRepository, account: AccountListIt
         st.markdown(f"###### {tr('Past periods requiring attention')}")
         st.caption(
             tr(
-                "Before the first saved review, the backlog starts with the latest 8 active weeks and 3 active months. After that, every later active period stays here until saved."
+                "Every completed period containing trades stays unreviewed until you review or explicitly skip it. Choosing a newer period never hides an older one."
             )
         )
         attention = pd.DataFrame(
@@ -1978,13 +2005,12 @@ def _render_period_reviews(repo: SQLiteJournalRepository, account: AccountListIt
         )
         st.dataframe(attention, hide_index=True, width="stretch")
 
-    reviewable = [status for status in backlog if status.due]
-    if reviewable:
-        due = reviewable[0]
-        if len(reviewable) > 1:
-            due = st.selectbox(
-                tr("Choose a period to review"),
-                reviewable,
+    if backlog:
+        selected = backlog[0]
+        if len(backlog) > 1:
+            selected = st.selectbox(
+                tr("Choose a period"),
+                backlog,
                 format_func=lambda status: tr(
                     "{cadence} · {start} to {end}",
                     cadence=tr(f"{status.cadence.capitalize()} review"),
@@ -1993,38 +2019,59 @@ def _render_period_reviews(repo: SQLiteJournalRepository, account: AccountListIt
                 ),
                 key=f"period-review-selection-{account.id}",
             )
-        with st.form(f"period-review-{account.id}-{due.cadence}-{due.period_end}", border=True):
-            st.markdown(f"**{tr(f'{due.cadence.capitalize()} review due')}**")
-            st.caption(tr("Save the {cadence} reflection for {start} to {end}.", cadence=tr(due.cadence), start=due.period_start, end=due.period_end))
-            note = st.text_area("Review note", placeholder="What pattern did the data reveal?")
-            action = st.text_area("One priority corrective action", placeholder="Choose one focused action for the next period.")
-            submitted = st.form_submit_button("Save period review", type="primary")
-            if submitted:
+        if selected.due:
+            with st.form(f"period-review-{account.id}-{selected.cadence}-{selected.period_end}", border=True):
+                st.markdown(f"**{tr(f'{selected.cadence.capitalize()} review due')}**")
+                st.caption(tr("Save the {cadence} reflection for {start} to {end}.", cadence=tr(selected.cadence), start=selected.period_start, end=selected.period_end))
+                note = st.text_area("Review note", placeholder="What pattern did the data reveal?")
+                action = st.text_area("One priority corrective action", placeholder="Choose one focused action for the next period.")
+                submitted = st.form_submit_button("Save period review", type="primary")
+                if submitted:
+                    try:
+                        with st.spinner(tr("Saving…")):
+                            service.save_period_review(
+                                account_id=account.id,
+                                cadence=selected.cadence,
+                                period_start=selected.period_start,
+                                period_end=selected.period_end,
+                                review_note=note,
+                                priority_action=action,
+                            )
+                    except ValueError as error:
+                        st.error(str(error))
+                    else:
+                        queue_toast(tr("Period review saved."))
+                        st.success("Period review saved.")
+                        st.rerun()
+        else:
+            st.warning(tr("Review every closed trade in this period before saving its reflection, or skip the period with a reason."))
+        with st.form(f"skip-period-{account.id}-{selected.cadence}-{selected.period_end}", border=False):
+            skip_reason = st.text_input(tr("Skip reason"), placeholder=tr("Why are you intentionally not completing this period review?"))
+            skipped = st.form_submit_button(tr("Skip period"))
+            if skipped:
                 try:
-                    with st.spinner(tr("Saving…")):
-                        service.save_period_review(
-                            account_id=account.id,
-                            cadence=due.cadence,
-                            period_start=due.period_start,
-                            period_end=due.period_end,
-                            review_note=note,
-                            priority_action=action,
-                        )
+                    service.skip_period_review(
+                        account_id=account.id,
+                        cadence=selected.cadence,
+                        period_start=selected.period_start,
+                        period_end=selected.period_end,
+                        reason=skip_reason,
+                    )
                 except ValueError as error:
                     st.error(str(error))
                 else:
-                    queue_toast(tr("Period review saved."))
-                    st.success("Period review saved.")
+                    queue_toast(tr("Period skipped."))
                     st.rerun()
 
     reviews = repo.list_framework_period_reviews(account.id)
     if reviews:
-        st.markdown(f"###### {tr('Saved review history')}")
+        st.markdown(f"###### {tr('Period history')}")
         history = pd.DataFrame(
             [
                 {
                     tr("Cadence"): tr(f"{review.cadence.capitalize()} review"),
                     tr("Period"): f"{review.period_start} to {review.period_end}",
+                    tr("Status"): tr(review.status.capitalize()),
                     tr("Psychology"): _score_text(review.psychology_score),
                     tr("Risk management"): _score_text(review.risk_score),
                     tr("Trading system"): _score_text(review.system_score),

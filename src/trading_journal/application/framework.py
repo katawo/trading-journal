@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass, replace
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone, tzinfo
 from decimal import Decimal
 
 from trading_journal.application.reporting_time import reporting_date, reporting_datetime
@@ -38,7 +38,6 @@ PERIOD_WEIGHTS = {
     "risk": (Decimal("0.35"), Decimal("0.25"), Decimal("0.25"), Decimal("0.15")),
     "system": (Decimal("0.20"), Decimal("0.20"), Decimal("0.15"), Decimal("0.20"), Decimal("0.25")),
 }
-INITIAL_PERIOD_REVIEW_BACKLOG_LIMITS = {"weekly": 8, "monthly": 3}
 CRITICAL_VIOLATIONS = {
     "psychology": frozenset({"revenge", "emotional_sizing", "post_loss_reset", "oversized_revenge"}),
     "risk": frozenset({"daily_limit", "weekly_limit", "drawdown_limit", "open_exposure", "correlation_exposure", "oversized_revenge", "stop_widened", "shutdown_breach", "no_stop_loss"}),
@@ -311,6 +310,7 @@ class PeriodReviewStatus:
     due: bool
     reviewed_trades: int
     closed_trades: int
+    disposition: str = "unreviewed"
 
 
 @dataclass(frozen=True)
@@ -347,8 +347,9 @@ class PillarRoadmapStatus:
 class FrameworkService:
     """Purely advisory calculations over persisted closed-trade reviews."""
 
-    def __init__(self, repository: SQLiteJournalRepository) -> None:
+    def __init__(self, repository: SQLiteJournalRepository, *, local_zone: tzinfo | None = None) -> None:
         self._repository = repository
+        self._local_zone = local_zone
         # The service is short-lived: one Streamlit render. Cache its read
         # model only for that render so live imports and saved reviews are
         # never served stale on a later rerun.
@@ -424,19 +425,33 @@ class FrameworkService:
         in_period = [item for item in self.trade_process_scores(account_id) if start <= self._trade_date(item.exit_time, item.server_utc_offset_minutes) <= end]
         reviewed = [item for item in in_period if item.review_kind in REVIEWED_KINDS]
         existing = self._repository.list_framework_period_reviews(account_id, cadence)
-        saved = any(item.period_start == start.isoformat() and item.period_end == end.isoformat() for item in existing)
+        disposition = next(
+            (
+                item.status
+                for item in existing
+                if item.period_start == start.isoformat() and item.period_end == end.isoformat()
+            ),
+            "unreviewed",
+        )
         complete = bool(in_period) and len(reviewed) == len(in_period)
-        return PeriodReviewStatus(cadence, start.isoformat(), end.isoformat(), complete and not saved, len(reviewed), len(in_period))
+        return PeriodReviewStatus(
+            cadence,
+            start.isoformat(),
+            end.isoformat(),
+            complete and disposition == "unreviewed",
+            len(reviewed),
+            len(in_period),
+            disposition,
+        )
 
     def period_review_backlog(self, account_id: int, cadence: str, *, now: datetime | None = None) -> tuple[PeriodReviewStatus, ...]:
-        """Return completed active periods inside the account's review-tracking horizon.
+        """Return every completed active period without a final disposition.
 
-        Imported accounts have no reliable date that says when period-review tracking
-        began. Until the first review is saved, expose a finite set of recent active
-        periods instead of turning the entire imported history into overdue work. Once
-        a review exists, every later active period remains actionable until it is saved.
+        Every completed period containing trades remains actionable until it receives
+        exactly one reviewed or skipped disposition. Saving a newer period must never
+        hide an older unreviewed period.
         """
-        if cadence not in INITIAL_PERIOD_REVIEW_BACKLOG_LIMITS:
+        if cadence not in {"weekly", "monthly"}:
             raise ValueError("Period review cadence must be weekly or monthly")
         current = self._current_report_date(now or datetime.now(timezone.utc), account_id)
         scores = self.trade_process_scores(account_id)
@@ -454,12 +469,6 @@ class FrameworkService:
             periods.setdefault((start, end), []).append(item)
 
         active_periods = sorted(periods.items())
-        if saved_reviews:
-            latest_saved_end = max(date.fromisoformat(item.period_end) for item in saved_reviews)
-            active_periods = [item for item in active_periods if item[0][1] > latest_saved_end]
-        else:
-            active_periods = active_periods[-INITIAL_PERIOD_REVIEW_BACKLOG_LIMITS[cadence] :]
-
         backlog: list[PeriodReviewStatus] = []
         for (start, end), in_period in active_periods:
             period_key = (start.isoformat(), end.isoformat())
@@ -477,6 +486,34 @@ class FrameworkService:
                 )
             )
         return tuple(backlog)
+
+    def skip_period_review(
+        self,
+        *,
+        account_id: int,
+        cadence: str,
+        period_start: str,
+        period_end: str,
+        reason: str,
+        now: datetime | None = None,
+    ) -> None:
+        status = next(
+            (
+                item
+                for item in self.period_review_backlog(account_id, cadence, now=now)
+                if item.period_start == period_start and item.period_end == period_end
+            ),
+            None,
+        )
+        if status is None:
+            raise ValueError("This completed period is not available to skip")
+        self._repository.skip_framework_period_review(
+            account_id=account_id,
+            cadence=cadence,
+            period_start=period_start,
+            period_end=period_end,
+            reason=reason,
+        )
 
     def ongoing_period_status(self, account_id: int, cadence: str, *, now: datetime | None = None) -> OngoingPeriodStatus:
         """Return progress for the active calendar period, which cannot be reviewed yet."""
@@ -991,7 +1028,9 @@ class FrameworkService:
         for cadence in ("weekly", "monthly"):
             status = self.period_review_status(account_id, cadence, now=now)
             if any(
-                review.period_start == status.period_start and review.period_end == status.period_end
+                review.status == "reviewed"
+                and review.period_start == status.period_start
+                and review.period_end == status.period_end
                 for review in self._repository.list_framework_period_reviews(account_id, cadence)
             ):
                 return True
@@ -1211,7 +1250,7 @@ class FrameworkService:
         last_critical = last_critical_item.exit_time
         last_critical_date = self._trade_date(last_critical, last_critical_item.server_utc_offset_minutes).isoformat()
         reviewed_after = any(
-            review.created_at > last_critical
+            review.status == "reviewed" and review.created_at > last_critical
             for review in self._repository.list_framework_period_reviews(sample[-1].account_id)
         )
         return reviewed_after, last_critical_date
@@ -1657,13 +1696,23 @@ class FrameworkService:
         return self._reporting_time_basis_cache
 
     def _trade_date(self, value: str, server_utc_offset_minutes: int) -> date:
-        return reporting_date(value, server_utc_offset_minutes, self._reporting_time_basis())
+        return reporting_date(
+            value,
+            server_utc_offset_minutes,
+            self._reporting_time_basis(),
+            local_zone=self._local_zone,
+        )
 
     def _current_report_date(self, value: datetime, account_id: int) -> date:
         timestamp = value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
         account = next((item for item in self._repository.list_mt5_accounts() if item.id == account_id), None)
         offset = 0 if account is None or account.latest_server_utc_offset_minutes is None else account.latest_server_utc_offset_minutes
-        return reporting_datetime(timestamp.isoformat(), offset, self._reporting_time_basis()).date()
+        return reporting_datetime(
+            timestamp.isoformat(),
+            offset,
+            self._reporting_time_basis(),
+            local_zone=self._local_zone,
+        ).date()
 
     def today(self, account_id: int) -> date:
         """Current date in the account's configured reporting-time basis (server/UTC/local)."""

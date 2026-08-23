@@ -1288,7 +1288,7 @@ def test_period_review_backlog_keeps_older_unsaved_periods_actionable(tmp_path) 
     assert [(item.period_start, item.period_end) for item in remaining] == [("2026-08-17", "2026-08-23")]
 
 
-def test_initial_period_review_backlog_is_bounded_then_tracks_every_later_period(tmp_path) -> None:
+def test_period_review_backlog_tracks_every_active_period_until_disposed(tmp_path) -> None:
     repository, account_id = _repository(tmp_path)
     policy, strategy = _policy(repository, account_id), _strategy(repository)
     first_monday = date(2026, 1, 5)
@@ -1310,8 +1310,8 @@ def test_initial_period_review_backlog_is_bounded_then_tracks_every_later_period
         now=datetime(2026, 3, 30, tzinfo=timezone.utc),
     )
 
-    assert len(initial) == 8
-    assert initial[0].period_start == "2026-02-02"
+    assert len(initial) == 12
+    assert initial[0].period_start == "2026-01-05"
     assert initial[-1].period_start == "2026-03-23"
 
     service.save_period_review(
@@ -1339,12 +1339,12 @@ def test_initial_period_review_backlog_is_bounded_then_tracks_every_later_period
         now=datetime(2026, 5, 4, tzinfo=timezone.utc),
     )
 
-    assert len(later) == 12
-    assert later[0].period_start == "2026-02-09"
+    assert len(later) == 16
+    assert later[0].period_start == "2026-01-12"
     assert later[-1].period_start == "2026-04-27"
 
 
-def test_initial_monthly_review_backlog_is_bounded_to_three_active_months(tmp_path) -> None:
+def test_monthly_review_backlog_tracks_every_active_month(tmp_path) -> None:
     repository, account_id = _repository(tmp_path)
     policy, strategy = _policy(repository, account_id), _strategy(repository)
     for month in range(1, 7):
@@ -1363,9 +1363,62 @@ def test_initial_monthly_review_backlog_is_bounded_to_three_active_months(tmp_pa
     )
 
     assert [(item.period_start, item.period_end) for item in backlog] == [
+        ("2026-01-01", "2026-01-31"),
+        ("2026-02-01", "2026-02-28"),
+        ("2026-03-01", "2026-03-31"),
         ("2026-04-01", "2026-04-30"),
         ("2026-05-01", "2026-05-31"),
         ("2026-06-01", "2026-06-30"),
+    ]
+
+
+def test_saving_a_newer_week_does_not_hide_an_older_unreviewed_week(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    for position_id, exit_time in (
+        ("older", "2026-08-05T09:00:00+00:00"),
+        ("newer", "2026-08-20T09:00:00+00:00"),
+    ):
+        trade_id = _import_position(repository, account_id, position_id=position_id, exit_time=exit_time)
+        _review(repository, account_id, trade_id, policy, strategy)
+    service = FrameworkService(repository)
+    now = datetime(2026, 8, 31, tzinfo=timezone.utc)
+
+    service.save_period_review(
+        account_id=account_id,
+        cadence="weekly",
+        period_start="2026-08-17",
+        period_end="2026-08-23",
+        review_note="Reviewed the newer week first.",
+        priority_action="Keep the planned sequence.",
+        now=now,
+    )
+
+    remaining = service.period_review_backlog(account_id, "weekly", now=now)
+    assert [(item.period_start, item.period_end) for item in remaining] == [
+        ("2026-08-03", "2026-08-09")
+    ]
+
+
+def test_skipped_week_has_one_persisted_disposition_and_leaves_the_backlog(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    _import_position(repository, account_id, exit_time="2026-08-05T09:00:00+00:00")
+    service = FrameworkService(repository)
+    now = datetime(2026, 8, 10, tzinfo=timezone.utc)
+
+    service.skip_period_review(
+        account_id=account_id,
+        cadence="weekly",
+        period_start="2026-08-03",
+        period_end="2026-08-09",
+        reason="Imported history; intentionally not reviewing this week.",
+        now=now,
+    )
+
+    assert service.period_review_backlog(account_id, "weekly", now=now) == ()
+    saved = repository.list_framework_period_reviews(account_id, "weekly")
+    assert [(item.status, item.period_start, item.period_end) for item in saved] == [
+        ("skipped", "2026-08-03", "2026-08-09")
     ]
 
 
@@ -1439,6 +1492,32 @@ def test_today_reflects_the_accounts_server_reporting_basis(monkeypatch, tmp_pat
     # 23:30 UTC + a 3-hour (180 min) server offset rolls over to the next server-clock day,
     # so a naive date.today() (still Aug 10 in UTC) would disagree with the reporting basis.
     assert FrameworkService(repository).today(account_id) == date(2026, 8, 11)
+
+
+def test_local_reporting_calendar_uses_the_browser_zone_at_week_rollover(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    repository.configure_journal(reporting_time_basis="local")
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    trade_id = _import_position(
+        repository,
+        account_id,
+        position_id="just-finished-local-week",
+        exit_time="2026-08-20T09:00:00+00:00",
+    )
+    _review(repository, account_id, trade_id, policy, strategy)
+    vietnam = timezone(timedelta(hours=7))
+    service = FrameworkService(repository, local_zone=vietnam)
+    now = datetime(2026, 8, 23, 17, 30, tzinfo=timezone.utc)
+
+    ongoing = service.ongoing_period_status(account_id, "weekly", now=now)
+    completed = service.period_review_status(account_id, "weekly", now=now)
+    backlog = service.period_review_backlog(account_id, "weekly", now=now)
+
+    assert (ongoing.period_start, ongoing.period_end) == ("2026-08-24", "2026-08-30")
+    assert (completed.period_start, completed.period_end) == ("2026-08-17", "2026-08-23")
+    assert [(item.period_start, item.period_end, item.due) for item in backlog] == [
+        ("2026-08-17", "2026-08-23", True)
+    ]
 
 
 def test_caution_cap_detail_names_the_date_of_the_last_critical_violation(tmp_path) -> None:

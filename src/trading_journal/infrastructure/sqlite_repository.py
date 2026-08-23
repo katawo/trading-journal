@@ -395,6 +395,7 @@ class FrameworkPeriodReview(Base):
     cadence: Mapped[str] = mapped_column(String(12), nullable=False)
     period_start: Mapped[str] = mapped_column(String(10), nullable=False)
     period_end: Mapped[str] = mapped_column(String(10), nullable=False)
+    status: Mapped[str] = mapped_column(String(12), nullable=False, default="reviewed")
     psychology_score: Mapped[str | None] = mapped_column(String, nullable=True)
     risk_score: Mapped[str | None] = mapped_column(String, nullable=True)
     system_score: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -766,6 +767,7 @@ class FrameworkPeriodReviewView:
     cadence: str
     period_start: str
     period_end: str
+    status: str
     psychology_score: str | None
     risk_score: str | None
     system_score: str | None
@@ -869,6 +871,9 @@ class SQLiteJournalRepository:
             strategy_columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(strategy_profiles)")}
             if "backtest_verified" not in strategy_columns:
                 connection.exec_driver_sql("ALTER TABLE strategy_profiles ADD COLUMN backtest_verified BOOLEAN NOT NULL DEFAULT 0")
+            period_review_columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(framework_period_reviews)")}
+            if period_review_columns and "status" not in period_review_columns:
+                connection.exec_driver_sql("ALTER TABLE framework_period_reviews ADD COLUMN status VARCHAR(12) NOT NULL DEFAULT 'reviewed'")
             # create_all does not add newly-declared indexes to an existing table.
             for statement in (
                 "CREATE INDEX IF NOT EXISTS ix_trades_account_exit ON trades (mt5_account_id, exit_time, id)",
@@ -2360,6 +2365,7 @@ class SQLiteJournalRepository:
                 cadence=cadence,
                 period_start=period_start,
                 period_end=period_end,
+                status="reviewed",
                 created_at=datetime.now(timezone.utc).isoformat(),
                 psychology_score=psychology_score,
                 risk_score=risk_score,
@@ -2369,6 +2375,53 @@ class SQLiteJournalRepository:
                 recurring_issues=json.dumps(sorted(set(recurring_issues))),
                 review_note=note,
                 priority_action=action,
+            )
+            session.add(row)
+            session.flush()
+            return self._to_framework_period_review_view(row)
+
+    def skip_framework_period_review(
+        self,
+        *,
+        account_id: int,
+        cadence: str,
+        period_start: str,
+        period_end: str,
+        reason: str,
+    ) -> FrameworkPeriodReviewView:
+        """Persist an explicit skipped disposition for one completed active period."""
+        if cadence not in {"weekly", "monthly"}:
+            raise ValueError("Period review cadence must be weekly or monthly")
+        skip_reason = self._required_text(reason, "Skip reason")
+        with self._sessions.begin() as session:
+            account = session.get(MT5Account, account_id)
+            if account is None or not account.active:
+                raise ValueError("Approved MT5 account was not found")
+            existing = session.scalar(
+                select(FrameworkPeriodReview).where(
+                    FrameworkPeriodReview.mt5_account_id == account_id,
+                    FrameworkPeriodReview.cadence == cadence,
+                    FrameworkPeriodReview.period_start == period_start,
+                    FrameworkPeriodReview.period_end == period_end,
+                )
+            )
+            if existing is not None:
+                raise ValueError("This period already has a reviewed or skipped disposition.")
+            row = FrameworkPeriodReview(
+                mt5_account_id=account_id,
+                cadence=cadence,
+                period_start=period_start,
+                period_end=period_end,
+                status="skipped",
+                created_at=datetime.now(timezone.utc).isoformat(),
+                psychology_score=None,
+                risk_score=None,
+                system_score=None,
+                readiness_score=None,
+                alert_codes="[]",
+                recurring_issues="[]",
+                review_note=skip_reason,
+                priority_action="—",
             )
             session.add(row)
             session.flush()
@@ -2995,6 +3048,7 @@ class SQLiteJournalRepository:
             row.cadence,
             row.period_start,
             row.period_end,
+            row.status,
             row.psychology_score,
             row.risk_score,
             row.system_score,

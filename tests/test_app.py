@@ -1038,8 +1038,9 @@ def test_monitor_tab_shows_early_estimate_not_incomplete_for_a_partial_sample(mo
     assert any("Ongoing periods" in value for value in markdown)
     assert any("Latest completed periods" in value for value in markdown)
     assert any("Past periods requiring attention" in value for value in markdown)
+    assert any("Review calendar: UTC." in item.value for item in app.info)
     assert any(value.startswith("Review opens ") for value in captions)
-    assert any(item.label == "Choose a period to review" for item in app.selectbox)
+    assert any(item.label == "Choose a period" for item in app.selectbox)
     assert sum(item.label == "Save period review" for item in app.button) == 1
     history = next(item.value for item in app.dataframe if "Review note" in item.value.columns)
     assert history.iloc[0]["Cadence"] == "Monthly review"
