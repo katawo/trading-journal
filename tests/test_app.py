@@ -1044,7 +1044,7 @@ def test_monitor_tab_shows_early_estimate_not_incomplete_for_a_partial_sample(mo
     assert sum(item.label == "Save period review" for item in app.button) == 1
     history = next(item.value for item in app.dataframe if "Review note" in item.value.columns)
     assert history.iloc[0]["Cadence"] == "Monthly review"
-    assert history.iloc[0]["Recurring issues"] == "Stop widened"
+    assert history.iloc[0]["Recurring issues"] == "Moved the stop loss farther away"
     assert history.iloc[0]["Alerts"] == "Risk stop"
 
 
@@ -1567,6 +1567,23 @@ def test_reopening_review_after_upgrading_an_auto_review_does_not_crash(monkeypa
 
     next(item for item in app.button if item.label == "Review").click().run()
     assert not app.exception
+    markdown_values = [item.value for item in app.markdown]
+    lower_section_headings = {
+        "##### Mistakes and rule breaches",
+        "##### Reflection and action",
+        "##### Risk evidence",
+    }
+    assert [value for value in markdown_values if value in lower_section_headings][-3:] == [
+        "##### Mistakes and rule breaches",
+        "##### Reflection and action",
+        "##### Risk evidence",
+    ]
+    assert [
+        item.label
+        for item in app.multiselect
+        if item.label in {"Trading mistakes", "Hard-rule events"}
+    ] == ["Trading mistakes", "Hard-rule events"]
+    assert any(item.label == "Actual risk amount (optional)" for item in app.text_input)
     context_selectboxes = {
         item.label: item
         for item in app.selectbox

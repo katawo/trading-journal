@@ -266,13 +266,93 @@ def test_failed_criterion_requires_reason_and_corrective_action(tmp_path) -> Non
     trade_id = _import_position(repository, account_id)
     grades = {**ALL_PASS, "entry_fidelity": "fail"}
 
-    with pytest.raises(ValueError, match="reason tag"):
+    with pytest.raises(ValueError, match="trading mistake"):
         _review(repository, account_id, trade_id, policy, strategy, grades=grades)
     with pytest.raises(ValueError, match="corrective action"):
         _review(repository, account_id, trade_id, policy, strategy, grades=grades, tags=("fomo_or_chase",))
 
     assessment = _review(repository, account_id, trade_id, policy, strategy, grades=grades, tags=("fomo_or_chase",), action="Wait for the entry trigger.")
     assert assessment.criterion_grades["entry_fidelity"] == "fail"
+
+
+def test_common_trading_mistakes_are_saved_on_an_assessment(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    trade_id = _import_position(repository, account_id)
+
+    assessment = _review(
+        repository,
+        account_id,
+        trade_id,
+        policy,
+        strategy,
+        tags=("overtrading", "position_size_too_large", "held_loser_too_long"),
+    )
+
+    assert assessment.violation_codes == ("held_loser_too_long", "overtrading", "position_size_too_large")
+
+
+@pytest.mark.parametrize(
+    ("mistake", "expected_pillar"),
+    (("overtrading_positions", "risk"), ("entry_timing", "system")),
+)
+def test_recurring_mistake_coaching_uses_the_taxonomy_pillar(
+    tmp_path, mistake: str, expected_pillar: str
+) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    for index in range(5):
+        trade_id = _import_position(repository, account_id, position_id=f"taxonomy-{index}")
+        _review(
+            repository,
+            account_id,
+            trade_id,
+            policy,
+            strategy,
+            tags=(mistake,) if index < 2 else (),
+        )
+
+    recommendation = FrameworkService(repository).coaching_recommendation(account_id)
+
+    assert recommendation is not None
+    assert recommendation.pillar == expected_pillar
+    assert recommendation.metric_code == mistake
+
+
+def test_position_size_mistake_is_not_automatically_critical(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    trade_id = _import_position(repository, account_id)
+    _review(repository, account_id, trade_id, policy, strategy, tags=("position_size_too_large",))
+
+    risk = next(item for item in FrameworkService(repository).pillar_scores(account_id) if item.pillar == "risk")
+
+    assert risk.critical_count == 0
+    assert risk.status == "incomplete"
+
+
+def test_legacy_and_current_loss_limit_mistakes_share_one_analytics_code(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    for index, mistake in enumerate(("daily_limit", "loss_limit_exceeded")):
+        trade_id = _import_position(repository, account_id, position_id=f"limit-alias-{index}")
+        _review(repository, account_id, trade_id, policy, strategy, tags=(mistake,))
+
+    assert FrameworkService(repository).recurring_issues(account_id) == (("loss_limit_exceeded", 2),)
+
+
+def test_equally_frequent_mistakes_use_taxonomy_order(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    mistakes = ("overtrading", "overtrading", "fomo_or_chase", "fomo_or_chase")
+    for index, mistake in enumerate(mistakes):
+        trade_id = _import_position(repository, account_id, position_id=f"tie-{index}")
+        _review(repository, account_id, trade_id, policy, strategy, tags=(mistake,))
+
+    assert FrameworkService(repository).recurring_issues(account_id) == (
+        ("fomo_or_chase", 2),
+        ("overtrading", 2),
+    )
 
 
 def test_trade_score_uses_documented_weights_and_keeps_raw_scores(tmp_path) -> None:

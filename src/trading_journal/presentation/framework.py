@@ -24,6 +24,7 @@ from trading_journal.application.framework import (
 )
 from trading_journal.application.display_time import format_relative_time
 from trading_journal.application.reporting_time import reporting_datetime
+from trading_journal.domain.review_taxonomy import REVIEW_MISTAKE_CODES, REVIEW_MISTAKES_BY_PILLAR
 from trading_journal.infrastructure.sqlite_repository import (
     ASSESSMENT_CRITERIA,
     PSYCHOLOGY_CRITERIA,
@@ -59,24 +60,42 @@ CRITERION_LABELS = {
     "management_exit_fidelity": "Management / exit fidelity",
 }
 VIOLATION_LABELS = {
-    "fomo_or_chase": "FOMO or chased price",
-    "revenge": "Revenge behavior",
+    "fomo_or_chase": "FOMO / chased price",
+    "revenge": "Revenge traded",
+    "overtrading": "Overtraded",
+    "overconfidence_streak": "Became overconfident",
+    "fear_hesitation": "Hesitated because of fear",
+    "forced_trade": "Forced an impatient trade",
+    "post_loss_reset": "Failed to reset after a loss",
+    "position_size_too_large": "Position size was too large",
+    "overtrading_positions": "Opened too many positions",
+    "correlation_exposure": "Took too much correlated exposure",
+    "no_stop_loss": "Entered without a stop loss",
+    "stop_widened": "Moved the stop loss farther away",
+    "loss_limit_exceeded": "Exceeded a loss limit",
+    "shutdown_breach": "Traded after shutdown",
+    "mandatory_setup_absent": "Traded without a valid setup",
+    "context_misread": "Misread the trend or market context",
+    "entry_timing": "Entered too early or too late",
+    "premature_exit": "Took profit too early",
+    "held_loser_too_long": "Held a losing trade too long",
+    "exit_plan_deviation": "Did not follow the exit plan",
+    # Historical labels remain available when an older assessment is edited.
     "emotional_sizing": "Emotional position sizing",
-    "post_loss_reset": "Poor post-loss reset",
-    "overconfidence_streak": "Overconfidence after a winning streak",
     "ignored_trade_plan": "Deviated from the trade plan",
     "daily_limit": "Daily limit issue",
     "weekly_limit": "Weekly limit issue",
     "drawdown_limit": "Drawdown limit issue",
     "open_exposure": "Open exposure issue",
-    "correlation_exposure": "Correlation exposure issue",
-    "stop_widened": "Stop widened",
-    "no_stop_loss": "No stop loss placed",
-    "overtrading_positions": "Too many concurrent open positions",
-    "mandatory_setup_absent": "Mandatory setup absent",
-    "shutdown_breach": "Traded after hard shutdown",
-    "context_misread": "Misread higher-timeframe context",
-    "premature_exit": "Exited before the plan's exit criteria",
+}
+MISTAKE_CATEGORIES = {
+    code: {
+        "psychology": "Psychology and discipline",
+        "risk": "Risk management",
+        "system": "Setup and execution",
+    }[pillar]
+    for pillar, codes in REVIEW_MISTAKES_BY_PILLAR.items()
+    for code in codes
 }
 HARD_RULE_LABELS = {
     "oversized_revenge": "Intentional oversized revenge trade",
@@ -905,42 +924,60 @@ def _render_post_trade_review_dialog(repo: SQLiteJournalRepository, account: Acc
                             existing=criterion_existing,
                             key=f"assessment-{trade.id}-{criterion}",
                         )
-        actual_risk = st.text_input(
-            "Actual risk amount (optional)",
-            value=existing_manual.declared_actual_risk_amount if existing_manual and existing_manual.declared_actual_risk_amount else "",
-            placeholder="Enter a verified amount when automatic evidence is not sufficient",
-            help="Overrides automatic evidence for this logical trade's policy comparison. It does not rewrite immutable MT5 position history or account-limit monitoring.",
+        legacy_mistakes = tuple(
+            code for code in (existing_manual.violation_codes if existing_manual else ()) if code not in REVIEW_MISTAKE_CODES
         )
-        if policy is not None:
-            st.caption(
-                tr(
-                    "Risk policy v{version}: Standard 1R {standard}% · maximum {maximum}%.",
-                    version=policy.version,
-                    standard=policy.standard_risk_per_trade_percent,
-                    maximum=policy.maximum_risk_per_trade_percent,
-                )
+        mistake_options = REVIEW_MISTAKE_CODES + legacy_mistakes
+        with st.container(border=True):
+            st.markdown(f"##### {tr('Mistakes and rule breaches')}")
+            violation_codes = st.multiselect(
+                tr("Trading mistakes"),
+                options=mistake_options,
+                default=list(existing_manual.violation_codes) if existing_manual else [],
+                format_func=lambda code: f"{tr(MISTAKE_CATEGORIES.get(code, 'Earlier review'))} · {tr(VIOLATION_LABELS[code])}",
+                placeholder=tr("Select any mistakes made"),
+                help=tr("Choose all mistakes that affected this trade. Leave empty if the trade followed your plan."),
             )
-        else:
-            st.caption("No active Risk policy is attached; the assessment still records your judgement, while automatic limit checks remain unavailable.")
-        violation_codes = st.multiselect(
-            "Reason tags",
-            options=list(VIOLATION_LABELS),
-            default=list(existing_manual.violation_codes) if existing_manual else [],
-            format_func=lambda code: tr(VIOLATION_LABELS[code]),
-            help="Tag the cause of a partial or failed assessment so period reviews can identify recurring issues.",
-        )
-        hard_rules = st.multiselect(
-            "Hard-rule events",
-            options=available_hard_rules,
-            default=list(existing_manual.hard_rule_codes) if existing_manual else [],
-            format_func=lambda code: tr(HARD_RULE_LABELS[code]),
-            help="Enabled events selected on save set Hard-rule status to Fail. That result is snapshotted for this assessment, so later Review rules changes do not rewrite it. Automatic Risk limits are monitoring evidence, not hard failures by themselves.",
-        )
-        if not available_hard_rules:
-            st.caption("No hard-rule events are enabled. Enable one in Settings → Review rules to record it on a new assessment.")
-        st.markdown("##### Review details")
-        note = st.text_area(f"{tr('What happened and what did you learn?')} *", value=existing_manual.post_review_note if existing_manual else "", placeholder="Describe execution independently of P&L.")
-        action = st.text_area("Corrective action", value=existing_manual.corrective_action if existing_manual and existing_manual.corrective_action else "", placeholder="Required when any criterion is Partial or Fail, or a hard rule is selected.")
+            hard_rules = st.multiselect(
+                tr("Hard-rule events"),
+                options=available_hard_rules,
+                default=list(existing_manual.hard_rule_codes) if existing_manual else [],
+                format_func=lambda code: tr(HARD_RULE_LABELS[code]),
+                help=tr("Enabled events selected on save set Hard-rule status to Fail. That result is snapshotted for this assessment, so later Review rules changes do not rewrite it. Automatic Risk limits are monitoring evidence, not hard failures by themselves."),
+            )
+            if not available_hard_rules:
+                st.caption(tr("No hard-rule events are enabled. Enable one in Settings → Review rules to record it on a new assessment."))
+        with st.container(border=True):
+            st.markdown(f"##### {tr('Reflection and action')}")
+            note = st.text_area(
+                f"{tr('What happened and what did you learn?')} *",
+                value=existing_manual.post_review_note if existing_manual else "",
+                placeholder=tr("Describe execution independently of P&L."),
+            )
+            action = st.text_area(
+                tr("Corrective action"),
+                value=existing_manual.corrective_action if existing_manual and existing_manual.corrective_action else "",
+                placeholder=tr("Required when any criterion is Partial or Fail, or a hard rule is selected."),
+            )
+        with st.container(border=True):
+            st.markdown(f"##### {tr('Risk evidence')}")
+            if policy is not None:
+                st.caption(
+                    tr(
+                        "Risk policy v{version}: Standard 1R {standard}% · maximum {maximum}%.",
+                        version=policy.version,
+                        standard=policy.standard_risk_per_trade_percent,
+                        maximum=policy.maximum_risk_per_trade_percent,
+                    )
+                )
+            else:
+                st.caption(tr("No active Risk policy is attached; the assessment still records your judgement, while automatic limit checks remain unavailable."))
+            actual_risk = st.text_input(
+                tr("Actual risk amount (optional)"),
+                value=existing_manual.declared_actual_risk_amount if existing_manual and existing_manual.declared_actual_risk_amount else "",
+                placeholder=tr("Enter a verified amount when automatic evidence is not sufficient"),
+                help=tr("Overrides automatic evidence for this logical trade's policy comparison. It does not rewrite immutable MT5 position history or account-limit monitoring."),
+            )
         submitted = st.form_submit_button("Update assessment" if existing_manual else "Save assessment", type="primary")
         submit_and_next = (
             st.form_submit_button(tr("Save & review next ({count} left)", count=len(queue)), icon=":material/skip_next:")
@@ -973,7 +1010,7 @@ def _render_post_trade_review_dialog(repo: SQLiteJournalRepository, account: Acc
                 ),
             )
     except ValueError as error:
-        st.error(str(error))
+        st.error(tr(str(error)))
     else:
         st.session_state["post-trade-review-notice"] = "Post-trade assessment saved."
         queue_toast(tr("Post-trade assessment saved."))
@@ -1313,13 +1350,6 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
     visible_trade_ids = tuple(visible_by_id)
     select_all_key = _logical_trade_select_all_key(account.id)
     st.session_state[select_all_key] = bool(visible_trade_ids) and len(selected_logical_trade_ids) == len(visible_trade_ids)
-    st.checkbox(
-        "Check all",
-        key=select_all_key,
-        disabled=not visible_trade_ids,
-        on_change=_toggle_all_logical_trade_selection,
-        args=(account.id, visible_trade_ids),
-    )
     selected_position_trade_ids = tuple(
         member.id
         for trade_id in selected_logical_trade_ids
@@ -1329,14 +1359,13 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
         scores[trade_id].review_kind in {"auto_review", "needs_approval"}
         for trade_id in selected_logical_trade_ids
     )
-    with st.container(horizontal=True, gap="small"):
-        create = st.button(
-            f"Group selected ({len(selected_logical_trade_ids)})",
-            key=f"create-logical-trade-{account.id}",
-            icon=":material/group_work:",
-            type="primary",
-            disabled=len(selected_logical_trade_ids) < 2,
-            help="Combine every position from two or more selected logical trades into a new logical trade.",
+    with st.container(horizontal=True, vertical_alignment="center", gap="small"):
+        st.checkbox(
+            "Check all",
+            key=select_all_key,
+            disabled=not visible_trade_ids,
+            on_change=_toggle_all_logical_trade_selection,
+            args=(account.id, visible_trade_ids),
         )
         st.button(
             "Clear selection",
@@ -1345,6 +1374,14 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
             disabled=not selected_logical_trade_ids,
             on_click=_clear_logical_trade_selection,
             args=(account.id,),
+        )
+        create = st.button(
+            f"Group selected ({len(selected_logical_trade_ids)})",
+            key=f"create-logical-trade-{account.id}",
+            icon=":material/group_work:",
+            type="primary",
+            disabled=len(selected_logical_trade_ids) < 2,
+            help="Combine every position from two or more selected logical trades into a new logical trade.",
         )
         bulk_selected = st.button(
             f"Quick review selected ({selected_reviewable_count})",

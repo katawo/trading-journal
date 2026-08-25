@@ -12,6 +12,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship,
 
 from trading_journal.application.reporting_time import REPORTING_TIME_BASES, normalize_server_timestamp
 from trading_journal.domain.models import ImportResult, ImportedTradeView, MT5LivePositionExport, MT5PositionExport
+from trading_journal.domain.review_taxonomy import HARD_RULE_CODES, VIOLATION_CODES
 
 
 _UNSET = object()
@@ -36,36 +37,6 @@ SYSTEM_CRITERIA = (
     "management_exit_fidelity",
 )
 ASSESSMENT_CRITERIA = PSYCHOLOGY_CRITERIA + RISK_CRITERIA + SYSTEM_CRITERIA
-VIOLATION_CODES = frozenset(
-    {
-        "fomo_or_chase",
-        "revenge",
-        "emotional_sizing",
-        "post_loss_reset",
-        "overconfidence_streak",
-        "ignored_trade_plan",
-        "daily_limit",
-        "weekly_limit",
-        "drawdown_limit",
-        "open_exposure",
-        "correlation_exposure",
-        "stop_widened",
-        "no_stop_loss",
-        "overtrading_positions",
-        "mandatory_setup_absent",
-        "shutdown_breach",
-        "context_misread",
-        "premature_exit",
-    }
-)
-HARD_RULE_CODES = frozenset(
-    {
-        "oversized_revenge",
-        "mandatory_setup_absent",
-        "stop_widened",
-        "shutdown_breach",
-    }
-)
 
 
 def _decimal_string(value: Decimal | str) -> str:
@@ -2116,7 +2087,7 @@ class SQLiteJournalRepository:
         if "stop_widened" in normalized_hard_rules:
             normalized_violations = tuple(sorted(set(normalized_violations) | {"stop_widened"}))
         if any(grade == "fail" for grade in normalized_grades.values()) and not normalized_violations:
-            raise ValueError("Add at least one reason tag when a criterion fails")
+            raise ValueError("Select at least one trading mistake when a criterion fails")
         if (any(grade != "pass" for grade in normalized_grades.values()) or normalized_hard_rules) and not self._optional_text(corrective_action):
             raise ValueError("A corrective action is required for a partial, failed, or hard-rule review")
         actual_risk = None if declared_actual_risk_amount is None or not declared_actual_risk_amount.strip() else _decimal_string(

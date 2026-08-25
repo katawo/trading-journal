@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone, tzinfo
 from decimal import Decimal
 
 from trading_journal.application.reporting_time import reporting_date, reporting_datetime
+from trading_journal.domain.review_taxonomy import canonical_violation_code, violation_pillars, violation_sort_key
 
 from trading_journal.infrastructure.sqlite_repository import (
     PSYCHOLOGY_CRITERIA,
@@ -40,7 +42,7 @@ PERIOD_WEIGHTS = {
 }
 CRITICAL_VIOLATIONS = {
     "psychology": frozenset({"revenge", "emotional_sizing", "post_loss_reset", "oversized_revenge"}),
-    "risk": frozenset({"daily_limit", "weekly_limit", "drawdown_limit", "open_exposure", "correlation_exposure", "oversized_revenge", "stop_widened", "shutdown_breach", "no_stop_loss"}),
+    "risk": frozenset({"daily_limit", "weekly_limit", "drawdown_limit", "loss_limit_exceeded", "open_exposure", "correlation_exposure", "oversized_revenge", "stop_widened", "shutdown_breach", "no_stop_loss"}),
     "system": frozenset({"mandatory_setup_absent"}),
 }
 COMPONENT_CODES = {
@@ -609,16 +611,31 @@ class FrameworkService:
 
     def recurring_issues(self, account_id: int, *, window: int = 20, as_of: date | None = None) -> tuple[tuple[str, int], ...]:
         scored = [item for item in self._scores_through(self.trade_process_scores(account_id), as_of) if item.review_kind in REVIEWED_KINDS][-window:]
-        counter: Counter[str] = Counter(code for item in scored for code in set(item.violation_codes) | set(item.hard_rule_codes))
-        return tuple(counter.most_common())
+        return self._ranked_issue_counts(scored)
 
     @staticmethod
     def _recurring_issues_from_scores(scores: tuple[TradeProcessScore, ...], *, window: int) -> tuple[tuple[str, int], ...]:
         reviewed = [item for item in scores if item.review_kind in REVIEWED_KINDS][-window:]
+        return FrameworkService._ranked_issue_counts(reviewed)
+
+    @staticmethod
+    def _canonical_issue_codes(score: TradeProcessScore | MonitorAnalysisPoint) -> tuple[str, ...]:
+        codes = {
+            canonical_violation_code(code)
+            for code in set(score.violation_codes) | set(score.hard_rule_codes)
+        }
+        return tuple(sorted(codes, key=violation_sort_key))
+
+    @staticmethod
+    def _ranked_issue_counts(
+        scores: Sequence[TradeProcessScore | MonitorAnalysisPoint],
+    ) -> tuple[tuple[str, int], ...]:
         counter: Counter[str] = Counter(
-            code for item in reviewed for code in set(item.violation_codes) | set(item.hard_rule_codes)
+            code for score in scores for code in FrameworkService._canonical_issue_codes(score)
         )
-        return tuple(counter.most_common())
+        return tuple(
+            sorted(counter.items(), key=lambda item: (-item[1], violation_sort_key(item[0])))
+        )
 
     def rolling_score_trend(self, account_id: int, *, window: int = 20) -> tuple[tuple[str, str | None, str | None, str | None], ...]:
         """Historical card-equivalent scores, retaining documented pillar scopes."""
@@ -709,9 +726,10 @@ class FrameworkService:
         lifecycle = counts([item.review_kind for item in points], ("manual_review", "approved_auto_review", "auto_review", "needs_approval"))
         policy_states = counts([item.risk_policy_state for item in points], ("within_policy", "over_policy", "unavailable"))
         classifications = counts([item.classification for item in reviewed if item.classification is not None])
-        issues = tuple(MonitorBreakdown(label, count) for label, count in Counter(
-            code for item in reviewed for code in set(item.violation_codes) | set(item.hard_rule_codes)
-        ).most_common())
+        issues = tuple(
+            MonitorBreakdown(label, count)
+            for label, count in self._ranked_issue_counts(reviewed)
+        )
 
         def grouped(items: tuple[MonitorAnalysisPoint, ...], attribute: str) -> tuple[MonitorBreakdown, ...]:
             buckets: dict[str, list[MonitorAnalysisPoint]] = {}
@@ -769,7 +787,8 @@ class FrameworkService:
             values = [GRADE_VALUES[item.criterion_grades[focus.metric_code]] for item in sample if item.criterion_grades and focus.metric_code]
             current = _decimal_text(sum(values, Decimal("0")) / len(values)) if values else None
         elif focus.metric_kind == "violation" and sample:
-            current = str(sum((focus.metric_code or "") in item.violation_codes for item in sample))
+            focus_code = canonical_violation_code(focus.metric_code or "")
+            current = str(sum(focus_code in self._canonical_issue_codes(item) for item in sample))
         elif focus.metric_kind == "component" and sample and focus.metric_code:
             components = self._period_components(
                 focus.pillar, sample,
@@ -799,18 +818,13 @@ class FrameworkService:
                 "Build a first reviewed sample.",
             )
         for pillar in PILLAR_NAMES:
-            eligible_codes = (
-                (CRITICAL_VIOLATIONS["risk"] | CRITICAL_VIOLATIONS["system"]) - CRITICAL_VIOLATIONS["psychology"]
-                if pillar == "psychology"
-                else CRITICAL_VIOLATIONS[pillar]
-            )
             recurring = next(
                 (
                     (code, count)
                     for code, count in self._recurring_issues_from_scores(
                         self.trade_process_scores(account_id), window=10
                     )
-                    if count >= 2 and (code not in eligible_codes if pillar == "psychology" else code in eligible_codes)
+                    if count >= 2 and pillar in violation_pillars(code)
                 ),
                 None,
             )
