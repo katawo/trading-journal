@@ -100,3 +100,25 @@ def test_breakdown_chart_uses_localized_direction_labels_and_title(monkeypatch) 
     assert truncated is False
     assert list(figure.data[0].y) == ["Mua"]
     assert figure.layout.title.text == "P&L ròng theo hướng"
+
+
+def test_dashboard_metric_tones_only_color_clear_performance_signals() -> None:
+    assert journal_app._signed_metric_tone("12.5") == "positive"
+    assert journal_app._signed_metric_tone(Decimal("-0.01")) == "negative"
+    assert journal_app._signed_metric_tone("0") == "neutral"
+    assert journal_app._signed_metric_tone(None) == "neutral"
+    assert journal_app._risk_metric_tone(None, 3) == "warning"
+    assert journal_app._risk_metric_tone(None, 0) == "neutral"
+
+
+def test_dashboard_metric_tones_distinguish_coverage_profitability_and_streaks() -> None:
+    assert journal_app._r_coverage_metric_tone(4, 4) == "positive"
+    assert journal_app._r_coverage_metric_tone(3, 4) == "warning"
+    assert journal_app._r_coverage_metric_tone(0, 0) == "neutral"
+    assert journal_app._profit_factor_metric_tone("1.01") == "positive"
+    assert journal_app._profit_factor_metric_tone("0.99") == "negative"
+    assert journal_app._profit_factor_metric_tone("1") == "neutral"
+    assert journal_app._profit_factor_metric_tone(None) == "neutral"
+    assert journal_app._streak_metric_tone("win") == "positive"
+    assert journal_app._streak_metric_tone("loss") == "negative"
+    assert journal_app._streak_metric_tone("breakeven") == "neutral"
