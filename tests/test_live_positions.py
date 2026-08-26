@@ -75,6 +75,26 @@ def test_live_snapshot_accepts_a_small_positive_protective_risk(tmp_path) -> Non
     assert repository.list_live_positions(account.id)[0].risk_to_stop_amount == "1E-8"
 
 
+def test_break_even_or_profitable_stop_reports_zero_open_risk(tmp_path) -> None:
+    repository = _repository(tmp_path)
+    LivePositionImportService(repository).import_snapshot(
+        _snapshot(risk="0", entry_price="1.1000", current_price="1.1050", stop_price="1.1020")
+    )
+    account = repository.get_active_mt5_account()
+    assert account is not None
+
+    report = LivePositionService(repository).build_report(
+        account.id,
+        now=datetime(2026, 8, 18, 8, 0, tzinfo=timezone.utc),
+    )
+
+    assert report.total_risk_r == Decimal("0")
+    assert report.positions[0].protected is True
+    assert report.positions[0].risk_amount_available is True
+    assert report.risk_unavailable_count == 0
+    assert _risk_metric(report) == ("0.00R", "Within limit", "green", "2.00R account limit")
+
+
 def test_open_risk_is_unavailable_when_no_position_risk_can_be_calculated(tmp_path) -> None:
     repository = _repository(tmp_path)
     LivePositionImportService(repository).import_snapshot(_snapshot(risk=None))

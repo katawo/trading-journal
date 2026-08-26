@@ -400,6 +400,10 @@ def test_resident_mt5_export_ea_is_event_driven_and_has_no_trading_operations() 
     assert "FILE_COMMON" in source
     assert "FileMove" in source
     assert "OrderCalcProfit" in source
+    assert "OrderCalcProfit(order_type,symbol,volume,entry_price,stop,calculated)" in source
+    assert "OrderCalcProfit(order_type,symbol,volume,current_price,stop,calculated)" not in source
+    assert "risk=MathMax(0.0,-calculated);" in source
+    assert 'risk_available ? DoubleToString(risk,8) : ""' in source
     assert "DEAL_SL" in source
     assert "DEAL_TP" in source
     assert '"initial_risk_amount"' in source

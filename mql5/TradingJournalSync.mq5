@@ -733,8 +733,9 @@ bool AppendLivePositionJson(const ulong ticket,string &rows[])
    ENUM_ORDER_TYPE order_type=(direction=="long" ? ORDER_TYPE_BUY : ORDER_TYPE_SELL);
    bool valid_stop=(direction=="long" ? stop>0.0 && stop<current_price : stop>current_price);
    double calculated=0.0;
-   if(valid_stop && OrderCalcProfit(order_type,symbol,volume,current_price,stop,calculated))
-      risk=MathAbs(calculated);
+   bool risk_available=valid_stop && OrderCalcProfit(order_type,symbol,volume,entry_price,stop,calculated);
+   if(risk_available)
+      risk=MathMax(0.0,-calculated);
    int digits=SymbolDigits(symbol);
    int volume_digits=VolumeDigits(symbol);
    int size=ArraySize(rows);
@@ -754,9 +755,9 @@ bool AppendLivePositionJson(const ulong ticket,string &rows[])
    json+="\"stop_price\":\""+OptionalNumber(stop,digits)+"\",";
    json+="\"target_price\":\""+OptionalNumber(target,digits)+"\",";
    json+="\"net_unrealized_pnl\":\""+DoubleToString(PositionGetDouble(POSITION_PROFIT)+PositionGetDouble(POSITION_SWAP),TRADING_JOURNAL_MONEY_DIGITS)+"\",";
-   // Keep enough precision that a valid small risk is never serialized as
-   // 0.00 and rejected by the live-snapshot validator.
-   json+="\"risk_to_stop_amount\":\""+OptionalNumber(risk,8)+"\",";
+   // Keep enough precision for small risks and preserve an available zero
+   // when the current stop is at breakeven or locks in profit.
+   json+="\"risk_to_stop_amount\":\""+(risk_available ? DoubleToString(risk,8) : "")+"\",";
    json+="\"magic_number\":\""+(string)PositionGetInteger(POSITION_MAGIC)+"\"}";
    rows[size]=json;
    return true;
@@ -847,10 +848,11 @@ bool ExportLivePositions(const bool allow_network_push)
       double risk=0.0, calculated=0.0;
       ENUM_ORDER_TYPE order_type=(direction=="long" ? ORDER_TYPE_BUY : ORDER_TYPE_SELL);
       bool valid_stop=(direction=="long" ? stop>0.0 && stop<current_price : stop>current_price);
-      if(valid_stop && OrderCalcProfit(order_type,symbol,volume,current_price,stop,calculated)) risk=MathAbs(calculated);
+      bool risk_available=valid_stop && OrderCalcProfit(order_type,symbol,volume,entry_price,stop,calculated);
+      if(risk_available) risk=MathMax(0.0,-calculated);
       int digits=SymbolDigits(symbol);
       int volume_digits=VolumeDigits(symbol);
-      FileWrite(handle,"position",TRADING_JOURNAL_LIVE_SCHEMA_VERSION,(string)AccountInfoInteger(ACCOUNT_LOGIN),AccountInfoString(ACCOUNT_SERVER),AccountInfoString(ACCOUNT_CURRENCY),snapshot_time,"",(string)position_id,symbol,direction,ServerTime((datetime)PositionGetInteger(POSITION_TIME)),DoubleToString(entry_price,digits),DoubleToString(current_price,digits),DoubleToString(volume,volume_digits),OptionalNumber(stop,digits),OptionalNumber(target,digits),DoubleToString(PositionGetDouble(POSITION_PROFIT)+PositionGetDouble(POSITION_SWAP),TRADING_JOURNAL_MONEY_DIGITS),OptionalNumber(risk,TRADING_JOURNAL_MONEY_DIGITS),(string)PositionGetInteger(POSITION_MAGIC));
+      FileWrite(handle,"position",TRADING_JOURNAL_LIVE_SCHEMA_VERSION,(string)AccountInfoInteger(ACCOUNT_LOGIN),AccountInfoString(ACCOUNT_SERVER),AccountInfoString(ACCOUNT_CURRENCY),snapshot_time,"",(string)position_id,symbol,direction,ServerTime((datetime)PositionGetInteger(POSITION_TIME)),DoubleToString(entry_price,digits),DoubleToString(current_price,digits),DoubleToString(volume,volume_digits),OptionalNumber(stop,digits),OptionalNumber(target,digits),DoubleToString(PositionGetDouble(POSITION_PROFIT)+PositionGetDouble(POSITION_SWAP),TRADING_JOURNAL_MONEY_DIGITS),(risk_available ? DoubleToString(risk,TRADING_JOURNAL_MONEY_DIGITS) : ""),(string)PositionGetInteger(POSITION_MAGIC));
       AppendLivePositionJson(ticket,json_rows);
      }
    FileClose(handle);

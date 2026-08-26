@@ -92,7 +92,7 @@ class MT5LivePositionExport(BaseModel):
     stop_price: Decimal | None = None
     target_price: Decimal | None = None
     net_unrealized_pnl: Decimal
-    risk_to_stop_amount: Decimal | None = Field(default=None, gt=0)
+    risk_to_stop_amount: Decimal | None = Field(default=None, ge=0)
     magic_number: str | None = None
 
     @field_validator("account_currency")
