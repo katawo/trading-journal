@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta, timezone, tzinfo
 from decimal import Decimal
 
@@ -101,6 +101,28 @@ class RiskSnapshot:
     max_drawdown_percent: str | None
     consecutive_losses: int | None
     message: str
+    drawdown_reset_period: str = "daily"
+    loss_streak_reset_period: str = "daily"
+
+
+@dataclass
+class _RiskTimelineState:
+    balance: Decimal
+    peak: Decimal
+    policy: AccountRiskPolicyView | None = None
+    daily_r: dict[date, Decimal] = field(default_factory=dict)
+    weekly_r: dict[date, Decimal] = field(default_factory=dict)
+    current_drawdown: Decimal = Decimal("0")
+    max_drawdown: Decimal = Decimal("0")
+    streak: int = 0
+    drawdown_period: tuple[object, ...] | None = None
+    streak_period: tuple[object, ...] | None = None
+    daily_limit_reached_at: dict[date, datetime] = field(default_factory=dict)
+    weekly_limit_reached_at: dict[date, datetime] = field(default_factory=dict)
+    drawdown_limit_reached_at: datetime | None = None
+    drawdown_limit_period: tuple[object, ...] | None = None
+    loss_streak_limit_reached_at: datetime | None = None
+    loss_streak_limit_period: tuple[object, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -356,7 +378,8 @@ class FrameworkService:
         # model only for that render so live imports and saved reviews are
         # never served stale on a later rerun.
         self._account_score_cache: dict[int, tuple[tuple[TradeProcessScore, ...], dict[int, dict[str, object]]]] = {}
-        self._raw_risk_event_cache: dict[int, dict[int, dict[str, object]]] = {}
+        self._account_trade_cache: dict[int, tuple[ClosedTradeReviewItem, ...]] = {}
+        self._risk_event_cache: dict[int, dict[int, dict[str, object]]] = {}
         self._pillar_score_cache: dict[tuple[int, int, date | None], tuple[PillarScore, ...]] = {}
         self._reporting_time_basis_cache: str | None = None
 
@@ -1055,34 +1078,52 @@ class FrameworkService:
         funded = self._repository.get_account_funded_capital(account_id)
         if policy is None or funded is None:
             return RiskSnapshot(False, "unconfigured", None, None, None, None, None, "Set funded capital and save an account Risk policy to monitor this account.")
-        events = self._historical_risk_events(account_id)
-        current = (now or datetime.now(timezone.utc))
+        current = now or datetime.now(timezone.utc)
+        current = current.replace(tzinfo=timezone.utc) if current.tzinfo is None else current.astimezone(timezone.utc)
+        _, timeline = self._risk_timeline(account_id, as_of=current)
+        effective_policy = timeline.policy
+        if effective_policy is None:
+            return RiskSnapshot(
+                True,
+                "clear",
+                "0",
+                "0",
+                "0",
+                "0",
+                0,
+                "Risk monitoring starts when the first saved policy becomes effective.",
+                policy.drawdown_reset_period,
+                policy.loss_streak_reset_period,
+            )
         today = self._current_report_date(current, account_id)
         week_start = today - timedelta(days=today.weekday())
-        entries = [entry for entry in events.values() if entry["date"] <= today]
-        daily_r = sum((entry["result_r"] for entry in entries if entry["date"] == today), Decimal("0"))
-        weekly_r = sum((entry["result_r"] for entry in entries if week_start <= entry["date"] <= today), Decimal("0"))
-        last = entries[-1] if entries else None
-        drawdown = Decimal("0") if last is None else Decimal(last["drawdown"])
-        current_streak = 0 if last is None else int(last["streak"])
+        daily_r = timeline.daily_r.get(today, Decimal("0"))
+        weekly_r = timeline.weekly_r.get(week_start, Decimal("0"))
+        drawdown = timeline.current_drawdown
+        max_drawdown = timeline.max_drawdown
+        current_streak = timeline.streak
         caution = (
-            daily_r <= -(Decimal(policy.daily_loss_limit_r) * Decimal("0.8"))
-            or weekly_r <= -(Decimal(policy.weekly_loss_limit_r) * Decimal("0.8"))
-            or drawdown >= Decimal(policy.max_drawdown_percent) * Decimal("0.8")
-            or Decimal(current_streak) >= Decimal(policy.max_consecutive_losses) * Decimal("0.8")
+            daily_r <= -(Decimal(effective_policy.daily_loss_limit_r) * Decimal("0.8"))
+            or weekly_r <= -(Decimal(effective_policy.weekly_loss_limit_r) * Decimal("0.8"))
+            or max_drawdown >= Decimal(effective_policy.max_drawdown_percent) * Decimal("0.8")
+            or Decimal(current_streak) >= Decimal(effective_policy.max_consecutive_losses) * Decimal("0.8")
         )
         # Daily and weekly limits expire with their reporting periods. Drawdown
         # and loss streaks remain active only while their current values are at
-        # the configured limit. Historical breaches stay in the review record;
-        # they must not keep the live advisory state at STOP indefinitely.
+        # the configured limit. Maximum drawdown remains breached until its
+        # monitoring period or policy cadence resets.
         stop = (
-            daily_r <= -Decimal(policy.daily_loss_limit_r)
-            or weekly_r <= -Decimal(policy.weekly_loss_limit_r)
-            or drawdown >= Decimal(policy.max_drawdown_percent)
-            or Decimal(current_streak) >= Decimal(policy.max_consecutive_losses)
+            daily_r <= -Decimal(effective_policy.daily_loss_limit_r)
+            or weekly_r <= -Decimal(effective_policy.weekly_loss_limit_r)
+            or max_drawdown >= Decimal(effective_policy.max_drawdown_percent)
+            or Decimal(current_streak) >= Decimal(effective_policy.max_consecutive_losses)
         )
         state = "stop" if stop else "caution" if caution else "clear"
-        pending = sum(item.assessment_state != "reviewed" for item in self._scores_through(self.trade_process_scores(account_id), today))
+        pending = sum(
+            item.assessment_state != "reviewed"
+            for item in self.trade_process_scores(account_id)
+            if self._as_utc_datetime(item.exit_time) <= current
+        )
         message = (
             "Risk limits are clear." if state == "clear" else
             "A completed-trade Risk limit is approaching its threshold." if state == "caution" else
@@ -1095,10 +1136,12 @@ class FrameworkService:
             state,
             _decimal_text(daily_r),
             _decimal_text(weekly_r),
-            None if last is None else _decimal_text(last["drawdown"]),
-            None if last is None else _decimal_text(max(entry["drawdown"] for entry in entries)),
-            None if last is None else last["streak"],
+            _decimal_text(drawdown),
+            _decimal_text(max_drawdown),
+            current_streak,
             message,
+            effective_policy.drawdown_reset_period,
+            effective_policy.loss_streak_reset_period,
         )
 
     def _scores_through(self, scores: tuple[TradeProcessScore, ...], as_of: date | None) -> tuple[TradeProcessScore, ...]:
@@ -1109,18 +1152,18 @@ class FrameworkService:
     def _account_trade_scores(self, account_id: int) -> tuple[tuple[TradeProcessScore, ...], dict[int, dict[str, object]]]:
         if account_id in self._account_score_cache:
             return self._account_score_cache[account_id]
-        trades = sorted(self._repository.list_closed_trades_for_review(account_id), key=lambda item: (item.exit_time, item.id))
+        cached_trades = self._account_trade_cache.get(account_id)
+        if cached_trades is None:
+            cached_trades = tuple(self._repository.list_closed_trades_for_review(account_id))
+            self._account_trade_cache[account_id] = cached_trades
+        trades = sorted(cached_trades, key=lambda item: (item.exit_time, item.id))
+        self._account_trade_cache[account_id] = tuple(trades)
         assessments = {item.trade_id: item for item in self._repository.list_active_post_trade_assessments(account_id)}
-        raw_positions = self._repository.list_imported_positions_for_risk(account_id)
-        policies = self._policies_for(raw_positions, assessments, account_id)
+        policies = self._policies_for(trades, assessments, account_id)
         active_policy = self._repository.get_active_risk_policy(account_id)
         funded = self._repository.get_account_funded_capital(account_id)
         account_strategy = self._repository.get_account_strategy(account_id)
-        raw_events = self._historical_risk_events(account_id)
-        events = {
-            trade.id: self._combine_member_risk_events(trade, raw_events)
-            for trade in trades
-        }
+        events = self._historical_risk_events(account_id, tuple(trades))
         scores = tuple(
             self._trade_process_score(
                 account_id,
@@ -1422,126 +1465,274 @@ class FrameworkService:
             return "unavailable"
         return "within_policy" if Decimal(amount) <= Decimal(policy_limit) else "over_policy"
 
-    def _historical_risk_events(self, account_id: int) -> dict[int, dict[str, object]]:
-        if account_id in self._raw_risk_event_cache:
-            return self._raw_risk_event_cache[account_id]
-        trades = tuple(self._repository.list_imported_positions_for_risk(account_id))
-        policies = self._policies_for(trades, {}, account_id)
-        events = self._historical_risk_events_from_context(
-            trades,
-            {},
-            policies,
-            self._repository.get_active_risk_policy(account_id),
-            self._repository.get_account_funded_capital(account_id),
+    def _historical_risk_events(
+        self,
+        account_id: int,
+        trades: tuple[ClosedTradeReviewItem, ...] | None = None,
+    ) -> dict[int, dict[str, object]]:
+        if account_id in self._risk_event_cache:
+            return self._risk_event_cache[account_id]
+        trades = trades or tuple(
+            self._repository.list_closed_trades_for_review(account_id)
         )
-        self._raw_risk_event_cache[account_id] = events
+        events, _ = self._risk_timeline(account_id, trades=trades)
+        self._risk_event_cache[account_id] = events
         return events
+
+    def _risk_timeline(
+        self,
+        account_id: int,
+        *,
+        trades: tuple[ClosedTradeReviewItem, ...] | None = None,
+        as_of: datetime | None = None,
+    ) -> tuple[dict[int, dict[str, object]], _RiskTimelineState]:
+        if trades is None:
+            trades = self._account_trade_cache.get(account_id)
+        if trades is None:
+            trades = tuple(self._repository.list_closed_trades_for_review(account_id))
+            self._account_trade_cache[account_id] = trades
+        policies = self._repository.list_account_risk_policies(account_id)
+        funded = self._repository.get_account_funded_capital(account_id)
+        capital = Decimal(funded or "0")
+        state = _RiskTimelineState(balance=capital, peak=capital)
+        events: dict[int, dict[str, object]] = {
+            trade.id: {
+                "date": self._trade_date(trade.exit_time, trade.server_utc_offset_minutes),
+                "result_r": Decimal("0"),
+                "drawdown": Decimal("0"),
+                "max_drawdown": Decimal("0"),
+                "streak": 0,
+                "drawdown_period": (),
+                "streak_period": (),
+                "policy_id": None,
+                "events": (),
+                "shutdown_candidates": (),
+            }
+            for trade in trades
+        }
+        if funded is None:
+            return events, state
+
+        timeline: list[tuple[datetime, int, int, str, object]] = []
+        timeline.extend(
+            (self._as_utc_datetime(item.created_at), 0, item.id, "policy", item)
+            for item in policies
+        )
+        for trade in trades:
+            timeline.append((self._as_utc_datetime(trade.exit_time), 1, trade.id, "close", trade))
+            timeline.append((self._as_utc_datetime(trade.entry_time), 2, trade.id, "entry", trade))
+        cutoff = None if as_of is None else (
+            as_of.replace(tzinfo=timezone.utc) if as_of.tzinfo is None else as_of.astimezone(timezone.utc)
+        )
+
+        for occurred_at, _, _, kind, payload in sorted(timeline, key=lambda item: item[:3]):
+            if cutoff is not None and occurred_at > cutoff:
+                continue
+            if kind == "policy":
+                self._apply_risk_policy_event(state, payload, occurred_at)  # type: ignore[arg-type]
+            elif kind == "entry":
+                trade = payload
+                assert isinstance(trade, ClosedTradeReviewItem)
+                self._apply_risk_entry_event(state, events[trade.id], trade, occurred_at)
+            else:
+                trade = payload
+                assert isinstance(trade, ClosedTradeReviewItem)
+                self._apply_risk_close_event(state, events[trade.id], trade, occurred_at, capital)
+
+        if cutoff is not None and state.policy is not None:
+            self._advance_risk_periods(state, self._current_report_date(cutoff, account_id))
+        return events, state
+
+    def _apply_risk_policy_event(
+        self,
+        state: _RiskTimelineState,
+        policy: AccountRiskPolicyView,
+        occurred_at: datetime,
+    ) -> None:
+        offset = policy.server_utc_offset_minutes or 0
+        transition_day = self._trade_date(policy.created_at, offset)
+        previous = state.policy
+        if previous is None:
+            state.policy = policy
+            state.peak = state.balance
+            state.current_drawdown = Decimal("0")
+            state.max_drawdown = Decimal("0")
+            state.streak = 0
+            state.drawdown_period = self._monitoring_period(transition_day, policy.drawdown_reset_period)
+            state.streak_period = self._monitoring_period(transition_day, policy.loss_streak_reset_period)
+            return
+
+        # The newly saved policy's captured server offset is the sole calendar
+        # authority for this transition. Advancing first with the previous
+        # offset can cross midnight and then reset backward on the second
+        # offset, erasing otherwise-current drawdown or streak state.
+        self._advance_risk_periods(state, transition_day)
+        drawdown_cadence_changed = previous.drawdown_reset_period != policy.drawdown_reset_period
+        streak_cadence_changed = previous.loss_streak_reset_period != policy.loss_streak_reset_period
+        state.policy = policy
+        if drawdown_cadence_changed:
+            state.drawdown_period = self._monitoring_period(transition_day, policy.drawdown_reset_period)
+            state.peak = state.balance
+            state.current_drawdown = Decimal("0")
+            state.max_drawdown = Decimal("0")
+            state.drawdown_limit_reached_at = None
+            state.drawdown_limit_period = None
+        else:
+            self._advance_risk_periods(state, transition_day)
+            if previous.max_drawdown_percent != policy.max_drawdown_percent:
+                if state.max_drawdown >= Decimal(policy.max_drawdown_percent):
+                    state.drawdown_limit_reached_at = occurred_at
+                    state.drawdown_limit_period = state.drawdown_period
+                else:
+                    state.drawdown_limit_reached_at = None
+                    state.drawdown_limit_period = None
+        if streak_cadence_changed:
+            state.streak_period = self._monitoring_period(transition_day, policy.loss_streak_reset_period)
+            state.streak = 0
+            state.loss_streak_limit_reached_at = None
+            state.loss_streak_limit_period = None
+        else:
+            self._advance_risk_periods(state, transition_day)
+            if previous.max_consecutive_losses != policy.max_consecutive_losses:
+                if state.streak >= policy.max_consecutive_losses:
+                    state.loss_streak_limit_reached_at = occurred_at
+                    state.loss_streak_limit_period = state.streak_period
+                else:
+                    state.loss_streak_limit_reached_at = None
+                    state.loss_streak_limit_period = None
+
+        transition_week = transition_day - timedelta(days=transition_day.weekday())
+        if previous.daily_loss_limit_r != policy.daily_loss_limit_r:
+            if state.daily_r.get(transition_day, Decimal("0")) <= -Decimal(policy.daily_loss_limit_r):
+                state.daily_limit_reached_at[transition_day] = occurred_at
+            else:
+                state.daily_limit_reached_at.pop(transition_day, None)
+        if previous.weekly_loss_limit_r != policy.weekly_loss_limit_r:
+            if state.weekly_r.get(transition_week, Decimal("0")) <= -Decimal(policy.weekly_loss_limit_r):
+                state.weekly_limit_reached_at[transition_week] = occurred_at
+            else:
+                state.weekly_limit_reached_at.pop(transition_week, None)
+
+    def _apply_risk_entry_event(
+        self,
+        state: _RiskTimelineState,
+        event: dict[str, object],
+        trade: ClosedTradeReviewItem,
+        occurred_at: datetime,
+    ) -> None:
+        policy = state.policy
+        if policy is None:
+            return
+        offset = trade.members[0].server_utc_offset_minutes if trade.members else trade.server_utc_offset_minutes
+        entry_day = self._trade_date(trade.entry_time, offset)
+        self._advance_risk_periods(state, entry_day)
+        entry_week = entry_day - timedelta(days=entry_day.weekday())
+        candidates: set[str] = set()
+        if (reached := state.daily_limit_reached_at.get(entry_day)) is not None and occurred_at > reached:
+            candidates.add("daily_limit")
+        if (reached := state.weekly_limit_reached_at.get(entry_week)) is not None and occurred_at > reached:
+            candidates.add("weekly_limit")
+        if (
+            state.drawdown_limit_reached_at is not None
+            and state.drawdown_limit_period == state.drawdown_period
+            and occurred_at > state.drawdown_limit_reached_at
+        ):
+            candidates.add("drawdown_limit")
+        if (
+            state.loss_streak_limit_reached_at is not None
+            and state.loss_streak_limit_period == state.streak_period
+            and occurred_at > state.loss_streak_limit_reached_at
+        ):
+            candidates.add("loss_streak")
+        event["shutdown_candidates"] = tuple(sorted(candidates))
+
+    def _apply_risk_close_event(
+        self,
+        state: _RiskTimelineState,
+        event: dict[str, object],
+        trade: ClosedTradeReviewItem,
+        occurred_at: datetime,
+        funded_capital: Decimal,
+    ) -> None:
+        trade_day = self._trade_date(trade.exit_time, trade.server_utc_offset_minutes)
+        event["date"] = trade_day
+        pnl = Decimal(trade.net_pnl)
+        policy = state.policy
+        if policy is None:
+            state.balance += pnl
+            return
+
+        self._advance_risk_periods(state, trade_day)
+        standard_risk = self._standard_risk_amount(str(funded_capital), policy)
+        result_r = pnl / standard_risk if standard_risk > 0 else Decimal("0")
+        week_start = trade_day - timedelta(days=trade_day.weekday())
+        state.daily_r[trade_day] = state.daily_r.get(trade_day, Decimal("0")) + result_r
+        state.weekly_r[week_start] = state.weekly_r.get(week_start, Decimal("0")) + result_r
+        state.balance += pnl
+        state.peak = max(state.peak, state.balance)
+        state.current_drawdown = (
+            (state.peak - state.balance) / state.peak * Decimal("100")
+            if state.peak > 0 else Decimal("0")
+        )
+        state.max_drawdown = max(state.max_drawdown, state.current_drawdown)
+        state.streak = state.streak + 1 if pnl < 0 else 0
+        breaches: set[str] = set()
+        if state.daily_r[trade_day] <= -Decimal(policy.daily_loss_limit_r) and trade_day not in state.daily_limit_reached_at:
+            state.daily_limit_reached_at[trade_day] = occurred_at
+            breaches.add("daily_limit")
+        if state.weekly_r[week_start] <= -Decimal(policy.weekly_loss_limit_r) and week_start not in state.weekly_limit_reached_at:
+            state.weekly_limit_reached_at[week_start] = occurred_at
+            breaches.add("weekly_limit")
+        if state.max_drawdown >= Decimal(policy.max_drawdown_percent) and state.drawdown_limit_reached_at is None:
+            state.drawdown_limit_reached_at = occurred_at
+            state.drawdown_limit_period = state.drawdown_period
+            breaches.add("drawdown_limit")
+        if state.streak >= policy.max_consecutive_losses and state.loss_streak_limit_reached_at is None:
+            state.loss_streak_limit_reached_at = occurred_at
+            state.loss_streak_limit_period = state.streak_period
+            breaches.add("loss_streak")
+        if pnl >= 0:
+            state.loss_streak_limit_reached_at = None
+            state.loss_streak_limit_period = None
+        event.update({
+            "result_r": result_r,
+            "drawdown": state.current_drawdown,
+            "max_drawdown": state.max_drawdown,
+            "streak": state.streak,
+            "drawdown_period": state.drawdown_period,
+            "streak_period": state.streak_period,
+            "policy_id": policy.id,
+            "events": tuple(sorted(breaches)),
+        })
+
+    def _advance_risk_periods(self, state: _RiskTimelineState, event_day: date) -> None:
+        policy = state.policy
+        if policy is None:
+            return
+        drawdown_period = self._monitoring_period(event_day, policy.drawdown_reset_period)
+        if state.drawdown_period != drawdown_period:
+            state.drawdown_period = drawdown_period
+            state.peak = state.balance
+            state.current_drawdown = Decimal("0")
+            state.max_drawdown = Decimal("0")
+            state.drawdown_limit_reached_at = None
+            state.drawdown_limit_period = None
+        streak_period = self._monitoring_period(event_day, policy.loss_streak_reset_period)
+        if state.streak_period != streak_period:
+            state.streak_period = streak_period
+            state.streak = 0
+            state.loss_streak_limit_reached_at = None
+            state.loss_streak_limit_period = None
 
     @staticmethod
-    def _combine_member_risk_events(trade: ClosedTradeReviewItem, raw_events: dict[int, dict[str, object]]) -> dict[str, object]:
-        members = [raw_events[member.id] for member in trade.members]
-        latest = max(members, key=lambda item: item["date"])
-        return {
-            "date": latest["date"],
-            "result_r": sum((Decimal(item["result_r"]) for item in members), Decimal("0")),
-            "drawdown": latest["drawdown"],
-            "streak": latest["streak"],
-            "events": tuple(sorted({event for item in members for event in item["events"]})),
-            "shutdown_candidates": tuple(
-                sorted({event for item in members for event in item["shutdown_candidates"]})
-            ),
-        }
-
-    def _historical_risk_events_from_context(self, trades, assessments, policies, active_policy, funded):  # type: ignore[no-untyped-def]
-        events: dict[int, dict[str, object]] = {}
-        if funded is None:
-            return {
-                trade.id: {
-                    "date": self._trade_date(trade.exit_time, trade.server_utc_offset_minutes),
-                    "result_r": Decimal("0"),
-                    "drawdown": Decimal("0"),
-                    "streak": 0,
-                    "events": (),
-                    "shutdown_candidates": (),
-                }
-                for trade in trades
-            }
-        capital = Decimal(funded)
-        balance = capital
-        peak = capital
-        daily: dict[date, Decimal] = {}
-        weekly: dict[date, Decimal] = {}
-        streak = 0
-        daily_limit_reached_at: dict[date, datetime] = {}
-        weekly_limit_reached_at: dict[date, datetime] = {}
-        drawdown_limit_reached_at: datetime | None = None
-        loss_streak_limit_reached_at: datetime | None = None
-        for trade in trades:
-            entry_at = self._as_utc_datetime(trade.entry_time)
-            assessed = assessments.get(trade.id)
-            policy = self._risk_policy_for_trade(assessed, trade, policies, active_policy)
-            standard_risk_amount = self._standard_risk_amount(funded, policy)
-            # Daily and weekly limits are expressed in policy-standard R. Keep
-            # that denominator stable across every position; trade-specific
-            # actual risk belongs to execution/adherence review and would make
-            # the account-level loss limit change meaning from trade to trade.
-            result_r = (
-                Decimal(trade.net_pnl) / standard_risk_amount
-                if standard_risk_amount > 0
-                else Decimal("0")
-            )
-            trade_day = self._trade_date(trade.exit_time, trade.server_utc_offset_minutes)
-            week_start = trade_day - timedelta(days=trade_day.weekday())
-            entry_day = self._trade_date(trade.entry_time, trade.server_utc_offset_minutes)
-            entry_week_start = entry_day - timedelta(days=entry_day.weekday())
-            shutdown_candidates: set[str] = set()
-            if (reached_at := daily_limit_reached_at.get(entry_day)) is not None and entry_at > reached_at:
-                shutdown_candidates.add("daily_limit")
-            if (reached_at := weekly_limit_reached_at.get(entry_week_start)) is not None and entry_at > reached_at:
-                shutdown_candidates.add("weekly_limit")
-            if drawdown_limit_reached_at is not None and entry_at > drawdown_limit_reached_at:
-                shutdown_candidates.add("drawdown_limit")
-            if loss_streak_limit_reached_at is not None and entry_at > loss_streak_limit_reached_at:
-                shutdown_candidates.add("loss_streak")
-            daily[trade_day] = daily.get(trade_day, Decimal("0")) + result_r
-            weekly[week_start] = weekly.get(week_start, Decimal("0")) + result_r
-            balance += Decimal(trade.net_pnl)
-            peak = max(peak, balance)
-            drawdown = (peak - balance) / peak * Decimal("100") if peak > 0 else Decimal("0")
-            streak = streak + 1 if Decimal(trade.net_pnl) < 0 else 0
-            breach: set[str] = set()
-            exited_at = self._as_utc_datetime(trade.exit_time)
-            if policy is not None:
-                if daily[trade_day] <= -Decimal(policy.daily_loss_limit_r) and trade_day not in daily_limit_reached_at:
-                    breach.add("daily_limit")
-                    daily_limit_reached_at[trade_day] = exited_at
-                if weekly[week_start] <= -Decimal(policy.weekly_loss_limit_r) and week_start not in weekly_limit_reached_at:
-                    breach.add("weekly_limit")
-                    weekly_limit_reached_at[week_start] = exited_at
-                if drawdown >= Decimal(policy.max_drawdown_percent):
-                    if drawdown_limit_reached_at is None:
-                        breach.add("drawdown_limit")
-                        drawdown_limit_reached_at = exited_at
-                else:
-                    # A recovered balance ends the advisory drawdown shutdown.
-                    # Historical breach evidence remains attached to the
-                    # threshold trade, but later entries are no longer
-                    # candidates until a new drawdown reaches the limit.
-                    drawdown_limit_reached_at = None
-                if streak >= policy.max_consecutive_losses and loss_streak_limit_reached_at is None:
-                    breach.add("loss_streak")
-                    loss_streak_limit_reached_at = exited_at
-            if Decimal(trade.net_pnl) >= 0:
-                loss_streak_limit_reached_at = None
-            events[trade.id] = {
-                "date": trade_day,
-                "result_r": result_r,
-                "drawdown": drawdown,
-                "streak": streak,
-                "events": tuple(sorted(breach)),
-                "shutdown_candidates": tuple(sorted(shutdown_candidates)),
-            }
-        return events
+    def _monitoring_period(value: date, cadence: str) -> tuple[object, ...]:
+        if cadence == "daily":
+            return ("daily", value)
+        if cadence == "weekly":
+            return ("weekly", value - timedelta(days=value.weekday()))
+        if cadence == "monthly":
+            return ("monthly", value.year, value.month)
+        return ("all_time",)
 
     @staticmethod
     def _as_utc_datetime(value: str) -> datetime:

@@ -383,7 +383,7 @@ def _render_dashboard_statistics(report: DashboardReport, currency: str) -> None
     )
 
     with performance_tab:
-        st.caption(tr("Outcome statistics use closed logical trades in the selected period."))
+        st.caption(tr("Outcome statistics use the all-time closed logical-trade record."))
         with st.container(horizontal=True, gap="small"):
             _render_dashboard_metric(
                 tr("Gross profit"), format_currency(report.gross_profit, currency, signed=False),
@@ -450,7 +450,7 @@ def _render_dashboard_statistics(report: DashboardReport, currency: str) -> None
             st.caption(tr("Complete logical trades will populate the outcome chart."))
 
     with consistency_tab:
-        st.caption(tr("Day statistics use immutable MT5 position closes; streaks use closed logical trades."))
+        st.caption(tr("Day statistics and streaks use closed logical trades at their final close time."))
         with st.container(horizontal=True, gap="small"):
             _render_dashboard_metric(
                 tr("Active trading days"), format_count(report.active_day_count),
@@ -779,24 +779,16 @@ def _cached_dashboard_report(
     database_path: str,
     database_change_token: tuple[int, int, int, int],
     account_id: int,
-    start_date: str,
-    end_date: str,
 ):
     del database_change_token
-    return DashboardService(SQLiteJournalRepository(database_path)).build_report(
-        account_id=account_id,
-        start_date=start_date,
-        end_date=end_date,
-    )
+    return DashboardService(SQLiteJournalRepository(database_path)).build_report(account_id=account_id)
 
 
-def build_dashboard_report(repo: SQLiteJournalRepository, *, account_id: int, start_date: str, end_date: str):
+def build_dashboard_report(repo: SQLiteJournalRepository, *, account_id: int):
     return _cached_dashboard_report(
         str(repo.database_path),
         _database_change_token(repo.database_path),
         account_id,
-        start_date,
-        end_date,
     )
 
 
@@ -975,8 +967,10 @@ def _render_account_onboarding_dialog(repo: SQLiteJournalRepository, strategy_pr
         "daily-loss": "5",
         "weekly-loss": "20",
         "max-drawdown": "30",
+        "drawdown-reset-period": "daily",
         "max-open-risk": "1",
         "max-consecutive-losses": 10,
+        "loss-streak-reset-period": "daily",
         "minimum-rr": "1.0",
         "correlation-policy": "",
     }
@@ -1082,6 +1076,22 @@ def _render_account_onboarding_dialog(repo: SQLiteJournalRepository, strategy_pr
             first, second = st.columns(2)
             first.number_input("Maximum consecutive losses", min_value=1, step=1, value=value("max-consecutive-losses"), key=f"{prefix}max-consecutive-losses")
             second.text_input("Minimum R:R", value=value("minimum-rr"), key=f"{prefix}minimum-rr")
+            reset_labels = {tr("Daily"): "daily", tr("Weekly"): "weekly", tr("Monthly"): "monthly", tr("All time"): "all_time"}
+            first, second = st.columns(2)
+            drawdown_reset = first.segmented_control(
+                tr("Drawdown reset"),
+                list(reset_labels),
+                default=next(label for label, stored in reset_labels.items() if stored == value("drawdown-reset-period")),
+                key=f"{prefix}drawdown-reset-period-label",
+                required=True,
+            )
+            streak_reset = second.segmented_control(
+                tr("Losing-streak reset"),
+                list(reset_labels),
+                default=next(label for label, stored in reset_labels.items() if stored == value("loss-streak-reset-period")),
+                key=f"{prefix}loss-streak-reset-period-label",
+                required=True,
+            )
             st.text_input("Correlation policy (optional)", value=value("correlation-policy"), key=f"{prefix}correlation-policy")
             st.markdown("###### Confirm account setup")
             system_label = profile_by_id[value("strategy-id")].name if value("mode") == "Use saved system" else value("strategy-name")
@@ -1102,6 +1112,8 @@ def _render_account_onboarding_dialog(repo: SQLiteJournalRepository, strategy_pr
                         max_drawdown_percent=str(value("max-drawdown")), max_open_risk_r=str(value("max-open-risk")),
                         max_consecutive_losses=int(value("max-consecutive-losses")), minimum_rr=str(value("minimum-rr")),
                         correlation_policy=str(value("correlation-policy")) or None,
+                        drawdown_reset_period=reset_labels[drawdown_reset],
+                        loss_streak_reset_period=reset_labels[streak_reset],
                     )
                 except ValueError as error:
                     st.error(str(error))
@@ -1726,47 +1738,19 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
 
     render_manual_sync_button(repo, key="dashboard-manual-sync")
     with st.container(border=True):
-        st.markdown("**Report scope**")
+        st.markdown(f"**{tr('All-time account record')}**")
         st.caption(tr("Reporting on {account}. Change the active account in Settings → Approved MT5 accounts.", account=format_account_label(account)))
-        dashboard_service = DashboardService(repo)
-        today = dashboard_service.current_report_date(account.id)
-        period = st.segmented_control(
-            "Report period",
-            ["This month", "All time", "Custom"],
-            default="This month",
-            required=True,
-            width="content",
-            key="dashboard-report-period",
-        )
-        if period == "This month":
-            start_date, end_date = today.replace(day=1), today
-        elif period == "All time":
-            start_date, end_date = dashboard_service.earliest_trade_date(account.id) or today, today
-        else:
-            first, second = st.columns(2)
-            start_date = first.date_input("Start date", value=today.replace(day=1))
-            end_date = second.date_input("End date", value=today)
-            if start_date > end_date:
-                st.error(tr("Start date must be on or before end date."))
-                return account
     currency = account.account_currency
     time_label = {"server": "MT5 server time", "utc": "UTC", "local": "local computer time"}[settings.reporting_time_basis]
     st.caption(f"All monetary figures below are for this {currency} account only. No currency conversion is applied. Report dates use {time_label}.")
 
-    report = build_dashboard_report(
-        repo,
-        account_id=account.id,
-        start_date=start_date.isoformat(),
-        end_date=end_date.isoformat(),
-    )
-    if report.raw_position_count == 0:
-        st.info(tr("No MT5 positions were closed in the selected period."))
+    report = build_dashboard_report(repo, account_id=account.id)
+    if report.trade_count == 0:
+        st.info(tr("No logical trades have been closed yet."))
         return account
 
-    period_label = f"{start_date.strftime('%d %b')} – {end_date.strftime('%d %b %Y')}"
     logical_label = f"{report.trade_count} closed logical trade{'s' if report.trade_count != 1 else ''}"
-    position_label = f"{report.raw_position_count} MT5 position{'s' if report.raw_position_count != 1 else ''}"
-    st.markdown(f'<div class="dashboard-period">{period_label} · {logical_label} · {position_label}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="dashboard-period">{tr("All time")} · {logical_label}</div>', unsafe_allow_html=True)
     with st.container(horizontal=True, gap="small"):
         _render_dashboard_metric(
             "Account balance",
@@ -1788,13 +1772,6 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
         )
 
     st.markdown("#### Logical-trade quality")
-    if report.cross_period_trade_count:
-        st.caption(
-            tr(
-                "{count} logical trade(s) cross the selected period boundary and are excluded from logical-trade statistics; their in-period MT5 position closes remain in account and daily figures.",
-                count=report.cross_period_trade_count,
-            )
-        )
     with st.container(horizontal=True, gap="small"):
         _render_dashboard_metric(
             "Total R", "Awaiting risk" if report.total_r is None else format_r(report.total_r),
@@ -1816,7 +1793,7 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
             key="quality-worst-day", tone=_signed_metric_tone(report.worst_day),
         )
     if report.trade_count == 0:
-        st.caption(tr("No complete logical trades fall entirely within the selected period."))
+        st.caption(tr("No logical trades have been closed yet."))
     elif report.r_trade_count < report.trade_count:
         st.caption(f"R is based on {report.r_trade_count:,} of {report.trade_count:,} logical trades with an effective planned risk.")
     else:
@@ -1827,7 +1804,7 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
         st.caption(
             f"Current drawdown: {format_currency_caption(-Decimal(report.current_drawdown), currency)}"
             + (f" ({format_percent(report.current_drawdown_percent)})" if report.current_drawdown_percent is not None else "")
-            + f" · Balance at period start: {format_currency_caption(report.starting_balance, currency, signed=False)}."
+            + f" · Funded capital: {format_currency_caption(report.starting_balance, currency, signed=False)}."
         )
 
     _render_dashboard_statistics(report, currency)
@@ -1866,7 +1843,7 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
     daily["net_pnl"] = daily["net_pnl"].astype(float)
 
     if chart_view == "Per trade" and not report.per_trade:
-        st.info(tr("No complete logical trades closed in this period. Showing the immutable MT5 position history instead."))
+        st.info(tr("No logical trades have been closed yet."))
         chart_view = "Daily"
 
     if chart_view == "Daily":
@@ -1874,7 +1851,7 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
         timeline_x = timeline["date"]
         curve_column = "balance" if report.ending_balance is not None else "cumulative_pnl"
         curve_title = tr("Account balance curve") if report.ending_balance is not None else tr("Account equity curve · P&L")
-        drawdown_title = tr("Account drawdown from daily peak")
+        drawdown_title = tr("End-of-day logical-trade drawdown")
         pnl_data = daily.assign(hover_label=daily["date"])
         pnl_x = pnl_data["date"]
         pnl_title = tr("Daily realized P&L")
@@ -1951,7 +1928,7 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
         with st.container(border=True):
             with st.container(horizontal=True, vertical_alignment="center", gap="small", width="content"):
                 st.markdown("#### Closed-trade detail")
-                _render_help_popover("This view follows the current logical-trade grouping for review analysis. Account balance and account drawdown remain based on immutable MT5 positions in Daily view.")
+                _render_help_popover("Dashboard balance, P&L, streaks, and drawdown all follow the current logical-trade grouping.")
             trade_table = pd.DataFrame(
                 {
                     tr("Closed"): per_trade["exit_time"],
@@ -1967,7 +1944,7 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
                 }
             )
             st.dataframe(trade_table, hide_index=True, width="stretch")
-            _render_help_popover("This view follows the current logical-trade grouping for review analysis. Account balance and account drawdown remain based on immutable MT5 positions in Daily view.")
+            _render_help_popover("Dashboard balance, P&L, streaks, and drawdown all follow the current logical-trade grouping.")
 
     with st.container(border=True):
         with st.container(horizontal=True, vertical_alignment="center", gap="small", width="content"):
@@ -2023,21 +2000,10 @@ def render_strategy_analytics(repo: SQLiteJournalRepository) -> None:
         st.info(tr("No active accounts are bound to this trading system."))
         st.page_link("app_pages/settings.py", label=tr("Go to Settings"), icon=":material/settings:")
         return
-    service = DashboardService(repo)
-    period = st.segmented_control("Report period", ["All time", "Custom"], default="All time", required=True, width="content")
-    if period == "Custom":
-        first, second = st.columns(2)
-        start_date = first.date_input("Start date", value=date.today().replace(day=1))
-        end_date = second.date_input("End date", value=date.today())
-        if start_date > end_date:
-            st.error(tr("Start date must be on or before end date."))
-            return
+    st.caption(tr("All-time logical-trade records are shown for each account."))
     rows: list[dict[str, object]] = []
     for account in accounts:
-        today = service.current_report_date(account.id)
-        report_start = start_date if period == "Custom" else service.earliest_trade_date(account.id) or today
-        report_end = end_date if period == "Custom" else today
-        report = build_dashboard_report(repo, account_id=account.id, start_date=report_start.isoformat(), end_date=report_end.isoformat())
+        report = build_dashboard_report(repo, account_id=account.id)
         rows.append({
             "Account": account.display_name,
             "Currency": account.account_currency,

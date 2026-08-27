@@ -17,6 +17,7 @@ from trading_journal.domain.review_taxonomy import HARD_RULE_CODES, VIOLATION_CO
 
 _UNSET = object()
 ASSESSMENT_GRADES = frozenset({"pass", "partial", "fail"})
+MONITORING_RESET_PERIODS = frozenset({"daily", "weekly", "monthly", "all_time"})
 PSYCHOLOGY_CRITERIA = (
     "rule_adherence",
     "impulse_control",
@@ -264,11 +265,14 @@ class AccountRiskPolicy(Base):
     daily_loss_limit_r: Mapped[str] = mapped_column(String, nullable=False)
     weekly_loss_limit_r: Mapped[str] = mapped_column(String, nullable=False)
     max_drawdown_percent: Mapped[str] = mapped_column(String, nullable=False)
+    drawdown_reset_period: Mapped[str] = mapped_column(String(16), nullable=False, default="daily")
     max_open_risk_r: Mapped[str] = mapped_column(String, nullable=False)
     max_consecutive_losses: Mapped[int] = mapped_column(Integer, nullable=False)
+    loss_streak_reset_period: Mapped[str] = mapped_column(String(16), nullable=False, default="daily")
     minimum_rr: Mapped[str] = mapped_column(String, nullable=False)
     correlation_policy: Mapped[str | None] = mapped_column(String(500), nullable=True)
     pretrade_balance_auto_evidence_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    server_utc_offset_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[str] = mapped_column(String(64), nullable=False)
 
 
@@ -538,11 +542,14 @@ class AccountRiskPolicyView:
     daily_loss_limit_r: str
     weekly_loss_limit_r: str
     max_drawdown_percent: str
+    drawdown_reset_period: str
     max_open_risk_r: str
     max_consecutive_losses: int
+    loss_streak_reset_period: str
     minimum_rr: str
     correlation_policy: str | None
     pretrade_balance_auto_evidence_enabled: bool
+    server_utc_offset_minutes: int | None
     created_at: str
 
 
@@ -845,6 +852,21 @@ class SQLiteJournalRepository:
             period_review_columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(framework_period_reviews)")}
             if period_review_columns and "status" not in period_review_columns:
                 connection.exec_driver_sql("ALTER TABLE framework_period_reviews ADD COLUMN status VARCHAR(12) NOT NULL DEFAULT 'reviewed'")
+            risk_policy_columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(account_risk_policies)")}
+            if risk_policy_columns and "drawdown_reset_period" not in risk_policy_columns:
+                connection.exec_driver_sql("ALTER TABLE account_risk_policies ADD COLUMN drawdown_reset_period VARCHAR(16) NOT NULL DEFAULT 'daily'")
+            if risk_policy_columns and "loss_streak_reset_period" not in risk_policy_columns:
+                connection.exec_driver_sql("ALTER TABLE account_risk_policies ADD COLUMN loss_streak_reset_period VARCHAR(16) NOT NULL DEFAULT 'daily'")
+            if risk_policy_columns and "server_utc_offset_minutes" not in risk_policy_columns:
+                connection.exec_driver_sql("ALTER TABLE account_risk_policies ADD COLUMN server_utc_offset_minutes INTEGER")
+            if risk_policy_columns:
+                connection.exec_driver_sql(
+                    "UPDATE account_risk_policies "
+                    "SET server_utc_offset_minutes = ("
+                    "SELECT latest_server_utc_offset_minutes FROM mt5_accounts "
+                    "WHERE mt5_accounts.id = account_risk_policies.mt5_account_id"
+                    ") WHERE server_utc_offset_minutes IS NULL"
+                )
             # create_all does not add newly-declared indexes to an existing table.
             for statement in (
                 "CREATE INDEX IF NOT EXISTS ix_trades_account_exit ON trades (mt5_account_id, exit_time, id)",
@@ -1066,6 +1088,8 @@ class SQLiteJournalRepository:
         max_consecutive_losses: int,
         minimum_rr: str,
         correlation_policy: str | None,
+        drawdown_reset_period: str = "daily",
+        loss_streak_reset_period: str = "daily",
     ) -> AccountListItem:
         """Atomically create an import-ready account, system baseline, and risk policy."""
         clean_display_name = self._required_text(display_name, "Account name")
@@ -1086,6 +1110,8 @@ class SQLiteJournalRepository:
             max_open_risk_r=max_open_risk_r,
             max_consecutive_losses=max_consecutive_losses,
             minimum_rr=minimum_rr,
+            drawdown_reset_period=drawdown_reset_period,
+            loss_streak_reset_period=loss_streak_reset_period,
         )
         creating_strategy = strategy_profile_id is None
         if creating_strategy:
@@ -1135,11 +1161,14 @@ class SQLiteJournalRepository:
                 daily_loss_limit_r=risk_inputs["daily"],
                 weekly_loss_limit_r=risk_inputs["weekly"],
                 max_drawdown_percent=risk_inputs["drawdown"],
+                drawdown_reset_period=risk_inputs["drawdown_reset_period"],
                 max_open_risk_r=risk_inputs["open_risk"],
                 max_consecutive_losses=max_consecutive_losses,
+                loss_streak_reset_period=risk_inputs["loss_streak_reset_period"],
                 minimum_rr=risk_inputs["minimum_rr"],
                 correlation_policy=self._optional_text(correlation_policy),
                 pretrade_balance_auto_evidence_enabled=False,
+                server_utc_offset_minutes=account.latest_server_utc_offset_minutes,
                 created_at=datetime.now(timezone.utc).isoformat(),
             ))
             settings = session.get(JournalSettings, 1)
@@ -1341,6 +1370,16 @@ class SQLiteJournalRepository:
             policy = session.get(AccountRiskPolicy, policy_id)
             return None if policy is None else self._to_risk_policy_view(policy)
 
+    def list_account_risk_policies(self, account_id: int) -> list[AccountRiskPolicyView]:
+        """Return the complete version history used to detect monitoring epochs."""
+        with self._sessions() as session:
+            policies = session.scalars(
+                select(AccountRiskPolicy)
+                .where(AccountRiskPolicy.mt5_account_id == account_id)
+                .order_by(AccountRiskPolicy.version)
+            ).all()
+            return [self._to_risk_policy_view(policy) for policy in policies]
+
     def replace_live_positions(
         self,
         *,
@@ -1513,6 +1552,8 @@ class SQLiteJournalRepository:
         correlation_policy: str | None,
         pretrade_balance_auto_evidence_enabled: bool = False,
         starting_balance: str | None = None,
+        drawdown_reset_period: str = "daily",
+        loss_streak_reset_period: str = "daily",
     ) -> AccountRiskPolicyView:
         risk_inputs = self._validated_risk_policy_inputs(
             standard_risk_per_trade_percent=standard_risk_per_trade_percent,
@@ -1523,6 +1564,8 @@ class SQLiteJournalRepository:
             max_open_risk_r=max_open_risk_r,
             max_consecutive_losses=max_consecutive_losses,
             minimum_rr=minimum_rr,
+            drawdown_reset_period=drawdown_reset_period,
+            loss_streak_reset_period=loss_streak_reset_period,
         )
         with self._sessions.begin() as session:
             account = session.get(MT5Account, account_id)
@@ -1551,11 +1594,14 @@ class SQLiteJournalRepository:
                 daily_loss_limit_r=risk_inputs["daily"],
                 weekly_loss_limit_r=risk_inputs["weekly"],
                 max_drawdown_percent=risk_inputs["drawdown"],
+                drawdown_reset_period=risk_inputs["drawdown_reset_period"],
                 max_open_risk_r=risk_inputs["open_risk"],
                 max_consecutive_losses=max_consecutive_losses,
+                loss_streak_reset_period=risk_inputs["loss_streak_reset_period"],
                 minimum_rr=risk_inputs["minimum_rr"],
                 correlation_policy=self._optional_text(correlation_policy),
                 pretrade_balance_auto_evidence_enabled=pretrade_balance_auto_evidence_enabled,
+                server_utc_offset_minutes=account.latest_server_utc_offset_minutes,
                 created_at=datetime.now(timezone.utc).isoformat(),
             )
             session.add(policy)
@@ -1573,6 +1619,8 @@ class SQLiteJournalRepository:
         max_open_risk_r: str,
         max_consecutive_losses: int,
         minimum_rr: str,
+        drawdown_reset_period: str,
+        loss_streak_reset_period: str,
     ) -> dict[str, str]:
         standard = self._required_decimal(standard_risk_per_trade_percent, "Standard risk (1R)", minimum=Decimal("0.01"), maximum=Decimal("100"))
         maximum = self._required_decimal(maximum_risk_per_trade_percent, "Maximum risk per trade", minimum=Decimal("0.01"), maximum=Decimal("100"))
@@ -1580,13 +1628,19 @@ class SQLiteJournalRepository:
             raise ValueError("Maximum risk per trade must be at least the standard risk (1R)")
         if max_consecutive_losses < 1:
             raise ValueError("Maximum consecutive losses must be at least one")
+        if drawdown_reset_period not in MONITORING_RESET_PERIODS:
+            raise ValueError("Drawdown reset period must be Daily, Weekly, Monthly, or All time")
+        if loss_streak_reset_period not in MONITORING_RESET_PERIODS:
+            raise ValueError("Loss-streak reset period must be Daily, Weekly, Monthly, or All time")
         return {
             "standard": _decimal_string(standard),
             "maximum": _decimal_string(maximum),
             "daily": _decimal_string(self._required_decimal(daily_loss_limit_r, "Daily loss limit", minimum=Decimal("0.01"))),
             "weekly": _decimal_string(self._required_decimal(weekly_loss_limit_r, "Weekly loss limit", minimum=Decimal("0.01"))),
             "drawdown": _decimal_string(self._required_decimal(max_drawdown_percent, "Maximum drawdown", minimum=Decimal("0.01"), maximum=Decimal("100"))),
+            "drawdown_reset_period": drawdown_reset_period,
             "open_risk": _decimal_string(self._required_decimal(max_open_risk_r, "Maximum open risk", minimum=Decimal("0.01"))),
+            "loss_streak_reset_period": loss_streak_reset_period,
             "minimum_rr": _decimal_string(self._required_decimal(minimum_rr, "Minimum R:R", minimum=Decimal("0.01"))),
         }
 
@@ -1596,7 +1650,7 @@ class SQLiteJournalRepository:
             return self._logical_trade_review_items(session, account_id)
 
     def list_imported_positions_for_risk(self, account_id: int) -> list[ImportedPositionReviewItem]:
-        """Raw chronology for account-level Risk limits; grouping never changes it."""
+        """Return raw imported positions for grouping and audit workflows."""
         with self._sessions() as session:
             rows = session.scalars(
                 select(Trade).where(Trade.mt5_account_id == account_id).order_by(Trade.exit_time, Trade.id)
@@ -2823,11 +2877,14 @@ class SQLiteJournalRepository:
             policy.daily_loss_limit_r,
             policy.weekly_loss_limit_r,
             policy.max_drawdown_percent,
+            policy.drawdown_reset_period,
             policy.max_open_risk_r,
             policy.max_consecutive_losses,
+            policy.loss_streak_reset_period,
             policy.minimum_rr,
             policy.correlation_policy,
             policy.pretrade_balance_auto_evidence_enabled,
+            policy.server_utc_offset_minutes,
             policy.created_at,
         )
 
@@ -3170,12 +3227,7 @@ class SQLiteJournalRepository:
             return sorted(performance, key=lambda item: (item.exit_time, item.logical_trade_id))
 
     def list_account_balance_movements(self, account_id: int) -> list[AccountBalanceMovement]:
-        """Return raw, immutable position closes for account balance history.
-
-        Logical trades are intentionally mutable review units. They must not
-        rewrite the cash-flow chronology used for account balance, daily P&L,
-        or drawdown reporting.
-        """
+        """Return raw position-close movements for audit/export compatibility."""
         with self._sessions() as session:
             policies_by_id, active_policies_by_account, funded_capital_by_account = self._risk_reporting_context(session)
             rows = session.scalars(
@@ -3224,6 +3276,14 @@ class SQLiteJournalRepository:
                 account.latest_mt5_balance = _decimal_string(live_account_balance)
             if positions:
                 account.latest_server_utc_offset_minutes = positions[0].server_utc_offset_minutes
+                unresolved_policies = session.scalars(
+                    select(AccountRiskPolicy).where(
+                        AccountRiskPolicy.mt5_account_id == account_id,
+                        AccountRiskPolicy.server_utc_offset_minutes.is_(None),
+                    )
+                ).all()
+                for unresolved_policy in unresolved_policies:
+                    unresolved_policy.server_utc_offset_minutes = positions[0].server_utc_offset_minutes
             active_policy = session.scalar(
                 select(AccountRiskPolicy)
                 .where(AccountRiskPolicy.mt5_account_id == account_id, AccountRiskPolicy.active.is_(True))

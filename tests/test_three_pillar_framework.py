@@ -47,7 +47,7 @@ def test_monitor_metrics_use_semantic_colors_without_treating_status_as_a_trend(
     assert _readiness_metric(ready) == ("82%", "Ready", "green")
     assert _risk_state_metric(clear) == ("Clear", "Within limits", "green")
     assert _daily_r_metric(clear.daily_r) == ("−1.05R", "Loss", "red")
-    assert _drawdown_metric(clear.max_drawdown_percent) == ("2.7%", "Historical maximum", "gray")
+    assert _drawdown_metric(clear.max_drawdown_percent) == ("2.7%", "Current monitoring-period maximum", "gray")
 
 
 def test_monitor_metrics_distinguish_unavailable_values_and_breached_drawdown() -> None:
@@ -141,8 +141,12 @@ def _policy(
     daily_loss_limit_r: str = "2",
     weekly_loss_limit_r: str = "4",
     max_drawdown_percent: str = "10",
+    max_consecutive_losses: int = 3,
+    drawdown_reset_period: str = "daily",
+    loss_streak_reset_period: str = "daily",
+    created_at: str = "2026-07-01T00:00:00+00:00",
 ):
-    return repository.save_account_risk_policy(
+    policy = repository.save_account_risk_policy(
         account_id=account_id,
         standard_risk_per_trade_percent="1",
         maximum_risk_per_trade_percent="1",
@@ -150,11 +154,17 @@ def _policy(
         weekly_loss_limit_r=weekly_loss_limit_r,
         max_drawdown_percent=max_drawdown_percent,
         max_open_risk_r="1",
-        max_consecutive_losses=3,
+        max_consecutive_losses=max_consecutive_losses,
         minimum_rr="1.5",
         correlation_policy=None,
         pretrade_balance_auto_evidence_enabled=pretrade_balance_auto_evidence_enabled,
+        drawdown_reset_period=drawdown_reset_period,
+        loss_streak_reset_period=loss_streak_reset_period,
     )
+    _set_policy_created_at(repository, policy.id, created_at)
+    saved = repository.get_risk_policy(policy.id)
+    assert saved is not None
+    return saved
 
 
 def _strategy(repository: SQLiteJournalRepository):
@@ -186,6 +196,7 @@ def _import_position(
     close_stop_price: str | None = None,
     account_balance: str | None = None,
     pretrade_account_balance: str | None = None,
+    server_utc_offset_minutes: int = 0,
 ) -> int:
     repository.upsert_mt5_positions(
         account_id,
@@ -215,6 +226,7 @@ def _import_position(
                 entry_deal_count=1,
                 account_balance=account_balance,
                 pretrade_account_balance=pretrade_account_balance,
+                server_utc_offset_minutes=server_utc_offset_minutes,
             )
         ],
         "positions.csv",
@@ -222,6 +234,19 @@ def _import_position(
         live_account_balance=Decimal(account_balance) if account_balance else None,
     )
     return next(item.id for item in repository.list_closed_trades_for_review(account_id) if item.position_id == position_id)
+
+
+def _set_policy_created_at(repository: SQLiteJournalRepository, policy_id: int, value: str) -> None:
+    with sqlite3.connect(repository.database_path) as connection:
+        connection.execute("UPDATE account_risk_policies SET created_at = ? WHERE id = ?", (value, policy_id))
+
+
+def _set_policy_server_offset(repository: SQLiteJournalRepository, policy_id: int, value: int) -> None:
+    with sqlite3.connect(repository.database_path) as connection:
+        connection.execute(
+            "UPDATE account_risk_policies SET server_utc_offset_minutes = ? WHERE id = ?",
+            (value, policy_id),
+        )
 
 
 def _review(
@@ -540,6 +565,439 @@ def test_risk_snapshot_accumulates_pnl_against_policy_standard_risk(tmp_path) ->
     assert snapshot.daily_r == "-1"
 
 
+@pytest.mark.parametrize(
+    ("cadence", "first_exit", "second_exit", "expected_streak"),
+    [
+        ("daily", "2026-08-10T09:00:00+00:00", "2026-08-11T09:00:00+00:00", 1),
+        ("weekly", "2026-08-16T09:00:00+00:00", "2026-08-17T09:00:00+00:00", 1),
+        ("monthly", "2026-08-31T09:00:00+00:00", "2026-09-01T09:00:00+00:00", 1),
+        ("all_time", "2026-08-10T09:00:00+00:00", "2026-09-01T09:00:00+00:00", 2),
+    ],
+)
+def test_loss_streak_resets_on_the_configured_reporting_period(
+    tmp_path, cadence: str, first_exit: str, second_exit: str, expected_streak: int
+) -> None:
+    repository, account_id = _repository(tmp_path)
+    _policy(repository, account_id, max_consecutive_losses=10, loss_streak_reset_period=cadence)
+    _import_position(repository, account_id, position_id="period-loss-1", net_pnl="-10", exit_time=first_exit)
+    _import_position(repository, account_id, position_id="period-loss-2", net_pnl="-10", exit_time=second_exit)
+
+    snapshot = FrameworkService(repository).risk_snapshot(
+        account_id,
+        now=datetime.fromisoformat(second_exit) + timedelta(hours=1),
+    )
+
+    assert snapshot.consecutive_losses == expected_streak
+    assert snapshot.loss_streak_reset_period == cadence
+
+
+@pytest.mark.parametrize(
+    ("cadence", "first_exit", "second_exit", "expected_drawdown"),
+    [
+        ("daily", "2026-08-10T09:00:00+00:00", "2026-08-11T09:00:00+00:00", "1.111111111111111111111111111"),
+        ("weekly", "2026-08-16T09:00:00+00:00", "2026-08-17T09:00:00+00:00", "1.111111111111111111111111111"),
+        ("monthly", "2026-08-31T09:00:00+00:00", "2026-09-01T09:00:00+00:00", "1.111111111111111111111111111"),
+        ("all_time", "2026-08-10T09:00:00+00:00", "2026-09-01T09:00:00+00:00", "11"),
+    ],
+)
+def test_drawdown_resets_on_the_configured_reporting_period(
+    tmp_path, cadence: str, first_exit: str, second_exit: str, expected_drawdown: str
+) -> None:
+    repository, account_id = _repository(tmp_path)
+    _policy(
+        repository,
+        account_id,
+        max_drawdown_percent="50",
+        max_consecutive_losses=10,
+        drawdown_reset_period=cadence,
+    )
+    _import_position(repository, account_id, position_id="drawdown-period-1", net_pnl="-100", exit_time=first_exit)
+    _import_position(repository, account_id, position_id="drawdown-period-2", net_pnl="-10", exit_time=second_exit)
+
+    snapshot = FrameworkService(repository).risk_snapshot(
+        account_id,
+        now=datetime.fromisoformat(second_exit) + timedelta(hours=1),
+    )
+
+    assert snapshot.current_drawdown_percent == expected_drawdown
+    assert snapshot.max_drawdown_percent == expected_drawdown
+    assert snapshot.drawdown_reset_period == cadence
+
+
+def test_drawdown_and_loss_streak_reset_independently(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    _policy(
+        repository,
+        account_id,
+        max_drawdown_percent="20",
+        max_consecutive_losses=10,
+        drawdown_reset_period="daily",
+        loss_streak_reset_period="weekly",
+    )
+    _import_position(repository, account_id, position_id="independent-1", net_pnl="-100", exit_time="2026-08-10T09:00:00+00:00")
+    _import_position(repository, account_id, position_id="independent-2", net_pnl="-10", exit_time="2026-08-11T09:00:00+00:00")
+
+    snapshot = FrameworkService(repository).risk_snapshot(account_id, now=datetime(2026, 8, 11, 12, tzinfo=timezone.utc))
+
+    assert snapshot.current_drawdown_percent == "1.111111111111111111111111111"
+    assert snapshot.max_drawdown_percent == "1.111111111111111111111111111"
+    assert snapshot.consecutive_losses == 2
+
+
+def test_cadence_change_without_a_new_trade_starts_a_new_epoch(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    _policy(repository, account_id, drawdown_reset_period="all_time", loss_streak_reset_period="all_time")
+    _import_position(repository, account_id, position_id="epoch-1", net_pnl="-10")
+    _import_position(repository, account_id, position_id="epoch-2", net_pnl="-10", exit_time="2026-08-10T10:00:00+00:00")
+    _policy(
+        repository,
+        account_id,
+        drawdown_reset_period="weekly",
+        loss_streak_reset_period="weekly",
+        created_at="2026-08-10T10:30:00+00:00",
+    )
+    _policy(
+        repository,
+        account_id,
+        drawdown_reset_period="all_time",
+        loss_streak_reset_period="all_time",
+        created_at="2026-08-10T10:45:00+00:00",
+    )
+
+    snapshot = FrameworkService(repository).risk_snapshot(account_id, now=datetime(2026, 8, 10, 12, tzinfo=timezone.utc))
+
+    assert snapshot.current_drawdown_percent == "0"
+    assert snapshot.max_drawdown_percent == "0"
+    assert snapshot.consecutive_losses == 0
+
+
+def test_threshold_only_policy_change_preserves_monitoring_state(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    _policy(repository, account_id, drawdown_reset_period="all_time", loss_streak_reset_period="all_time")
+    _import_position(repository, account_id, position_id="preserved-1", net_pnl="-10")
+    _import_position(repository, account_id, position_id="preserved-2", net_pnl="-10", exit_time="2026-08-10T10:00:00+00:00")
+    _policy(
+        repository,
+        account_id,
+        max_drawdown_percent="20",
+        max_consecutive_losses=5,
+        drawdown_reset_period="all_time",
+        loss_streak_reset_period="all_time",
+        created_at="2026-08-10T10:30:00+00:00",
+    )
+
+    snapshot = FrameworkService(repository).risk_snapshot(account_id, now=datetime(2026, 8, 10, 12, tzinfo=timezone.utc))
+
+    assert snapshot.current_drawdown_percent == "2"
+    assert snapshot.max_drawdown_percent == "2"
+    assert snapshot.consecutive_losses == 2
+
+
+def test_raising_policy_thresholds_clears_old_shutdown_latches(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    _policy(
+        repository,
+        account_id,
+        daily_loss_limit_r="1",
+        weekly_loss_limit_r="1",
+        max_drawdown_percent="1",
+        max_consecutive_losses=1,
+        drawdown_reset_period="all_time",
+        loss_streak_reset_period="all_time",
+    )
+    _import_position(
+        repository,
+        account_id,
+        position_id="old-threshold-breach",
+        net_pnl="-20",
+        entry_time="2026-08-10T08:00:00+00:00",
+        exit_time="2026-08-10T09:00:00+00:00",
+    )
+    raised = _policy(
+        repository,
+        account_id,
+        daily_loss_limit_r="3",
+        weekly_loss_limit_r="3",
+        max_drawdown_percent="3",
+        max_consecutive_losses=3,
+        drawdown_reset_period="all_time",
+        loss_streak_reset_period="all_time",
+    )
+    transition = datetime(2026, 8, 10, 9, 30, tzinfo=timezone.utc)
+    _set_policy_created_at(repository, raised.id, transition.isoformat())
+    later_id = _import_position(
+        repository,
+        account_id,
+        position_id="after-raised-thresholds",
+        net_pnl="5",
+        entry_time=(transition + timedelta(minutes=1)).isoformat(),
+        exit_time=(transition + timedelta(minutes=2)).isoformat(),
+    )
+
+    service = FrameworkService(repository)
+    score = next(item for item in service.trade_process_scores(account_id) if item.trade_id == later_id)
+    snapshot = service.risk_snapshot(account_id, now=transition + timedelta(minutes=3))
+
+    assert score.shutdown_candidate_codes == ()
+    assert snapshot.state == "clear"
+    assert snapshot.max_drawdown_percent == "2"
+
+
+def test_raised_thresholds_do_not_excuse_a_trade_opened_under_the_old_policy(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    _policy(
+        repository,
+        account_id,
+        daily_loss_limit_r="1",
+        weekly_loss_limit_r="1",
+        max_drawdown_percent="1",
+        max_consecutive_losses=1,
+        drawdown_reset_period="all_time",
+        loss_streak_reset_period="all_time",
+    )
+    _import_position(
+        repository,
+        account_id,
+        position_id="breach-before-raised-policy",
+        net_pnl="-20",
+        entry_time="2026-08-10T08:00:00+00:00",
+        exit_time="2026-08-10T09:00:00+00:00",
+    )
+    raised = _policy(
+        repository,
+        account_id,
+        daily_loss_limit_r="3",
+        weekly_loss_limit_r="3",
+        max_drawdown_percent="3",
+        max_consecutive_losses=3,
+        drawdown_reset_period="all_time",
+        loss_streak_reset_period="all_time",
+    )
+    transition = datetime(2026, 8, 10, 9, 30, tzinfo=timezone.utc)
+    _set_policy_created_at(repository, raised.id, transition.isoformat())
+    overlapping_id = _import_position(
+        repository,
+        account_id,
+        position_id="opened-before-raised-policy",
+        net_pnl="5",
+        entry_time="2026-08-10T09:15:00+00:00",
+        exit_time="2026-08-10T10:00:00+00:00",
+    )
+
+    score = next(
+        item for item in FrameworkService(repository).trade_process_scores(account_id)
+        if item.trade_id == overlapping_id
+    )
+
+    assert score.shutdown_candidate_codes == ("daily_limit", "drawdown_limit", "loss_streak", "weekly_limit")
+
+
+def test_intermediate_policy_transition_controls_the_latch_at_entry(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    _policy(
+        repository,
+        account_id,
+        daily_loss_limit_r="1",
+        weekly_loss_limit_r="1",
+        max_drawdown_percent="1",
+        max_consecutive_losses=1,
+        drawdown_reset_period="all_time",
+        loss_streak_reset_period="all_time",
+    )
+    _import_position(
+        repository,
+        account_id,
+        position_id="breach-before-intermediate-policy",
+        net_pnl="-20",
+        entry_time="2026-08-10T08:00:00+00:00",
+        exit_time="2026-08-10T09:00:00+00:00",
+    )
+    raised = _policy(
+        repository,
+        account_id,
+        daily_loss_limit_r="3",
+        weekly_loss_limit_r="3",
+        max_drawdown_percent="3",
+        max_consecutive_losses=3,
+        drawdown_reset_period="all_time",
+        loss_streak_reset_period="all_time",
+    )
+    unchanged = _policy(
+        repository,
+        account_id,
+        daily_loss_limit_r="3",
+        weekly_loss_limit_r="3",
+        max_drawdown_percent="3",
+        max_consecutive_losses=3,
+        drawdown_reset_period="all_time",
+        loss_streak_reset_period="all_time",
+    )
+    _set_policy_created_at(repository, raised.id, "2026-08-10T09:15:00+00:00")
+    _set_policy_created_at(repository, unchanged.id, "2026-08-10T09:30:00+00:00")
+    between_versions_id = _import_position(
+        repository,
+        account_id,
+        position_id="entry-between-policy-versions",
+        net_pnl="5",
+        entry_time="2026-08-10T09:20:00+00:00",
+        exit_time="2026-08-10T10:00:00+00:00",
+    )
+
+    score = next(
+        item for item in FrameworkService(repository).trade_process_scores(account_id)
+        if item.trade_id == between_versions_id
+    )
+
+    assert score.shutdown_candidate_codes == ()
+
+
+def test_lowering_policy_thresholds_activates_shutdown_at_policy_time(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    _policy(
+        repository,
+        account_id,
+        daily_loss_limit_r="3",
+        weekly_loss_limit_r="3",
+        max_drawdown_percent="3",
+        max_consecutive_losses=3,
+        drawdown_reset_period="all_time",
+        loss_streak_reset_period="all_time",
+    )
+    _import_position(
+        repository,
+        account_id,
+        position_id="state-before-lower-thresholds",
+        net_pnl="-20",
+        entry_time="2026-08-10T08:00:00+00:00",
+        exit_time="2026-08-10T09:00:00+00:00",
+    )
+    lowered = _policy(
+        repository,
+        account_id,
+        daily_loss_limit_r="1",
+        weekly_loss_limit_r="1",
+        max_drawdown_percent="1",
+        max_consecutive_losses=1,
+        drawdown_reset_period="all_time",
+        loss_streak_reset_period="all_time",
+    )
+    transition = datetime(2026, 8, 10, 9, 30, tzinfo=timezone.utc)
+    _set_policy_created_at(repository, lowered.id, transition.isoformat())
+    later_id = _import_position(
+        repository,
+        account_id,
+        position_id="after-lowered-thresholds",
+        net_pnl="5",
+        entry_time=(transition + timedelta(minutes=1)).isoformat(),
+        exit_time=(transition + timedelta(minutes=2)).isoformat(),
+    )
+
+    service = FrameworkService(repository)
+    score = next(item for item in service.trade_process_scores(account_id) if item.trade_id == later_id)
+    snapshot = service.risk_snapshot(account_id, now=transition + timedelta(minutes=3))
+
+    assert score.shutdown_candidate_codes == ("daily_limit", "drawdown_limit", "loss_streak", "weekly_limit")
+    assert snapshot.state == "stop"
+
+
+def test_lowered_threshold_does_not_retroactively_flag_an_open_trade(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    _policy(
+        repository,
+        account_id,
+        daily_loss_limit_r="3",
+        weekly_loss_limit_r="3",
+        max_drawdown_percent="3",
+        max_consecutive_losses=3,
+        drawdown_reset_period="all_time",
+        loss_streak_reset_period="all_time",
+    )
+    _import_position(
+        repository,
+        account_id,
+        position_id="state-before-open-transition",
+        net_pnl="-20",
+        entry_time="2026-08-10T08:00:00+00:00",
+        exit_time="2026-08-10T09:00:00+00:00",
+    )
+    lowered = _policy(
+        repository,
+        account_id,
+        daily_loss_limit_r="1",
+        weekly_loss_limit_r="1",
+        max_drawdown_percent="1",
+        max_consecutive_losses=1,
+        drawdown_reset_period="all_time",
+        loss_streak_reset_period="all_time",
+    )
+    transition = datetime(2026, 8, 10, 9, 30, tzinfo=timezone.utc)
+    _set_policy_created_at(repository, lowered.id, transition.isoformat())
+    overlapping_id = _import_position(
+        repository,
+        account_id,
+        position_id="opened-before-lowered-thresholds",
+        net_pnl="5",
+        entry_time=(transition - timedelta(minutes=1)).isoformat(),
+        exit_time=(transition + timedelta(minutes=1)).isoformat(),
+    )
+
+    score = next(
+        item for item in FrameworkService(repository).trade_process_scores(account_id)
+        if item.trade_id == overlapping_id
+    )
+
+    assert score.shutdown_candidate_codes == ()
+
+
+def test_shutdown_candidate_uses_entry_period_before_final_close_period_reset(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    _policy(repository, account_id, max_consecutive_losses=1, loss_streak_reset_period="daily")
+    _import_position(repository, account_id, position_id="shutdown-loss", net_pnl="-10", exit_time="2026-08-10T09:00:00+00:00")
+    later_id = _import_position(
+        repository,
+        account_id,
+        position_id="cross-day-candidate",
+        net_pnl="5",
+        entry_time="2026-08-10T10:00:00+00:00",
+        exit_time="2026-08-11T09:00:00+00:00",
+    )
+
+    score = next(item for item in FrameworkService(repository).trade_process_scores(account_id) if item.trade_id == later_id)
+
+    assert "loss_streak" in score.shutdown_candidate_codes
+
+
+def test_shutdown_candidate_does_not_cross_the_configured_period_boundary(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    _policy(repository, account_id, max_consecutive_losses=1, loss_streak_reset_period="daily")
+    _import_position(repository, account_id, position_id="prior-day-loss", net_pnl="-10", exit_time="2026-08-10T09:00:00+00:00")
+    later_id = _import_position(
+        repository,
+        account_id,
+        position_id="next-day-entry",
+        net_pnl="5",
+        entry_time="2026-08-11T08:00:00+00:00",
+        exit_time="2026-08-11T09:00:00+00:00",
+    )
+
+    score = next(item for item in FrameworkService(repository).trade_process_scores(account_id) if item.trade_id == later_id)
+
+    assert "loss_streak" not in score.shutdown_candidate_codes
+
+
+def test_grouped_positions_count_as_one_monitoring_loss(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    _policy(repository, account_id, max_consecutive_losses=10)
+    first = _import_position(repository, account_id, position_id="group-loss-1", net_pnl="-10")
+    second = _import_position(repository, account_id, position_id="group-loss-2", net_pnl="-10", exit_time="2026-08-10T10:00:00+00:00")
+    repository.create_logical_trade_group(account_id=account_id, logical_trade_ids=(first, second), display_label="One losing idea")
+
+    snapshot = FrameworkService(repository).risk_snapshot(account_id, now=datetime(2026, 8, 10, 12, tzinfo=timezone.utc))
+
+    assert snapshot.daily_r == "-2"
+    assert snapshot.consecutive_losses == 1
+
+
 def test_automatic_risk_limit_is_advisory_and_flags_a_later_shutdown_candidate(tmp_path) -> None:
     repository, account_id = _repository(tmp_path)
     policy, strategy = _policy(repository, account_id), _strategy(repository)
@@ -757,10 +1215,10 @@ def test_reviewed_actual_risk_replaces_automatic_policy_comparison_only(tmp_path
     assert score.risk_evidence_source == "reviewed_actual_risk"
     assert score.risk_policy_state == "within_policy"
     assert _auto_risk_label(score) == "Reviewed actual risk · Within policy"
-    assert "immutable MT5 positions" in _risk_evidence_detail(score)
+    assert "aggregate logical-trade outcomes" in _risk_evidence_detail(score)
 
 
-def test_drawdown_shutdown_candidate_clears_after_balance_recovers(tmp_path) -> None:
+def test_drawdown_shutdown_candidate_resets_in_the_next_period(tmp_path) -> None:
     repository, account_id = _repository(tmp_path)
     _policy(repository, account_id, daily_loss_limit_r="20", weekly_loss_limit_r="40")
     _import_position(
@@ -791,6 +1249,304 @@ def test_drawdown_shutdown_candidate_clears_after_balance_recovers(tmp_path) -> 
     score = next(item for item in FrameworkService(repository).trade_process_scores(account_id) if item.trade_id == later_trade_id)
 
     assert score.shutdown_candidate_codes == ()
+
+
+def test_maximum_drawdown_breach_persists_after_same_period_recovery(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    _policy(
+        repository,
+        account_id,
+        daily_loss_limit_r="20",
+        weekly_loss_limit_r="40",
+        max_drawdown_percent="1",
+        max_consecutive_losses=10,
+        drawdown_reset_period="daily",
+    )
+    _import_position(
+        repository,
+        account_id,
+        position_id="same-day-drawdown",
+        net_pnl="-20",
+        entry_time="2026-08-10T08:00:00+00:00",
+        exit_time="2026-08-10T09:00:00+00:00",
+    )
+    _import_position(
+        repository,
+        account_id,
+        position_id="same-day-recovery",
+        net_pnl="20",
+        entry_time="2026-08-10T09:15:00+00:00",
+        exit_time="2026-08-10T10:00:00+00:00",
+    )
+    later_id = _import_position(
+        repository,
+        account_id,
+        position_id="after-same-day-recovery",
+        net_pnl="5",
+        entry_time="2026-08-10T10:30:00+00:00",
+        exit_time="2026-08-10T11:00:00+00:00",
+    )
+
+    service = FrameworkService(repository)
+    score = next(item for item in service.trade_process_scores(account_id) if item.trade_id == later_id)
+    snapshot = service.risk_snapshot(account_id, now=datetime(2026, 8, 10, 12, tzinfo=timezone.utc))
+
+    assert score.shutdown_candidate_codes == ("drawdown_limit",)
+    assert snapshot.current_drawdown_percent == "0"
+    assert snapshot.max_drawdown_percent == "2"
+    assert snapshot.state == "stop"
+
+
+def test_monitoring_policy_is_selected_by_event_time_not_attached_import_policy(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    first = _policy(repository, account_id, daily_loss_limit_r="20")
+    late_old_id = _import_position(
+        repository,
+        account_id,
+        position_id="old-policy-late-close",
+        net_pnl="-10",
+        entry_time="2026-08-10T08:00:00+00:00",
+        exit_time="2026-08-10T12:00:00+00:00",
+    )
+    second = _policy(
+        repository,
+        account_id,
+        daily_loss_limit_r="10",
+        created_at="2026-08-10T10:00:00+00:00",
+    )
+    backfill_id = _import_position(
+        repository,
+        account_id,
+        position_id="new-policy-backfill",
+        net_pnl="-10",
+        entry_time="2026-08-10T07:00:00+00:00",
+        exit_time="2026-08-10T09:00:00+00:00",
+    )
+    newer_id = _import_position(
+        repository,
+        account_id,
+        position_id="new-policy-current-close",
+        net_pnl="-10",
+        entry_time="2026-08-10T10:15:00+00:00",
+        exit_time="2026-08-10T11:00:00+00:00",
+    )
+
+    events = FrameworkService(repository)._historical_risk_events(account_id)
+
+    assert events[backfill_id]["policy_id"] == first.id
+    assert events[newer_id]["policy_id"] == second.id
+    assert events[late_old_id]["policy_id"] == second.id
+
+
+def test_shutdown_candidate_is_frozen_at_entry_when_latch_clears_before_close(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    _policy(
+        repository,
+        account_id,
+        daily_loss_limit_r="20",
+        weekly_loss_limit_r="40",
+        max_drawdown_percent="50",
+        max_consecutive_losses=1,
+        loss_streak_reset_period="all_time",
+    )
+    _import_position(
+        repository,
+        account_id,
+        position_id="latch-loss",
+        net_pnl="-10",
+        entry_time="2026-08-10T08:00:00+00:00",
+        exit_time="2026-08-10T09:00:00+00:00",
+    )
+    overlapping_id = _import_position(
+        repository,
+        account_id,
+        position_id="candidate-closes-last",
+        net_pnl="5",
+        entry_time="2026-08-10T09:10:00+00:00",
+        exit_time="2026-08-10T11:00:00+00:00",
+    )
+    _import_position(
+        repository,
+        account_id,
+        position_id="recovery-closes-first",
+        net_pnl="5",
+        entry_time="2026-08-10T09:20:00+00:00",
+        exit_time="2026-08-10T10:00:00+00:00",
+    )
+
+    score = next(
+        item for item in FrameworkService(repository).trade_process_scores(account_id)
+        if item.trade_id == overlapping_id
+    )
+
+    assert score.shutdown_candidate_codes == ("loss_streak",)
+
+
+def test_trade_closed_before_first_policy_is_audit_only_for_monitoring(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy = _policy(repository, account_id, created_at="2026-08-10T10:00:00+00:00")
+    historical_id = _import_position(
+        repository,
+        account_id,
+        position_id="pre-policy-history",
+        net_pnl="-20",
+        entry_time="2026-08-10T08:00:00+00:00",
+        exit_time="2026-08-10T09:00:00+00:00",
+    )
+    monitored_id = _import_position(
+        repository,
+        account_id,
+        position_id="post-policy-close",
+        net_pnl="-10",
+        entry_time="2026-08-10T10:15:00+00:00",
+        exit_time="2026-08-10T11:00:00+00:00",
+    )
+    service = FrameworkService(repository)
+
+    events = service._historical_risk_events(account_id)
+    snapshot = service.risk_snapshot(account_id, now=datetime(2026, 8, 10, 12, tzinfo=timezone.utc))
+    report = DashboardService(repository).build_report(account_id=account_id)
+
+    assert events[historical_id]["policy_id"] is None
+    assert events[historical_id]["result_r"] == Decimal("0")
+    assert events[monitored_id]["policy_id"] == policy.id
+    assert snapshot.daily_r == "-1"
+    assert report.trade_count == 2
+    assert report.total_r == "-3"
+
+
+def test_equal_timestamp_policy_close_and_entry_use_stable_priority(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    _policy(
+        repository,
+        account_id,
+        daily_loss_limit_r="1",
+        created_at="2026-08-10T09:00:00+00:00",
+    )
+    limit_id = _import_position(
+        repository,
+        account_id,
+        position_id="tie-limit-close",
+        net_pnl="-10",
+        entry_time="2026-08-10T08:00:00+00:00",
+        exit_time="2026-08-10T09:00:00+00:00",
+    )
+    same_time_entry_id = _import_position(
+        repository,
+        account_id,
+        position_id="tie-entry",
+        net_pnl="5",
+        entry_time="2026-08-10T09:00:00+00:00",
+        exit_time="2026-08-10T10:00:00+00:00",
+    )
+
+    events = FrameworkService(repository)._historical_risk_events(account_id)
+
+    assert events[limit_id]["events"] == ("daily_limit",)
+    assert events[same_time_entry_id]["shutdown_candidates"] == ()
+
+
+def test_policy_transition_uses_its_saved_server_offset_not_a_later_trade_offset(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    repository.configure_journal(reporting_time_basis="server")
+    _policy(repository, account_id, daily_loss_limit_r="2")
+    _import_position(
+        repository,
+        account_id,
+        position_id="offset-baseline-loss",
+        net_pnl="-10",
+        entry_time="2026-08-10T20:00:00+00:00",
+        exit_time="2026-08-10T21:00:00+00:00",
+        server_utc_offset_minutes=120,
+    )
+    changed = _policy(
+        repository,
+        account_id,
+        daily_loss_limit_r="0.5",
+        created_at="2026-08-10T23:30:00+00:00",
+    )
+    candidate_id = _import_position(
+        repository,
+        account_id,
+        position_id="later-different-offset",
+        net_pnl="5",
+        entry_time="2026-08-10T23:45:00+00:00",
+        exit_time="2026-08-11T00:15:00+00:00",
+        server_utc_offset_minutes=-300,
+    )
+
+    saved = repository.get_risk_policy(changed.id)
+    score = next(
+        item for item in FrameworkService(repository).trade_process_scores(account_id)
+        if item.trade_id == candidate_id
+    )
+
+    assert saved is not None
+    assert saved.server_utc_offset_minutes == 120
+    assert score.shutdown_candidate_codes == ()
+
+
+def test_unchanged_cadence_transition_does_not_reset_via_previous_policy_offset(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    repository.configure_journal(reporting_time_basis="server")
+    first = _policy(repository, account_id)
+    _import_position(
+        repository,
+        account_id,
+        position_id="offset-straddle-loss",
+        net_pnl="-10",
+        entry_time="2026-08-10T20:00:00+00:00",
+        exit_time="2026-08-10T21:00:00+00:00",
+        server_utc_offset_minutes=-300,
+    )
+    _set_policy_server_offset(repository, first.id, 120)
+    changed = _policy(
+        repository,
+        account_id,
+        max_drawdown_percent="20",
+        max_consecutive_losses=5,
+        created_at="2026-08-10T23:30:00+00:00",
+    )
+
+    saved = repository.get_risk_policy(changed.id)
+    snapshot = FrameworkService(repository).risk_snapshot(
+        account_id,
+        now=datetime(2026, 8, 10, 23, 45, tzinfo=timezone.utc),
+    )
+
+    assert saved is not None
+    assert saved.server_utc_offset_minutes == -300
+    assert snapshot.current_drawdown_percent == "1"
+    assert snapshot.max_drawdown_percent == "1"
+    assert snapshot.consecutive_losses == 1
+
+
+def test_risk_snapshot_excludes_a_future_close_on_the_same_reporting_day(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    _policy(repository, account_id)
+    _import_position(
+        repository,
+        account_id,
+        position_id="already-closed",
+        net_pnl="-10",
+        exit_time="2026-08-10T09:00:00+00:00",
+    )
+    _import_position(
+        repository,
+        account_id,
+        position_id="future-same-day-close",
+        net_pnl="-10",
+        entry_time="2026-08-10T13:00:00+00:00",
+        exit_time="2026-08-10T15:00:00+00:00",
+    )
+
+    snapshot = FrameworkService(repository).risk_snapshot(
+        account_id,
+        now=datetime(2026, 8, 10, 12, tzinfo=timezone.utc),
+    )
+
+    assert snapshot.daily_r == "-1"
+    assert snapshot.consecutive_losses == 1
 
 
 def test_grouped_positions_become_one_logical_trade_for_review_and_dashboard(tmp_path) -> None:
@@ -1114,7 +1870,7 @@ def test_grouped_winners_do_not_multiply_the_pretrade_balance_fallback(tmp_path)
     assert score.auto_risk.state == "over_policy"
 
 
-def test_logical_grouping_does_not_rewrite_account_balance_history(tmp_path) -> None:
+def test_logical_grouping_recalculates_account_balance_history_at_final_close(tmp_path) -> None:
     repository, account_id = _repository(tmp_path)
     _policy(repository, account_id)
     first = _import_position(repository, account_id, position_id="cash-1", net_pnl="12", exit_time="2026-08-09T09:00:00+00:00")
@@ -1125,16 +1881,15 @@ def test_logical_grouping_does_not_rewrite_account_balance_history(tmp_path) -> 
     full = DashboardService(repository).build_report(account_id=account_id, start_date="2026-08-09", end_date="2026-08-10")
 
     assert early.trade_count == 0
-    assert early.raw_position_count == 1
-    assert early.net_pnl == "12"
-    assert early.ending_balance == "1012"
-    assert [(item.date, item.net_pnl) for item in early.daily] == [("2026-08-09", "12")]
+    assert early.net_pnl == "0"
+    assert early.ending_balance == "1000"
+    assert early.daily == []
     assert full.trade_count == 1
-    assert full.raw_position_count == 2
     assert full.ending_balance == "1020"
+    assert [(item.date, item.net_pnl) for item in full.daily] == [("2026-08-10", "20")]
 
 
-def test_account_drawdown_uses_raw_position_chronology_within_a_day(tmp_path) -> None:
+def test_account_drawdown_uses_aggregate_logical_trade_pnl(tmp_path) -> None:
     repository, account_id = _repository(tmp_path)
     _policy(repository, account_id)
     first = _import_position(repository, account_id, position_id="drawdown-1", net_pnl="20", exit_time="2026-08-10T09:00:00+00:00")
@@ -1143,8 +1898,8 @@ def test_account_drawdown_uses_raw_position_chronology_within_a_day(tmp_path) ->
 
     report = DashboardService(repository).build_report(account_id=account_id, start_date="2026-08-10", end_date="2026-08-10")
 
-    assert report.max_drawdown == "5"
-    assert report.current_drawdown == "5"
+    assert report.max_drawdown == "0"
+    assert report.current_drawdown == "0"
     assert report.daily[0].net_pnl == "15"
 
 

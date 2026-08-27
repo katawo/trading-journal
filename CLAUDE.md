@@ -51,7 +51,7 @@ There is no `alembic` migration path wired up even though it's a listed dependen
 - **Per-account currency, no aggregation/conversion**: dashboards and Risk policies are scoped to one MT5 account in that account's currency; don't add cross-account currency conversion or aggregation.
 - **Hard-rule results are snapshotted**: a saved Framework assessment's Hard-rule `Clear`/`Fail` result must not be recomputed retroactively when Framework Rules change later — see `PostTradeAssessment`/`PostTradeAssessmentRevision` in `sqlite_repository.py`.
 - **Corrections version, they don't overwrite**: Framework assessment edits create a new revision (`PostTradeAssessmentRevision`) and keep prior evidence auditable, rather than mutating the original row.
-- **Logical trades vs. raw positions**: daily P&L/balance/drawdown always use raw chronological MT5 positions; only the per-trade view uses mutable "logical trades" (grouped/split/regrouped scaled positions). Don't let logical-trade edits touch account cash-flow history or Risk-limit monitoring.
+- **Logical trades are the reporting unit**: Dashboard P&L/balance/drawdown/streaks and completed-trade Risk monitoring use mutable logical trades in final-close order. Regrouping recalculates derived history while imported MT5 member positions remain immutable and auditable.
 - **Desktop is loopback-only**: the desktop server binds `127.0.0.1` and is never exposed to the network; the hosted/Community-Cloud build cannot read local MT5 folders. Don't change desktop networking without flagging it as a security-relevant change.
 
 ## Quality approach (from README)

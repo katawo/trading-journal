@@ -1704,11 +1704,11 @@ The strategy profile is snapshotted with the review, so later strategy edits do 
 
 ## 37.3 Post-trade Risk Monitoring
 
-Each account has editable **Funded capital** and a versioned risk policy: standard risk (1R) for reporting, a separate maximum risk per trade for compliance, daily/weekly loss limits in R, drawdown limit, consecutive-loss limit, minimum R:R, and reference controls for open risk/correlation. Funded capital is fixed for policy limits and historical drawdown; it is not the dynamic live MT5 balance.
+Each account has editable **Funded capital** and a versioned risk policy: standard risk (1R) for reporting, a separate maximum risk per trade for compliance, daily/weekly loss limits in R, drawdown limit, consecutive-loss limit, independent reset cadences for drawdown and losing streak, minimum R:R, and reference controls for open risk/correlation. Reset cadence supports Daily, Weekly, Monthly, and All time, with Daily as the default. Funded capital is fixed for policy limits and historical drawdown; it is not the dynamic live MT5 balance.
 
-Risk monitoring includes **every imported closed position**, not only reviewed positions:
+Risk monitoring includes **every completed logical trade**, not only reviewed trades:
 
-- Balance drawdown and loss streak use all imported net P&L in close-time order. The policy evaluates the largest peak-to-trough drawdown; the current drawdown remains available as context.
+- Balance drawdown and loss streak use aggregate logical-trade net P&L in final-close order. Each metric resets independently at its configured reporting-calendar boundary; the Dashboard retains lifetime records. A monitoring maximum-drawdown breach persists through recovery until that reset, while threshold-only policy changes preserve accumulated state and reevaluate breach latches from the new version's save time without retroactively changing earlier entries.
 - R uses declared actual risk after a review, then Specific preset SL, Real-loss SL, and the enabled imported Pre-trade-balance estimate in that order. If none exists, a saved review uses its attached standard 1R amount (funded capital × standard-risk %); an unreviewed position uses the current active policy standard 1R. Funded capital and a new live account-balance snapshot never substitute for a missing per-trade balance.
 - At 80% of a configured hard limit, the app shows `CAUTION`; at the limit, it shows `STOP`.
 

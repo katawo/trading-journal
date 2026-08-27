@@ -50,7 +50,7 @@ MT5 xuất một **vị thế** đã đóng cho mỗi dòng. Nhật ký tự án
 |---|---|
 | Vị thế đã nhập | Sự kiện thực hiện MT5 bất biến: ID vị thế, thời gian, giá, khối lượng và P&L không bao giờ bị thay đổi. |
 | Giao dịch logic | Mặc định là một vị thế, hoặc nhóm do người dùng tạo gồm từ hai vị thế trở lên. Nó nhận một đánh giá và một điểm quy trình. |
-| Theo dõi rủi ro tài khoản | Tiếp tục dùng các vị thế gốc theo thứ tự thời gian; một nhóm không thể che giấu lỗ ngày/tuần, drawdown hoặc chuỗi lỗ. |
+| Theo dõi rủi ro tài khoản | Dùng mỗi giao dịch logic một lần, với P&L tổng hợp được ghi nhận khi thành viên cuối cùng đóng. Việc gộp lại sẽ tính lại lịch sử theo dõi dẫn xuất. |
 
 ### Tạo và gộp lại giao dịch logic
 
@@ -68,7 +68,7 @@ Cùng vùng chọn dòng còn hỗ trợ **Đánh giá nhanh các giao dịch đ
 
 Một giao dịch logic được tính một lần trong số lượng giao dịch logic, tỷ lệ thắng, expectancy, tổng chiến lược và phân tích **Theo giao dịch**. Các phân tích đánh giá này tính lại theo cách gộp **hiện tại**. P&L ròng của nó là tổng P&L thành viên; ngày giao dịch logic là lúc thành viên cuối cùng đóng. Hãy mở chi tiết vị thế thành viên khi đánh giá để kiểm tra từng dòng MT5.
 
-Số dư tài khoản, P&L thực hiện hằng ngày và drawdown luôn dùng các vị thế MT5 gốc theo thời gian. Vì vậy gộp lại không thể viết lại lịch sử tài khoản hoặc theo dõi giới hạn Rủi ro.
+Số dư tài khoản, P&L thực hiện hằng ngày, drawdown, chuỗi kết quả và theo dõi giới hạn Rủi ro đều dùng thứ tự giao dịch logic hiện tại. Các dòng MT5 thành viên vẫn bất biến, còn việc gộp lại chủ động tính lại lịch sử tài khoản dẫn xuất.
 
 Với một nhóm, số tiền rủi ro tự động cộng các ước tính **SL thiết lập sẵn cụ thể** và **lỗ thực tế** theo từng vị thế. Phương án dự phòng **số dư trước giao dịch** khi được bật chỉ dùng số dư thực tế MT5 ghi lại ngay trước lần vào lệnh sớm nhất và áp dụng một lần cho giao dịch logic, không áp dụng cho từng vị thế thành viên. Nó chỉ mang tính tư vấn và thận trọng; không thay đổi SL thiếu trong MT5. Nếu MT5 không xác lập được số dư trước khi vào, việc tuân thủ chính sách chưa khả dụng cho đến khi người đánh giá nhập **Số tiền rủi ro thực tế** đã xác minh.
 
@@ -78,7 +78,8 @@ Với một nhóm, số tiền rủi ro tự động cộng các ước tính **
 2. Lưu **Chính sách rủi ro** tài khoản trong **Cài đặt → Tài khoản và rủi ro**:
    - Rủi ro chuẩn (1R) để báo cáo chuẩn hóa;
    - rủi ro tối đa mỗi giao dịch để kiểm tra tuân thủ;
-   - giới hạn lỗ ngày/tuần, drawdown tối đa, chuỗi lỗ tối đa và R:R tối thiểu.
+   - giới hạn lỗ ngày/tuần, drawdown tối đa, chuỗi lỗ tối đa và R:R tối thiểu;
+   - chu kỳ đặt lại độc lập Hằng ngày, Hằng tuần, Hằng tháng hoặc Toàn thời gian cho drawdown và chuỗi lỗ. Cả hai mặc định Hằng ngày.
    - có thể bật **Dùng số dư MT5 trước giao dịch làm bằng chứng rủi ro tư vấn khi không có SL**. Tùy chọn này mặc định tắt và không bao giờ dùng Funded capital hoặc số dư hiện tại thay thế.
 3. Tạo một hoặc nhiều **Chiến lược** trong **Cài đặt → Chiến lược**. Ghi quy tắc và bằng chứng backtest hiện có. Đánh giá đầy đủ cần một chiến lược được chọn để điểm Hệ thống có bằng chứng đánh giá.
 4. Trong **Cài đặt → Quy tắc đánh giá**, chọn sự kiện nghiêm trọng nào là lỗi cứng cho đánh giá mới hoặc được sửa. Các cài đặt chỉ ảnh hưởng điểm và cảnh báo của nhật ký; không điều khiển MT5.
@@ -104,13 +105,13 @@ Không bằng chứng rủi ro tự động nào tự nó được tính vào đ
 | Ước tính lỗ thực tế | Suy luận | `abs(P&L ròng)` của giao dịch lỗ không có rủi ro ban đầu đã tính. |
 | Ước tính số dư trước giao dịch | Thận trọng | Số dư MT5 thực tế ngay trước khi vị thế có lãi không-SL mở, lấy từ sổ cái lệnh MT5. Chỉ có khi bật trong Chính sách rủi ro tài khoản. |
 
-Ứng dụng so sánh số tiền khả dụng với chính sách rủi ro tối đa của tài khoản và gắn nhãn trong chính sách, vượt chính sách hoặc chưa khả dụng. Nhập **Số tiền rủi ro thực tế** đã xác minh khi số tiền tự động không phải bằng chứng tốt nhất. Nó thay thế số tiền tự động trong so sánh chính sách của giao dịch logic nhưng **không** viết lại chuỗi vị thế MT5 bất biến dùng cho giới hạn ngày/tuần, drawdown hay chuỗi lỗ.
+Ứng dụng so sánh số tiền khả dụng với chính sách rủi ro tối đa của tài khoản và gắn nhãn trong chính sách, vượt chính sách hoặc chưa khả dụng. Nhập **Số tiền rủi ro thực tế** đã xác minh khi số tiền tự động không phải bằng chứng tốt nhất. Nó thay thế số tiền tự động trong so sánh chính sách của giao dịch logic nhưng **không** viết lại các vị thế MT5 thành viên hoặc kết quả giao dịch logic tổng hợp dùng cho theo dõi giới hạn tài khoản.
 
 ### Theo dõi giới hạn tự động và đánh giá shutdown
 
-Giới hạn lỗ ngày, lỗ tuần, drawdown và chuỗi lỗ được tính từ vị thế MT5 đã đóng. Khi một vị thế lần đầu chạm giới hạn, ứng dụng ghi cảnh báo **Đã chạm theo dõi rủi ro**. Vị thế đó không tự động là giao dịch thất bại: nhật ký không thể suy ra ý định trader hoặc điều đã biết khi lệnh còn mở.
+Giới hạn lỗ ngày, lỗ tuần, drawdown và chuỗi lỗ được tính từ giao dịch logic đã đóng theo thứ tự đóng cuối cùng. Trạng thái drawdown và chuỗi lỗ đặt lại tại ranh giới lịch báo cáo đã cấu hình. Drawdown tối đa ghi nhận mức sụt giảm lớn nhất trong kỳ, nên việc phục hồi không xóa vi phạm trước ranh giới reset. Thay đổi policy chỉ về ngưỡng sẽ giữ nguyên chỉ số tích lũy nhưng đánh giá lại vi phạm từ thời điểm lưu policy mới; nó không hồi tố đánh dấu hoặc bỏ qua giao dịch đã vào trước thay đổi. Khi một giao dịch logic lần đầu chạm giới hạn, ứng dụng ghi cảnh báo **Đã chạm theo dõi rủi ro**. Giao dịch đó không tự động là giao dịch thất bại: nhật ký không thể suy ra ý định trader hoặc điều đã biết khi lệnh còn mở.
 
-Với vị thế vào sau thời điểm một vị thế hoàn tất trước đó đã chạm giới hạn, ứng dụng hiện ứng viên **Đánh giá shutdown**. Đây là lời nhắc kiểm tra chuỗi sự kiện, không phải kết luận. Chỉ chọn **Giao dịch sau shutdown cứng** khi đánh giá sau giao dịch xác nhận lệnh vào đã vi phạm quy tắc dừng của bạn và quy tắc cứng này được bật trong **Cài đặt → Quy tắc đánh giá** lúc lưu. Chỉ sự kiện đã xác nhận và được bật mới đổi trạng thái quy tắc cứng thành `KHÔNG ĐẠT`.
+Với giao dịch logic có lần vào sớm nhất sau thời điểm đóng cuối cùng của giao dịch logic trước đó đã chạm giới hạn, và lần vào vẫn thuộc cùng kỳ theo dõi áp dụng, ứng dụng hiện ứng viên **Đánh giá shutdown**. Đây là lời nhắc kiểm tra chuỗi sự kiện, không phải kết luận. Chỉ chọn **Giao dịch sau shutdown cứng** khi đánh giá sau giao dịch xác nhận lệnh vào đã vi phạm quy tắc dừng của bạn và quy tắc cứng này được bật trong **Cài đặt → Quy tắc đánh giá** lúc lưu. Chỉ sự kiện đã xác nhận và được bật mới đổi trạng thái quy tắc cứng thành `KHÔNG ĐẠT`.
 
 ## 3. Hoàn tất một đánh giá sau giao dịch
 
@@ -322,4 +323,6 @@ Chỉ những mục không có dữ liệu tương ứng nào trong ứng dụng
 
 ## 9. Giới hạn dữ liệu
 
-Cầu nối MT5 sau giao dịch hiện tại chỉ cung cấp vị thế đã đóng. Nó có thể theo dõi hồi cứu R thực hiện, giới hạn ngày/tuần, drawdown, chuỗi lỗ, thông tin entry-stop đã xuất và ảnh chụp số dư tài khoản. Một luồng snapshot trực tiếp riêng hiển thị rủi ro mở hiện tại dựa trên stop và các vị thế không có bảo vệ, nhưng đó chỉ là trạng thái vận hành tạm thời: nó không trở thành bằng chứng sau giao dịch, bằng chứng tương quan lịch sử, lịch sử chỉnh stop trong giao dịch, bằng chứng trạng thái tinh thần, ý định kế hoạch hay stop ban đầu thực cho bản xuất có lãi không-SL. Những giới hạn này là lý do nhật ký kết hợp bằng chứng tự động với đánh giá sau giao dịch có chủ đích của con người.
+Cầu nối MT5 sau giao dịch hiện tại chỉ cung cấp vị thế đã đóng. Monitoring phát lại thời điểm lưu policy, entry của logical trade và lần đóng cuối của logical trade theo thứ tự UTC. Policy có hiệu lực tại thời điểm được lưu; độ lệch UTC của server được chụp cùng policy xác định ngày báo cáo tại thời điểm chuyển đổi. Giao dịch đóng trước policy đầu tiên của tài khoản vẫn xuất hiện trên Dashboard và trong bằng chứng audit từng giao dịch, nhưng không tham gia monitoring giới hạn theo thời gian hoặc tạo ứng viên Shutdown. Mỗi logical trade chỉ đóng góp một lần tại lần đóng cuối của member, còn ứng viên Shutdown được chốt tại entry sớm nhất của member.
+
+Cầu nối có thể theo dõi hồi cứu R thực hiện, giới hạn ngày/tuần, drawdown, chuỗi lỗ, thông tin entry-stop đã xuất và ảnh chụp số dư tài khoản. Một luồng snapshot trực tiếp riêng hiển thị rủi ro mở hiện tại dựa trên stop và các vị thế không có bảo vệ, nhưng đó chỉ là trạng thái vận hành tạm thời: nó không trở thành bằng chứng sau giao dịch, bằng chứng tương quan lịch sử, lịch sử chỉnh stop trong giao dịch, bằng chứng trạng thái tinh thần, ý định kế hoạch hay stop ban đầu thực cho bản xuất có lãi không-SL. Những giới hạn này là lý do nhật ký kết hợp bằng chứng tự động với đánh giá sau giao dịch có chủ đích của con người.

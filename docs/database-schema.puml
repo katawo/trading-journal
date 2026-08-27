@@ -72,11 +72,14 @@ entity "account_risk_policies" as account_risk_policies {
   daily_loss_limit_r : VARCHAR
   weekly_loss_limit_r : VARCHAR
   max_drawdown_percent : VARCHAR
+  drawdown_reset_period : VARCHAR(16)
   max_open_risk_r : VARCHAR
   max_consecutive_losses : INTEGER
+  loss_streak_reset_period : VARCHAR(16)
   minimum_rr : VARCHAR
   correlation_policy : VARCHAR(500)?
   pretrade_balance_auto_evidence_enabled : BOOLEAN
+  server_utc_offset_minutes : INTEGER?
   created_at : VARCHAR(64)
   --
   UQ(mt5_account_id, version)

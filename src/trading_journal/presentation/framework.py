@@ -41,6 +41,7 @@ from trading_journal.presentation.trade_tags import direction_tag, outcome_tag
 
 
 GRADE_OPTIONS = ("Pass", "Partial", "Fail")
+RESET_PERIOD_LABELS = {"Daily": "daily", "Weekly": "weekly", "Monthly": "monthly", "All time": "all_time"}
 REVIEW_PAGE_SIZE = 25
 CRITERIA_GRID_COLUMNS = 4
 PILLAR_ACCENT_COLORS = {"Psychology": "blue", "Risk management": "orange", "Trading system": "violet"}
@@ -143,6 +144,11 @@ def _account_label(account: AccountListItem) -> str:
     return f"{account.display_name} · {account.login} · {account.broker_server}"
 
 
+def _reset_period_label(value: str) -> str:
+    label = next(label for label, stored in RESET_PERIOD_LABELS.items() if stored == value)
+    return tr(label)
+
+
 def _render_help_popover(*captions: str, icon: str = ":material/help:") -> None:
     """A compact on-demand help trigger, keeping page content focused."""
     with st.popover("?", icon=icon, width="content"):
@@ -210,7 +216,7 @@ def _drawdown_metric(value: str | None) -> tuple[str | None, str, str]:
     drawdown = Decimal(value)
     if drawdown == 0:
         return format_percent(drawdown), "No drawdown", "gray"
-    return format_percent(drawdown), "Historical maximum", "gray"
+    return format_percent(drawdown), "Current monitoring-period maximum", "gray"
 
 
 def _auto_risk_label(score: TradeProcessScore) -> str:
@@ -246,7 +252,7 @@ def _risk_evidence_detail(score: TradeProcessScore) -> str:
         "unavailable": "not comparable with policy",
     }.get(score.risk_policy_state, "not comparable with policy")
     return tr(
-        "Reviewed Actual risk {amount} is {state}. {policy} It replaces automatic evidence for this logical-trade policy comparison only; daily, weekly, drawdown, and streak monitoring remain based on immutable MT5 positions.",
+        "Reviewed Actual risk {amount} is {state}. {policy} It replaces automatic evidence for this logical-trade policy comparison only; account-limit monitoring remains based on aggregate logical-trade outcomes.",
         amount=score.actual_risk_amount,
         state=tr(state),
         policy=policy,
@@ -454,6 +460,7 @@ def render_framework_dashboard(repo: SQLiteJournalRepository, account: AccountLi
             tr("Max drawdown"), drawdown_value, tr(drawdown_delta),
             delta_color=drawdown_color,
             delta_arrow="off",
+            delta_description=None if not snapshot.configured else tr("Resets {period}", period=_reset_period_label(snapshot.drawdown_reset_period).lower()),
             border=True,
         )
     _render_score_cards(scores, account)
@@ -976,7 +983,7 @@ def _render_post_trade_review_dialog(repo: SQLiteJournalRepository, account: Acc
                 tr("Actual risk amount (optional)"),
                 value=existing_manual.declared_actual_risk_amount if existing_manual and existing_manual.declared_actual_risk_amount else "",
                 placeholder=tr("Enter a verified amount when automatic evidence is not sufficient"),
-                help=tr("Overrides automatic evidence for this logical trade's policy comparison. It does not rewrite immutable MT5 position history or account-limit monitoring."),
+                help=tr("Overrides automatic evidence for this logical trade's policy comparison. It does not rewrite imported MT5 member positions or logical-trade account-limit monitoring."),
             )
         submitted = st.form_submit_button("Update assessment" if existing_manual else "Save assessment", type="primary")
         submit_and_next = (
@@ -1800,8 +1807,16 @@ def _render_monitor_risk(analysis: MonitorAnalysisReport, snapshot: RiskSnapshot
     with st.container(horizontal=True, gap="small"):
         st.metric("Daily R", "—" if snapshot.daily_r is None else format_r(snapshot.daily_r), border=True)
         st.metric("Weekly R", "—" if snapshot.weekly_r is None else format_r(snapshot.weekly_r), border=True)
-        st.metric("Drawdown", "—" if snapshot.current_drawdown_percent is None else format_percent(snapshot.current_drawdown_percent), border=True)
+        st.metric("Max drawdown", "—" if snapshot.max_drawdown_percent is None else format_percent(snapshot.max_drawdown_percent), border=True)
         st.metric("Loss streak", "—" if snapshot.consecutive_losses is None else str(snapshot.consecutive_losses), border=True)
+    if snapshot.configured:
+        current_drawdown = "—" if snapshot.current_drawdown_percent is None else format_percent(snapshot.current_drawdown_percent)
+        st.caption(tr(
+            "Current drawdown: {current_drawdown}. Max drawdown resets {drawdown_period}; the losing streak resets {streak_period}.",
+            current_drawdown=current_drawdown,
+            drawdown_period=_reset_period_label(snapshot.drawdown_reset_period).lower(),
+            streak_period=_reset_period_label(snapshot.loss_streak_reset_period).lower(),
+        ))
     left, right = st.columns(2)
     with left:
         st.markdown("##### Review evidence lifecycle")
@@ -2204,7 +2219,7 @@ def _render_risk_policy(repo: SQLiteJournalRepository, account: AccountListItem)
     policy = repo.get_active_risk_policy(account.id)
     funded = repo.get_account_funded_capital(account.id)
     st.markdown("#### Account risk policy")
-    st.caption("The policy defines reporting 1R and safety limits. It monitors closed MT5 trades only and never controls MT5.")
+    st.caption("The policy defines reporting 1R and safety limits. It monitors closed logical trades assembled from MT5 positions and never controls MT5.")
     if funded is None:
         st.warning(tr("Set funded capital in Settings → Account & risk before saving a Risk policy."))
     else:
@@ -2220,6 +2235,20 @@ def _render_risk_policy(repo: SQLiteJournalRepository, account: AccountListItem)
         weekly = second.number_input("Weekly loss limit (R)", min_value=0.01, value=float(policy.weekly_loss_limit_r) if policy else 20.0, step=0.25)
         drawdown = third.number_input("Maximum drawdown (%)", min_value=0.01, value=float(policy.max_drawdown_percent) if policy else 30.0, step=0.5)
         streak = fourth.number_input("Maximum loss streak", min_value=1, value=policy.max_consecutive_losses if policy else 10, step=1)
+        first, second = st.columns(2)
+        reset_period_options = {tr(label): value for label, value in RESET_PERIOD_LABELS.items()}
+        drawdown_reset_label = first.segmented_control(
+            tr("Drawdown reset"),
+            list(reset_period_options),
+            default=next(label for label, value in reset_period_options.items() if value == (policy.drawdown_reset_period if policy else "daily")),
+            required=True,
+        )
+        streak_reset_label = second.segmented_control(
+            tr("Losing-streak reset"),
+            list(reset_period_options),
+            default=next(label for label, value in reset_period_options.items() if value == (policy.loss_streak_reset_period if policy else "daily")),
+            required=True,
+        )
         with st.expander("Reference-only open-risk controls"):
             open_risk = st.number_input("Maximum open risk (R)", min_value=0.01, value=float(policy.max_open_risk_r) if policy else 1.0, step=0.25)
             correlation = st.text_area("Correlation / exposure policy", value=policy.correlation_policy if policy and policy.correlation_policy else "")
@@ -2238,6 +2267,8 @@ def _render_risk_policy(repo: SQLiteJournalRepository, account: AccountListItem)
                     daily_loss_limit_r=str(daily), weekly_loss_limit_r=str(weekly), max_drawdown_percent=str(drawdown),
                     max_open_risk_r=str(open_risk), max_consecutive_losses=int(streak), minimum_rr=str(minimum_rr), correlation_policy=correlation,
                     pretrade_balance_auto_evidence_enabled=pretrade_balance_evidence,
+                    drawdown_reset_period=reset_period_options[drawdown_reset_label],
+                    loss_streak_reset_period=reset_period_options[streak_reset_label],
                 )
         except ValueError as error:
             st.error(str(error))

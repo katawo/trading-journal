@@ -237,6 +237,120 @@ def test_initialization_does_not_rewrite_existing_clean_trade_tables(tmp_path: P
     assert {trade.position_id: trade.result_r for trade in repository.list_trades()} == {"1001": "2", "1002": "-0.5"}
 
 
+def test_initialization_migrates_monitoring_reset_periods_and_policy_server_offset(tmp_path: Path) -> None:
+    repository = configured_repository(tmp_path, standard_risk_percent="10")
+    repository.close()
+    database_path = tmp_path / "journal.db"
+    connection = sqlite3.connect(database_path)
+    connection.execute("UPDATE mt5_accounts SET latest_server_utc_offset_minutes = 180")
+    connection.execute("ALTER TABLE account_risk_policies DROP COLUMN drawdown_reset_period")
+    connection.execute("ALTER TABLE account_risk_policies DROP COLUMN loss_streak_reset_period")
+    connection.execute("ALTER TABLE account_risk_policies DROP COLUMN server_utc_offset_minutes")
+    connection.commit()
+    connection.close()
+
+    migrated = SQLiteJournalRepository(database_path)
+    migrated.initialize()
+    account = migrated.find_active_mt5_account("123456", "DemoBroker-Live")
+    assert account is not None
+    policy = migrated.get_active_risk_policy(account.id)
+
+    assert policy is not None
+    assert policy.drawdown_reset_period == "daily"
+    assert policy.loss_streak_reset_period == "daily"
+    assert policy.server_utc_offset_minutes == 180
+
+
+def test_saved_policy_keeps_the_account_server_offset_snapshot(tmp_path: Path) -> None:
+    repository = configured_repository(tmp_path, standard_risk_percent="10")
+    account = repository.find_active_mt5_account("123456", "DemoBroker-Live")
+    assert account is not None
+    repository.upsert_mt5_positions(
+        account.id,
+        [position("offset-180", net_pnl="1", exit_time="2026-08-03T09:00:00+00:00").model_copy(update={"server_utc_offset_minutes": 180})],
+        "positions.csv",
+        "offset-180-hash",
+    )
+    policy = repository.save_account_risk_policy(
+        account_id=account.id,
+        standard_risk_per_trade_percent="10",
+        maximum_risk_per_trade_percent="10",
+        daily_loss_limit_r="2",
+        weekly_loss_limit_r="4",
+        max_drawdown_percent="10",
+        max_open_risk_r="1",
+        max_consecutive_losses=3,
+        minimum_rr="1.5",
+        correlation_policy=None,
+    )
+    repository.upsert_mt5_positions(
+        account.id,
+        [position("offset-minus-300", net_pnl="1", exit_time="2026-08-04T09:00:00+00:00").model_copy(update={"server_utc_offset_minutes": -300})],
+        "positions.csv",
+        "offset-minus-300-hash",
+    )
+
+    preserved = repository.get_risk_policy(policy.id)
+
+    assert preserved is not None
+    assert preserved.server_utc_offset_minutes == 180
+
+
+def test_first_sync_backfills_every_null_policy_offset_once(tmp_path: Path) -> None:
+    repository = configured_repository(tmp_path, standard_risk_percent="10")
+    account = repository.find_active_mt5_account("123456", "DemoBroker-Live")
+    assert account is not None
+    repository.save_account_risk_policy(
+        account_id=account.id,
+        standard_risk_per_trade_percent="10",
+        maximum_risk_per_trade_percent="10",
+        daily_loss_limit_r="3",
+        weekly_loss_limit_r="5",
+        max_drawdown_percent="12",
+        max_open_risk_r="1",
+        max_consecutive_losses=4,
+        minimum_rr="1.5",
+        correlation_policy=None,
+    )
+    with sqlite3.connect(repository.database_path) as connection:
+        connection.execute(
+            "UPDATE account_risk_policies SET server_utc_offset_minutes = NULL WHERE mt5_account_id = ?",
+            (account.id,),
+        )
+    repository.upsert_mt5_positions(
+        account.id,
+        [position("first-offset-sync", net_pnl="1", exit_time="2026-08-05T09:00:00+00:00").model_copy(update={"server_utc_offset_minutes": 180})],
+        "positions.csv",
+        "first-offset-sync-hash",
+    )
+
+    policies = repository.list_account_risk_policies(account.id)
+
+    assert len(policies) == 2
+    assert {policy.server_utc_offset_minutes for policy in policies} == {180}
+
+
+def test_risk_policy_rejects_unknown_monitoring_reset_period(tmp_path: Path) -> None:
+    repository = configured_repository(tmp_path, standard_risk_percent="10")
+    account = repository.find_active_mt5_account("123456", "DemoBroker-Live")
+    assert account is not None
+
+    with pytest.raises(ValueError, match="Drawdown reset period"):
+        repository.save_account_risk_policy(
+            account_id=account.id,
+            standard_risk_per_trade_percent="10",
+            maximum_risk_per_trade_percent="10",
+            daily_loss_limit_r="2",
+            weekly_loss_limit_r="4",
+            max_drawdown_percent="10",
+            max_open_risk_r="1",
+            max_consecutive_losses=3,
+            minimum_rr="1.5",
+            correlation_policy=None,
+            drawdown_reset_period="session",
+        )
+
+
 def test_dashboard_builds_kpis_and_time_series_from_effective_risk(tmp_path: Path) -> None:
     repository = configured_repository(tmp_path, standard_risk_percent="10")
 
@@ -407,12 +521,32 @@ def test_dashboard_calculates_balance_growth_drawdown_and_trade_quality(tmp_path
     assert [point.balance for point in report.cumulative] == ["120", "115"]
     assert [point.drawdown for point in report.cumulative] == ["0", "5"]
     assert [(point.position_id, point.net_pnl) for point in report.per_trade] == [("1001", "20"), ("1002", "-5")]
-    assert [point.balance for point in report.per_trade] == [None, None]
+    assert [point.balance for point in report.per_trade] == ["120", "115"]
     assert [point.drawdown for point in report.per_trade] == ["0", "5"]
     assert [(item.label, item.trade_count, item.win_rate, item.net_pnl, item.total_r, item.expectancy_r, item.profit_factor) for item in report.by_symbol] == [
         ("XAUUSD", 2, "50", "15", "1.5", "0.75", "4"),
     ]
     assert [(item.label, item.trade_count, item.net_pnl) for item in report.by_direction] == [("long", 2, "15")]
+
+
+def test_dashboard_maximum_percentage_drawdown_is_independent_of_maximum_amount(tmp_path: Path) -> None:
+    repository = configured_repository(tmp_path, standard_risk_percent="10")
+    account = repository.find_active_mt5_account("123456", "DemoBroker-Live")
+    assert account is not None
+    repository.upsert_mt5_positions(
+        account.id,
+        [
+            position("1003", net_pnl="85", exit_time="2026-08-03T09:00:00+00:00"),
+            position("1004", net_pnl="-6", exit_time="2026-08-04T09:00:00+00:00"),
+        ],
+        "positions.csv",
+        "drawdown-percent-hash",
+    )
+
+    report = DashboardService(repository).build_report()
+
+    assert report.max_drawdown == "6"
+    assert report.max_drawdown_percent == "4.166666666666666666666666667"
 
 
 def test_dashboard_statistics_handle_breakevens_streaks_and_breakdowns(tmp_path: Path) -> None:
@@ -463,7 +597,7 @@ def test_dashboard_statistics_report_unavailable_ratios_without_valid_denominato
     assert report.by_symbol[0].profit_factor is None
 
 
-def test_dashboard_excludes_cross_period_logical_trades_from_trade_statistics(tmp_path: Path) -> None:
+def test_dashboard_assigns_a_cross_period_logical_trade_to_its_final_close(tmp_path: Path) -> None:
     repository = configured_repository(tmp_path, standard_risk_percent="10")
     account = repository.find_active_mt5_account("123456", "DemoBroker-Live")
     assert account is not None
@@ -480,15 +614,12 @@ def test_dashboard_excludes_cross_period_logical_trades_from_trade_statistics(tm
         end_date="2026-08-02",
     )
 
-    assert report.raw_position_count == 1
-    assert report.net_pnl == "-5"
-    assert report.trade_count == 0
-    assert report.cross_period_trade_count == 1
-    assert report.gross_profit == "0"
+    assert report.net_pnl == "15"
+    assert report.trade_count == 1
+    assert report.gross_profit == "15"
     assert report.gross_loss == "0"
-    assert (report.win_count, report.loss_count, report.breakeven_count) == (0, 0, 0)
-    assert report.by_symbol == []
-    assert report.by_direction == []
+    assert (report.win_count, report.loss_count, report.breakeven_count) == (1, 0, 0)
+    assert report.daily[0].date == "2026-08-02"
 
 
 def test_dashboard_reports_only_the_selected_account_currency_and_trades(tmp_path: Path) -> None:

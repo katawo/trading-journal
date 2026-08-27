@@ -52,7 +52,7 @@ MT5 exports one completed **position** per row. The journal automatically maps e
 |---|---|
 | Imported position | Immutable MT5 execution fact: its position ID, timestamps, prices, volume, and P&L are never changed. |
 | Logical trade | One position by default, or a user-created group of two or more positions. It receives one assessment and one process score. |
-| Account risk monitoring | Continues to use the original chronological positions, so a group cannot hide a daily/weekly loss, drawdown, or loss-streak event. |
+| Account risk monitoring | Uses each logical trade once, with aggregate P&L recognized at the final member close. Regrouping recalculates derived monitoring history. |
 
 ### Create and regroup a logical trade
 
@@ -70,7 +70,7 @@ Logical-trade membership and labels are mutable. **Group selected** always merge
 
 A logical trade counts once in dashboard logical-trade count, win rate, expectancy, strategy totals, and the **Per trade** analysis. These review analytics recalculate using the **current** grouping. Its net P&L is the sum of member P&L; the logical-trade date is the final member close. Expand the member-position detail during review to audit the individual MT5 rows.
 
-Account balance, daily realized P&L, and account drawdown always use the immutable chronological MT5 positions. Regrouping therefore cannot rewrite account history or Risk-limit monitoring.
+Account balance, daily realized P&L, drawdown, streaks, and Risk-limit monitoring all use the current logical-trade chronology. Imported MT5 member rows remain immutable, while regrouping intentionally recalculates the derived account history.
 
 For a group, the automatic risk amount sums its per-position **specific preset SL** and **real-loss** estimates. An enabled **pre-trade-balance** fallback uses only the actual balance captured by MT5 immediately before the earliest entry and applies once to the logical trade, never once per member position. It is advisory and conservative; it never changes a missing MT5 SL. If MT5 could not establish the pre-entry balance, policy compliance is unavailable until the reviewer supplies a verified **Actual risk amount**.
 
@@ -80,7 +80,8 @@ For a group, the automatic risk amount sums its per-position **specific preset S
 2. Save an account **Risk policy** in **Settings → Account & risk**:
    - Standard risk (1R) for normalized reporting;
    - maximum risk per trade for compliance;
-   - daily and weekly loss limits, maximum drawdown, maximum loss streak, and minimum R:R.
+   - daily and weekly loss limits, maximum drawdown, maximum loss streak, and minimum R:R;
+   - independent Daily, Weekly, Monthly, or All-time reset cadences for drawdown and losing streak. Both default to Daily.
    - optionally enable **Use MT5 pre-trade balance as advisory no-SL risk evidence**. It defaults off and never uses funded capital or the current account balance as a substitute.
 3. Create one or more **Strategies** in **Settings → Strategies**. Record the rules and available backtest evidence. A full review needs a selected strategy so the System score has evidence to assess.
 4. In **Settings → Review rules**, choose which critical events are hard failures for new or corrected assessments. These settings affect journal scores and alerts only; they never control MT5.
@@ -106,13 +107,13 @@ Automatic risk evidence enters the Psychology, Risk management, and Trading syst
 | Real-loss estimate | Inferred | `abs(net P&L)` for a losing trade without a calculated initial risk. |
 | Pre-trade-balance estimate | Conservative | The actual MT5 balance immediately before a profitable no-SL position opened, captured from the MT5 deal ledger. It is available only when enabled in the account Risk policy. |
 
-The app compares the available amount with the account's maximum-risk policy and labels it within policy, over policy, or unavailable. Enter a verified **Actual risk amount** during review when the automatic amount is not the best evidence. It replaces the automatic amount for that logical trade's policy comparison, but it does **not** rewrite the immutable MT5-position chronology used for daily/weekly limits, drawdown, or loss-streak monitoring.
+The app compares the available amount with the account's maximum-risk policy and labels it within policy, over policy, or unavailable. Enter a verified **Actual risk amount** during review when the automatic amount is not the best evidence. It replaces the automatic amount for that logical trade's policy comparison, but it does **not** rewrite imported member positions or the aggregate logical-trade outcome used for account-limit monitoring.
 
 ### Automatic limit monitoring and shutdown review
 
-Daily loss, weekly loss, drawdown, and losing-streak limits are calculated from completed MT5 positions. When a position first reaches a limit, the app records a **Risk monitor reached** warning. That position is not automatically a failed trade: the journal cannot infer the trader's intention or what was known while an order was open.
+Daily loss, weekly loss, drawdown, and losing-streak limits are calculated from completed logical trades in final-close order. Drawdown and streak state reset at their configured reporting-calendar boundary. Maximum drawdown records the worst decline in that period, so a recovery does not clear its breach before the boundary. A threshold-only policy change preserves the accumulated metric but reevaluates its breach from the new policy's save time; it never retroactively marks or excuses a trade entered before that change. When a logical trade first reaches a limit, the app records a **Risk monitor reached** warning. That trade is not automatically a failed trade: the journal cannot infer the trader's intention or what was known while an order was open.
 
-For a later position whose entry timestamp is after an earlier completed position reached a limit, the app shows a **Shutdown review** candidate. It is a prompt to inspect the sequence, not a verdict. Select **Trading after hard shutdown** only when your post-trade review confirms that the entry broke your own stop rule and that hard rule is enabled in **Settings → Review rules** when the assessment is saved. Only that confirmed, enabled event changes the Hard-rule status to `FAIL`.
+For a later logical trade whose earliest entry is after an earlier logical trade's final close reached a limit, and whose entry is inside the same applicable monitoring period, the app shows a **Shutdown review** candidate. It is a prompt to inspect the sequence, not a verdict. Select **Trading after hard shutdown** only when your post-trade review confirms that the entry broke your own stop rule and that hard rule is enabled in **Settings → Review rules** when the assessment is saved. Only that confirmed, enabled event changes the Hard-rule status to `FAIL`.
 
 ## 3. Complete one post-trade assessment
 
@@ -326,4 +327,6 @@ Only the items with no equivalent structured data anywhere in the app stay self-
 
 ## 9. Data limits
 
-The post-trade MT5 bridge supplies completed positions only. It can retrospectively monitor realized R, daily/weekly limits, drawdown, loss streak, exported entry-stop information, and account-balance snapshots. A separate live snapshot feed shows entry-to-current-stop open risk and unprotected positions. Market-price movement alone does not change that risk; changing the stop or position volume does, and a breakeven or profit-locking stop contributes zero risk. This feed is temporary operational state: it never becomes post-trade evidence, historical correlation proof, intratrade stop-adjustment history, mental-state evidence, planned intent, or a real original stop for a profitable no-SL export. Those limitations are why the journal combines automatic evidence with a deliberate human post-trade assessment.
+The post-trade MT5 bridge supplies completed positions only. Monitoring replays policy saves, logical-trade entries, and logical final closes in UTC order. A policy becomes effective at its saved timestamp; the server UTC offset captured with that policy defines its reporting day at the transition. Trades closed before the account's first saved policy remain available for Dashboard and per-trade audit, but are excluded from time-effective limit monitoring and Shutdown candidates. A logical trade contributes once, at its final member close, while a Shutdown candidate is frozen at its earliest member entry.
+
+The bridge can retrospectively monitor realized R, daily/weekly limits, drawdown, loss streak, exported entry-stop information, and account-balance snapshots. A separate live snapshot feed shows entry-to-current-stop open risk and unprotected positions. Market-price movement alone does not change that risk; changing the stop or position volume does, and a breakeven or profit-locking stop contributes zero risk. This feed is temporary operational state: it never becomes post-trade evidence, historical correlation proof, intratrade stop-adjustment history, mental-state evidence, planned intent, or a real original stop for a profitable no-SL export. Those limitations are why the journal combines automatic evidence with a deliberate human post-trade assessment.
