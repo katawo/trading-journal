@@ -1853,6 +1853,74 @@ def _render_monitor_system(analysis: MonitorAnalysisReport) -> None:
             st.dataframe(frame, hide_index=True, width="stretch", column_config={"Process score": st.column_config.NumberColumn(format="%.0f"), "Win rate": st.column_config.NumberColumn(format="%.1f%%"), "Average R": st.column_config.NumberColumn(format="%+.2fR")})
 
 
+@st.dialog("Edit coaching action", icon=":material/edit:")
+def _render_framework_focus_action_dialog(
+    repo: SQLiteJournalRepository,
+    *,
+    focus_id: int,
+    action_text: str,
+) -> None:
+    st.caption(tr("Tailor the next-trade action without losing sight of the current coaching target."))
+    with st.form(f"edit-framework-focus-{focus_id}", border=False):
+        action = st.text_area(tr("Tailor the next-trade action"), value=action_text)
+        with st.container(horizontal=True, horizontal_alignment="right"):
+            cancel = st.form_submit_button(tr("Cancel"))
+            save = st.form_submit_button(tr("Save action"), type="primary", icon=":material/save:")
+    if cancel:
+        st.rerun()
+    if not save:
+        return
+    try:
+        repo.update_framework_focus_action(focus_id=focus_id, action_text=action)
+    except ValueError as error:
+        st.error(str(error))
+    else:
+        queue_toast(tr("Coaching action saved."))
+        st.rerun()
+
+
+@st.dialog("Resolve coaching focus", icon=":material/task_alt:")
+def _render_framework_focus_resolution_dialog(
+    repo: SQLiteJournalRepository,
+    *,
+    focus_id: int,
+) -> None:
+    st.caption(tr("Record the outcome and the lesson you will carry into the next focus."))
+    with st.form(f"resolve-framework-focus-{focus_id}"):
+        outcome = st.segmented_control(
+            tr("Focus outcome"),
+            ["completed", "abandoned"],
+            default="completed",
+            required=True,
+        )
+        note = st.text_area(
+            tr("Focus reflection"),
+            placeholder=tr("What changed, and what will you carry forward?"),
+        )
+        with st.container(horizontal=True, horizontal_alignment="right"):
+            cancel = st.form_submit_button(tr("Cancel"))
+            resolve = st.form_submit_button(
+                tr("Resolve focus"),
+                type="primary",
+                icon=":material/task_alt:",
+            )
+    if cancel:
+        st.rerun()
+    if not resolve:
+        return
+    try:
+        repo.resolve_framework_focus(
+            focus_id=focus_id,
+            outcome=outcome,
+            resolution_note=note,
+        )
+    except ValueError as error:
+        st.error(str(error))
+    else:
+        queue_toast(tr("Framework focus resolved."))
+        st.rerun()
+
+
 def _render_framework_focus(repo: SQLiteJournalRepository, account: AccountListItem, service: FrameworkService, scores: tuple[PillarScore, ...], *, compact: bool = False, show_heading: bool = True) -> None:
     service.ensure_coaching_focus(account.id)
     focus, progress = service.focus_progress(account.id)
@@ -1875,24 +1943,26 @@ def _render_framework_focus(repo: SQLiteJournalRepository, account: AccountListI
             metric_delta = tr("Target reached") if progress.reviews_completed >= progress.target_reviews else f"{tr('Current metric:')} {current}"
             st.metric(tr("Reviewed trades collected"), f"{display_completed}/{progress.target_reviews}", metric_delta, border=True)
             st.caption(f"{tr('Baseline:')} {baseline} · {tr('Target:')} {target}")
-            with st.form(f"edit-framework-focus-{focus.id}", border=False):
-                action = st.text_area(tr("Tailor the next-trade action"), value=focus.action_text)
-                if st.form_submit_button(tr("Save action")):
-                    repo.update_framework_focus_action(focus_id=focus.id, action_text=action)
-                    queue_toast(tr("Coaching action saved."))
-                    st.rerun()
-            if progress.ready_to_evaluate:
-                with st.form(f"resolve-framework-focus-{focus.id}"):
-                    outcome = st.segmented_control("Focus outcome", ["completed", "abandoned"], default="completed", required=True)
-                    note = st.text_area("Focus reflection", placeholder="What changed, and what will you carry forward?")
-                    if st.form_submit_button("Resolve focus", type="primary"):
-                        try:
-                            repo.resolve_framework_focus(focus_id=focus.id, outcome=outcome, resolution_note=note)
-                        except ValueError as error:
-                            st.error(str(error))
-                        else:
-                            queue_toast("Framework focus resolved.")
-                            st.rerun()
+            with st.container(horizontal=True, horizontal_alignment="right"):
+                edit_action = st.button(
+                    tr("Edit action"),
+                    key=f"open-edit-framework-focus-{focus.id}",
+                    icon=":material/edit:",
+                )
+                resolve_focus = progress.ready_to_evaluate and st.button(
+                    tr("Resolve focus"),
+                    key=f"open-resolve-framework-focus-{focus.id}",
+                    type="primary",
+                    icon=":material/task_alt:",
+                )
+            if edit_action:
+                _render_framework_focus_action_dialog(
+                    repo,
+                    focus_id=focus.id,
+                    action_text=focus.action_text,
+                )
+            elif resolve_focus:
+                _render_framework_focus_resolution_dialog(repo, focus_id=focus.id)
             history = [item for item in repo.list_framework_focuses(account.id) if item.status != "active"]
             if history and not compact:
                 with st.expander(tr("Coaching history")):

@@ -52,6 +52,74 @@ def _set_review_filters(app, *, needs_approval=None, auto_reviewed=None, manual_
     app.run()
 
 
+def test_coaching_focus_keeps_editable_fields_inside_action_dialogs():
+    script = """
+from types import SimpleNamespace
+from trading_journal.presentation.framework import _render_framework_focus
+
+
+class Repo:
+    def list_framework_focuses(self, account_id):
+        return []
+
+
+class Service:
+    def ensure_coaching_focus(self, account_id):
+        return None
+
+    def focus_progress(self, account_id):
+        focus = SimpleNamespace(
+            id=41,
+            pillar="psychology",
+            metric_kind="component",
+            action_text="Pause after a loss and re-check the setup.",
+            coach_reason="Repeated reviewed issue.",
+            hypothesis="",
+            created_at="2026-08-20T08:00:00+00:00",
+            baseline_value="55",
+            target_value="70",
+        )
+        progress = SimpleNamespace(
+            current_value="70",
+            reviews_completed=5,
+            target_reviews=5,
+            ready_to_evaluate=True,
+        )
+        return focus, progress
+
+
+_render_framework_focus(
+    Repo(),
+    SimpleNamespace(id=7),
+    Service(),
+    (),
+    compact=True,
+    show_heading=False,
+)
+"""
+    app = AppTest.from_string(script).run()
+
+    assert not app.exception
+    assert not app.text_area
+    assert not app.segmented_control
+    assert {button.label for button in app.button} >= {"Edit action", "Resolve focus"}
+
+    next(button for button in app.button if button.label == "Edit action").click()
+    app.run()
+
+    assert not app.exception
+    assert [field.label for field in app.text_area] == ["Tailor the next-trade action"]
+    assert not app.segmented_control
+
+    resolution_app = AppTest.from_string(script).run()
+    next(button for button in resolution_app.button if button.label == "Resolve focus").click()
+    resolution_app.run()
+
+    assert not resolution_app.exception
+    assert [field.label for field in resolution_app.text_area] == ["Focus reflection"]
+    assert [control.label for control in resolution_app.segmented_control] == ["Focus outcome"]
+
+
 def test_trade_duration_uses_compact_review_table_units():
     assert _format_trade_duration("2026-08-10T08:00:00+00:00", "2026-08-10T08:00:30+00:00") == "<1m"
     assert _format_trade_duration("2026-08-10T08:00:00+00:00", "2026-08-10T09:35:00+00:00") == "1h 35m"
