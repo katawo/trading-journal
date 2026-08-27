@@ -492,6 +492,29 @@ def test_dashboard_collapses_equity_curve_to_one_point_per_day(tmp_path: Path) -
     assert [point.cumulative_r for point in report.cumulative] == ["3", "2.5"]
 
 
+def test_dashboard_reports_end_of_day_drawdown_separately_from_trade_close_drawdown(tmp_path: Path) -> None:
+    repository = configured_repository(tmp_path, standard_risk_percent="10")
+    account = repository.find_active_mt5_account("123456", "DemoBroker-Live")
+    assert account is not None
+    repository.upsert_mt5_positions(
+        account.id,
+        [
+            position("1003", net_pnl="-10", exit_time="2026-08-03T09:00:00+00:00"),
+            position("1004", net_pnl="6", exit_time="2026-08-03T10:00:00+00:00"),
+        ],
+        "positions.csv",
+        "intraday-drawdown-hash",
+    )
+
+    report = DashboardService(repository).build_report(start_date="2026-08-01", end_date="2026-08-31")
+
+    assert report.max_drawdown == "15"
+    assert report.current_drawdown == "9"
+    assert report.end_of_day_max_drawdown == "9"
+    assert report.end_of_day_current_drawdown == "9"
+    assert report.end_of_day_max_drawdown_percent == report.end_of_day_current_drawdown_percent
+
+
 def test_dashboard_calculates_balance_growth_drawdown_and_trade_quality(tmp_path: Path) -> None:
     repository = configured_repository(tmp_path, standard_risk_percent="10")
     report = DashboardService(repository).build_report(start_date="2026-08-01", end_date="2026-08-31")

@@ -1751,6 +1751,17 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
 
     logical_label = f"{report.trade_count} closed logical trade{'s' if report.trade_count != 1 else ''}"
     st.markdown(f'<div class="dashboard-period">{tr("All time")} · {logical_label}</div>', unsafe_allow_html=True)
+    chart_view = st.session_state.get("dashboard_chart_view", "Daily")
+    if chart_view not in {"Daily", "Per trade"}:
+        chart_view = "Daily"
+    if chart_view == "Daily":
+        displayed_max_drawdown = report.end_of_day_max_drawdown
+        displayed_current_drawdown = report.end_of_day_current_drawdown
+        displayed_current_drawdown_percent = report.end_of_day_current_drawdown_percent
+    else:
+        displayed_max_drawdown = report.max_drawdown
+        displayed_current_drawdown = report.current_drawdown
+        displayed_current_drawdown_percent = report.current_drawdown_percent
     with st.container(horizontal=True, gap="small"):
         _render_dashboard_metric(
             "Account balance",
@@ -1767,8 +1778,8 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
             key="headline-realized-pnl", tone=_signed_metric_tone(report.net_pnl),
         )
         _render_dashboard_metric(
-            "Account drawdown", format_currency(-Decimal(report.max_drawdown), currency),
-            key="headline-account-drawdown", tone=_signed_metric_tone(-Decimal(report.max_drawdown)),
+            "Account drawdown", format_currency(-Decimal(displayed_max_drawdown), currency),
+            key="headline-account-drawdown", tone=_signed_metric_tone(-Decimal(displayed_max_drawdown)),
         )
 
     st.markdown("#### Logical-trade quality")
@@ -1802,8 +1813,9 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
         st.caption("Set funded capital in Settings to enable the balance curve, balance growth, and drawdown percentage.")
     else:
         st.caption(
-            f"Current drawdown: {format_currency_caption(-Decimal(report.current_drawdown), currency)}"
-            + (f" ({format_percent(report.current_drawdown_percent)})" if report.current_drawdown_percent is not None else "")
+            f"{tr('Drawdown follows the selected chart view.')} "
+            + f"{tr('Current drawdown')}: {format_currency_caption(-Decimal(displayed_current_drawdown), currency)}"
+            + (f" ({format_percent(displayed_current_drawdown_percent)})" if displayed_current_drawdown_percent is not None else "")
             + f" · Funded capital: {format_currency_caption(report.starting_balance, currency, signed=False)}."
         )
 

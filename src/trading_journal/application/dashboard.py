@@ -119,6 +119,10 @@ class DashboardReport:
     max_drawdown_percent: str | None
     current_drawdown: str
     current_drawdown_percent: str | None
+    end_of_day_max_drawdown: str
+    end_of_day_max_drawdown_percent: str | None
+    end_of_day_current_drawdown: str
+    end_of_day_current_drawdown_percent: str | None
     worst_day: str | None
     profit_factor: str | None
     expectancy: str | None
@@ -302,6 +306,8 @@ class DashboardService:
         peak_balance = starting_balance
         daily_current_drawdown = Decimal("0")
         daily_current_drawdown_percent: Decimal | None = None
+        daily_max_drawdown = Decimal("0")
+        daily_max_drawdown_percent: Decimal | None = None
         for trade_date, pnl in sorted(daily.items()):
             cumulative_pnl += pnl
             if trade_date in daily_r:
@@ -309,10 +315,15 @@ class DashboardService:
                 has_r = True
             peak_pnl = max(peak_pnl, cumulative_pnl)
             daily_current_drawdown = peak_pnl - cumulative_pnl
+            daily_max_drawdown = max(daily_max_drawdown, daily_current_drawdown)
             balance = None if starting_balance is None else starting_balance + cumulative_pnl
             if balance is not None and peak_balance is not None:
                 peak_balance = max(peak_balance, balance)
                 daily_current_drawdown_percent = daily_current_drawdown * Decimal("100") / peak_balance
+                daily_max_drawdown_percent = max(
+                    daily_max_drawdown_percent or Decimal("0"),
+                    daily_current_drawdown_percent,
+                )
             cumulative.append(
                 CumulativePoint(
                     trade_date,
@@ -346,6 +357,10 @@ class DashboardService:
             max_drawdown_percent=None if account_max_drawdown_percent is None else _decimal_string(account_max_drawdown_percent),
             current_drawdown=_decimal_string(account_current_drawdown),
             current_drawdown_percent=None if account_current_drawdown_percent is None else _decimal_string(account_current_drawdown_percent),
+            end_of_day_max_drawdown=_decimal_string(daily_max_drawdown),
+            end_of_day_max_drawdown_percent=None if daily_max_drawdown_percent is None else _decimal_string(daily_max_drawdown_percent),
+            end_of_day_current_drawdown=_decimal_string(daily_current_drawdown),
+            end_of_day_current_drawdown_percent=None if daily_current_drawdown_percent is None else _decimal_string(daily_current_drawdown_percent),
             worst_day=None if worst_day is None else _decimal_string(worst_day),
             profit_factor=None if profit_factor is None else _decimal_string(profit_factor),
             expectancy=None if expectancy is None else _decimal_string(expectancy),

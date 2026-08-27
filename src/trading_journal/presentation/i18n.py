@@ -155,6 +155,8 @@ VI: dict[str, str] = {
     "Account growth": "Tăng trưởng tài khoản",
     "Realized P&L": "P&L đã thực hiện",
     "Account drawdown": "Drawdown tài khoản",
+    "Drawdown follows the selected chart view.": "Drawdown tuân theo chế độ biểu đồ đã chọn.",
+    "Current drawdown": "Drawdown hiện tại",
     "Logical-trade quality": "Chất lượng giao dịch logic",
     "Total R": "Tổng R",
     "Win rate": "Tỷ lệ thắng",
