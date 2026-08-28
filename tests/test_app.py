@@ -1928,7 +1928,8 @@ def test_dashboard_renders_graphics_for_imported_trades(monkeypatch, tmp_path):
     assert not app.exception
     assert app.subheader[0].value == "Performance dashboard"
     assert any(item.value == "Concentration (80/20)" for item in app.subheader)
-    assert len(app.metric) >= 10
+    stat_markup = "\n".join(item.value for item in app.markdown)
+    assert stat_markup.count("dashboard-stat-label") >= 10
     assert any(item.label == "Sync MT5 now" for item in app.button)
     concentration_control = next(item for item in app.segmented_control if item.label == "Concentration view")
     assert concentration_control.options == ["Trade", "Symbol"]
@@ -1943,7 +1944,10 @@ def test_dashboard_renders_graphics_for_imported_trades(monkeypatch, tmp_path):
     concentration_control = next(item for item in app.segmented_control if item.label == "Concentration view")
     concentration_control.set_value("Symbol").run()
     assert not app.exception
-    assert {item.label for item in app.metric} >= {"Account balance", "Account drawdown", "Profit factor", "Worst day"}
+    stat_markup = "\n".join(item.value for item in app.markdown)
+    assert all(
+        f">{label}<" in stat_markup for label in ("Account balance", "Account drawdown", "Profit factor", "Worst day")
+    )
 
 
 def test_dashboard_auto_imports_a_changed_configured_mt5_export(monkeypatch, tmp_path):
@@ -2073,7 +2077,8 @@ def test_dashboard_switches_to_per_trade_view(monkeypatch, tmp_path):
     assert breakdown["Expectancy R"].dtype.kind in "fi"
     assert breakdown["Profit factor"].dtype.kind in "fi"
     assert any("Logical trade" in item.value.columns for item in app.dataframe)
-    assert {"Performance", "Consistency", "Breakdowns"}.issubset({item.label for item in app.tabs})
+    section_headers = {item.value for item in app.markdown}
+    assert {"**Performance**", "**Consistency**", "**Breakdowns**"}.issubset(section_headers)
     assert any("current logical-trade grouping" in item.value for item in app.caption)
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from html import escape
 from importlib.metadata import PackageNotFoundError, version
 import tomllib
 from uuid import uuid4
@@ -50,7 +51,6 @@ from trading_journal.presentation.formatting import (
     format_number,
     format_percent,
     format_r,
-    render_accent_metric,
 )
 from trading_journal.presentation.trade_tags import direction_tag, outcome_tag
 
@@ -135,17 +135,47 @@ def _streak_metric_tone(outcome: str | None) -> _DashboardMetricTone:
     return {"win": "positive", "loss": "negative", "breakeven": "neutral", None: "neutral"}[outcome]
 
 
-def _render_dashboard_metric(
-    label: str,
-    value: str | None,
+def _dashboard_stat_html(label: str, value: str, tone: _DashboardMetricTone) -> str:
+    return (
+        '<div class="dashboard-stat">'
+        f'<div class="dashboard-stat-label">{escape(label)}</div>'
+        f'<div class="dashboard-stat-value dashboard-stat-tone-{tone}">{escape(value)}</div>'
+        "</div>"
+    )
+
+
+def _render_stat_grid(items: list[tuple[str, str, _DashboardMetricTone]]) -> None:
+    """Render label/value pairs as a dense grid instead of individual metric cards."""
+    cells = "".join(_dashboard_stat_html(label, value, tone) for label, value, tone in items)
+    st.markdown(f'<div class="dashboard-stat-grid">{cells}</div>', unsafe_allow_html=True)
+
+
+def _render_stat_split(
     *,
-    key: str,
-    tone: _DashboardMetricTone,
-    delta: str | None = None,
-    delta_color: str = "normal",
-    delta_arrow: str = "auto",
+    left_label: str,
+    left_tone: _DashboardMetricTone,
+    left_items: list[tuple[str, str, _DashboardMetricTone]],
+    right_label: str,
+    right_tone: _DashboardMetricTone,
+    right_items: list[tuple[str, str, _DashboardMetricTone]],
 ) -> None:
-    render_accent_metric(label, value, key=key, tone=tone, delta=delta, delta_color=delta_color, delta_arrow=delta_arrow)
+    """Render two label/value columns side by side, e.g. profit metrics vs. loss metrics."""
+
+    def column(label: str, tone: _DashboardMetricTone, items: list[tuple[str, str, _DashboardMetricTone]]) -> str:
+        stats = "".join(_dashboard_stat_html(item_label, value, item_tone) for item_label, value, item_tone in items)
+        return (
+            '<div class="dashboard-stat-split-col">'
+            f'<div class="dashboard-stat-split-head dashboard-stat-tone-{tone}">{escape(label)}</div>'
+            f"{stats}</div>"
+        )
+
+    st.markdown(
+        '<div class="dashboard-stat-split">'
+        + column(left_label, left_tone, left_items)
+        + column(right_label, right_tone, right_items)
+        + "</div>",
+        unsafe_allow_html=True,
+    )
 
 
 def style_chart(figure: go.Figure, *, yaxis_title: str, currency: str | None = None) -> go.Figure:
@@ -374,145 +404,139 @@ def _build_breakdown_pnl_figure(
 
 def _render_dashboard_statistics(report: DashboardReport, currency: str) -> None:
     st.markdown(f"#### {tr('Statistics')}")
-    performance_tab, consistency_tab, breakdowns_tab = st.tabs(
-        [tr("Performance"), tr("Consistency"), tr("Breakdowns")]
-    )
 
-    with performance_tab:
+    with st.container(border=True):
+        st.markdown(f"**{tr('Performance')}**")
         st.caption(tr("Outcome statistics use the all-time closed logical-trade record."))
-        with st.container(horizontal=True, gap="small"):
-            _render_dashboard_metric(
-                tr("Gross profit"), format_currency(report.gross_profit, currency, signed=False),
-                key="statistics-gross-profit", tone=_signed_metric_tone(report.gross_profit),
-            )
-            _render_dashboard_metric(
-                tr("Gross loss"), format_currency(-Decimal(report.gross_loss), currency),
-                key="statistics-gross-loss", tone=_presence_metric_tone(report.loss_count, "negative"),
-            )
-            _render_dashboard_metric(
-                tr("Average win"),
-                tr("No wins") if report.average_win is None else format_currency(report.average_win, currency),
-                key="statistics-average-win",
-                tone="neutral" if report.average_win is None else "positive",
-            )
-            _render_dashboard_metric(
-                tr("Average loss"),
-                tr("No losses") if report.average_loss is None else format_currency(report.average_loss, currency),
-                key="statistics-average-loss",
-                tone="neutral" if report.average_loss is None else "negative",
-            )
-            _render_dashboard_metric(
-                tr("Payoff ratio"),
-                "—" if report.payoff_ratio is None else format_number(report.payoff_ratio, 2),
-                key="statistics-payoff-ratio", tone="info",
-            )
-            _render_dashboard_metric(
-                tr("Expectancy R"),
-                tr("Awaiting risk") if report.expectancy_r is None else format_r(report.expectancy_r),
-                key="statistics-expectancy-r",
-                tone=_risk_metric_tone(report.expectancy_r, report.trade_count),
-            )
-        with st.container(horizontal=True, gap="small"):
-            _render_dashboard_metric(
-                tr("Wins"), format_count(report.win_count), key="statistics-wins",
-                tone=_presence_metric_tone(report.win_count, "positive"),
-            )
-            _render_dashboard_metric(
-                tr("Losses"), format_count(report.loss_count), key="statistics-losses",
-                tone=_presence_metric_tone(report.loss_count, "negative"),
-            )
-            _render_dashboard_metric(
-                tr("Breakevens"), format_count(report.breakeven_count), key="statistics-breakevens", tone="neutral",
-            )
-            _render_dashboard_metric(
-                tr("R coverage"),
-                f"{format_count(report.r_trade_count)}/{format_count(report.trade_count)}",
-                key="statistics-r-coverage",
-                tone=_r_coverage_metric_tone(report.r_trade_count, report.trade_count),
-            )
+        _render_stat_split(
+            left_label=tr("Profit"),
+            left_tone="positive",
+            left_items=[
+                (tr("Gross profit"), format_currency(report.gross_profit, currency, signed=False), _signed_metric_tone(report.gross_profit)),
+                (
+                    tr("Average win"),
+                    tr("No wins") if report.average_win is None else format_currency(report.average_win, currency),
+                    "neutral" if report.average_win is None else "positive",
+                ),
+                (tr("Wins"), format_count(report.win_count), _presence_metric_tone(report.win_count, "positive")),
+            ],
+            right_label=tr("Loss"),
+            right_tone="negative",
+            right_items=[
+                (tr("Gross loss"), format_currency(-Decimal(report.gross_loss), currency), _presence_metric_tone(report.loss_count, "negative")),
+                (
+                    tr("Average loss"),
+                    tr("No losses") if report.average_loss is None else format_currency(report.average_loss, currency),
+                    "neutral" if report.average_loss is None else "negative",
+                ),
+                (tr("Losses"), format_count(report.loss_count), _presence_metric_tone(report.loss_count, "negative")),
+            ],
+        )
+        _render_stat_grid(
+            [
+                (tr("Payoff ratio"), "—" if report.payoff_ratio is None else format_number(report.payoff_ratio, 2), "info"),
+                (
+                    tr("Expectancy R"),
+                    tr("Awaiting risk") if report.expectancy_r is None else format_r(report.expectancy_r),
+                    _risk_metric_tone(report.expectancy_r, report.trade_count),
+                ),
+                (tr("Breakevens"), format_count(report.breakeven_count), "neutral"),
+                (
+                    tr("R coverage"),
+                    f"{format_count(report.r_trade_count)}/{format_count(report.trade_count)}",
+                    _r_coverage_metric_tone(report.r_trade_count, report.trade_count),
+                ),
+            ]
+        )
         if report.trade_count:
-            with st.container(border=True):
-                st.plotly_chart(
-                    _build_outcome_mix_figure(
-                        win_count=report.win_count,
-                        loss_count=report.loss_count,
-                        breakeven_count=report.breakeven_count,
-                    ),
-                    width="stretch",
-                    config={"displayModeBar": False},
-                    key="dashboard-statistics-outcome-mix",
-                )
+            st.plotly_chart(
+                _build_outcome_mix_figure(
+                    win_count=report.win_count,
+                    loss_count=report.loss_count,
+                    breakeven_count=report.breakeven_count,
+                ),
+                width="stretch",
+                config={"displayModeBar": False},
+                key="dashboard-statistics-outcome-mix",
+            )
         else:
             st.caption(tr("Complete logical trades will populate the outcome chart."))
 
-    with consistency_tab:
+    with st.container(border=True):
+        st.markdown(f"**{tr('Consistency')}**")
         st.caption(tr("Day statistics and streaks use closed logical trades at their final close time."))
-        with st.container(horizontal=True, gap="small"):
-            _render_dashboard_metric(
-                tr("Active trading days"), format_count(report.active_day_count),
-                key="statistics-active-days", tone="info",
-            )
-            _render_dashboard_metric(
-                tr("Profitable days"),
-                f"{format_count(report.profitable_day_count)}/{format_count(report.active_day_count)}",
-                key="statistics-profitable-days", tone="info",
-                delta=format_percent(report.profitable_day_rate),
-                delta_color="gray",
-                delta_arrow="off",
-            )
-            _render_dashboard_metric(
-                tr("Best day"), "—" if report.best_day is None else format_currency(report.best_day, currency),
-                key="statistics-best-day", tone=_signed_metric_tone(report.best_day),
-            )
-            _render_dashboard_metric(
-                tr("Average day"), "—" if report.average_day is None else format_currency(report.average_day, currency),
-                key="statistics-average-day", tone=_signed_metric_tone(report.average_day),
-            )
-            _render_dashboard_metric(
-                tr("Worst day"), "—" if report.worst_day is None else format_currency(report.worst_day, currency),
-                key="statistics-worst-day", tone=_signed_metric_tone(report.worst_day),
-            )
-            _render_dashboard_metric(
-                tr("Recovery factor"),
-                tr("No drawdown") if report.recovery_factor is None else format_number(report.recovery_factor, 2),
-                key="statistics-recovery-factor", tone="info",
-            )
         current_streak = "—"
         if report.current_streak_outcome is not None:
             outcome = {"win": "Win", "loss": "Loss", "breakeven": "Breakeven"}[report.current_streak_outcome]
             current_streak = f"{format_count(report.current_streak_count)} · {tr(outcome)}"
-        with st.container(horizontal=True, gap="small"):
-            _render_dashboard_metric(
-                tr("Current streak"), current_streak, key="statistics-current-streak",
-                tone=_streak_metric_tone(report.current_streak_outcome),
-            )
-            _render_dashboard_metric(
-                tr("Longest win streak"), format_count(report.longest_win_streak),
-                key="statistics-longest-win-streak",
-                tone=_presence_metric_tone(report.longest_win_streak, "positive"),
-            )
-            _render_dashboard_metric(
-                tr("Longest loss streak"), format_count(report.longest_loss_streak),
-                key="statistics-longest-loss-streak",
-                tone=_presence_metric_tone(report.longest_loss_streak, "negative"),
-            )
+        _render_stat_grid(
+            [
+                (tr("Active trading days"), format_count(report.active_day_count), "info"),
+                (
+                    tr("Profitable days"),
+                    f"{format_count(report.profitable_day_count)}/{format_count(report.active_day_count)} ({format_percent(report.profitable_day_rate)})",
+                    "info",
+                ),
+                (
+                    tr("Average day"),
+                    "—" if report.average_day is None else format_currency(report.average_day, currency),
+                    _signed_metric_tone(report.average_day),
+                ),
+                (
+                    tr("Recovery factor"),
+                    tr("No drawdown") if report.recovery_factor is None else format_number(report.recovery_factor, 2),
+                    "info",
+                ),
+                (tr("Current streak"), current_streak, _streak_metric_tone(report.current_streak_outcome)),
+            ]
+        )
+        _render_stat_split(
+            left_label=tr("Best"),
+            left_tone="positive",
+            left_items=[
+                (
+                    tr("Best day"),
+                    "—" if report.best_day is None else format_currency(report.best_day, currency),
+                    _signed_metric_tone(report.best_day),
+                ),
+                (
+                    tr("Longest win streak"),
+                    format_count(report.longest_win_streak),
+                    _presence_metric_tone(report.longest_win_streak, "positive"),
+                ),
+            ],
+            right_label=tr("Worst"),
+            right_tone="negative",
+            right_items=[
+                (
+                    tr("Worst day"),
+                    "—" if report.worst_day is None else format_currency(report.worst_day, currency),
+                    _signed_metric_tone(report.worst_day),
+                ),
+                (
+                    tr("Longest loss streak"),
+                    format_count(report.longest_loss_streak),
+                    _presence_metric_tone(report.longest_loss_streak, "negative"),
+                ),
+            ],
+        )
         if report.best_day is not None and report.average_day is not None and report.worst_day is not None:
-            with st.container(border=True):
-                st.plotly_chart(
-                    _build_daily_result_range_figure(
-                        best_day=report.best_day,
-                        average_day=report.average_day,
-                        worst_day=report.worst_day,
-                        currency=currency,
-                    ),
-                    width="stretch",
-                    config={"displayModeBar": False},
-                    key="dashboard-statistics-daily-range",
-                )
+            st.plotly_chart(
+                _build_daily_result_range_figure(
+                    best_day=report.best_day,
+                    average_day=report.average_day,
+                    worst_day=report.worst_day,
+                    currency=currency,
+                ),
+                width="stretch",
+                config={"displayModeBar": False},
+                key="dashboard-statistics-daily-range",
+            )
         else:
             st.caption(tr("Closed MT5 positions will populate the daily range chart."))
 
-    with breakdowns_tab:
+    with st.container(border=True):
+        st.markdown(f"**{tr('Breakdowns')}**")
         st.caption(tr("Breakdowns use closed logical trades and preserve available R-data coverage."))
         breakdown_view = st.segmented_control(
             tr("Breakdown view"),
@@ -527,25 +551,24 @@ def _render_dashboard_statistics(report: DashboardReport, currency: str) -> None
         if breakdown_view == tr("Direction"):
             labels = [tr(direction_tag(item.label).label) for item in rows]
         if rows:
-            with st.container(border=True):
-                breakdown_figure, truncated = _build_breakdown_pnl_figure(
-                    list(zip(labels, rows, strict=True)),
-                    currency=currency,
-                    dimension=breakdown_view,
-                )
-                st.plotly_chart(
-                    breakdown_figure,
-                    width="stretch",
-                    config={"displayModeBar": False},
-                    key="dashboard-statistics-breakdown-pnl",
-                )
-                if truncated:
-                    st.caption(
-                        tr(
-                            "Chart shows the {count} groups with the largest absolute net P&L; the table includes every group.",
-                            count=format_count(_STATISTICS_BREAKDOWN_CHART_LIMIT),
-                        )
+            breakdown_figure, truncated = _build_breakdown_pnl_figure(
+                list(zip(labels, rows, strict=True)),
+                currency=currency,
+                dimension=breakdown_view,
+            )
+            st.plotly_chart(
+                breakdown_figure,
+                width="stretch",
+                config={"displayModeBar": False},
+                key="dashboard-statistics-breakdown-pnl",
+            )
+            if truncated:
+                st.caption(
+                    tr(
+                        "Chart shows the {count} groups with the largest absolute net P&L; the table includes every group.",
+                        count=format_count(_STATISTICS_BREAKDOWN_CHART_LIMIT),
                     )
+                )
         else:
             st.caption(tr("Complete logical trades will populate the breakdown chart."))
         group_column = tr("Group")
@@ -624,6 +647,57 @@ def apply_application_style() -> None:
         }
         div[class*="st-key-dashboard-metric-neutral-"] {
             --dashboard-metric-accent: var(--st-gray-color, #667168);
+        }
+        .dashboard-stat-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr));
+            gap: 0.5rem 1.5rem;
+            padding: 0.5rem 0;
+        }
+        .dashboard-stat-grid + .dashboard-stat-grid,
+        .dashboard-stat-split + .dashboard-stat-grid,
+        .dashboard-stat-grid + .dashboard-stat-split {
+            border-top: 1px solid var(--border-color);
+            margin-top: 0.15rem;
+            padding-top: 0.65rem;
+        }
+        .dashboard-stat-label {
+            font-size: 0.68rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--st-gray-color, #667168);
+        }
+        .dashboard-stat-value {
+            font-size: 1rem;
+            font-weight: 600;
+            margin-top: 0.1rem;
+            font-variant-numeric: tabular-nums;
+        }
+        .dashboard-stat-tone-positive { color: var(--st-green-color, #0e9163); }
+        .dashboard-stat-tone-negative { color: var(--st-red-color, #c73545); }
+        .dashboard-stat-tone-warning { color: var(--st-orange-color, #a65f00); }
+        .dashboard-stat-tone-info { color: var(--st-blue-color, #1666a5); }
+        .dashboard-stat-tone-neutral { color: inherit; }
+        .dashboard-stat-split {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0.5rem 1.75rem;
+            padding: 0.5rem 0;
+        }
+        .dashboard-stat-split-col + .dashboard-stat-split-col {
+            border-left: 1px solid var(--border-color);
+            padding-left: 1.75rem;
+            margin-left: -1.75rem;
+        }
+        .dashboard-stat-split-head {
+            font-size: 0.66rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            margin-bottom: 0.3rem;
+        }
+        .dashboard-stat-split-col .dashboard-stat + .dashboard-stat {
+            margin-top: 0.35rem;
         }
         /* st.tabs' row doesn't wrap on narrow viewports and clips the last label;
            make the scroll it already supports visible so it reads as scrollable
@@ -1759,47 +1833,53 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
         displayed_max_drawdown = report.max_drawdown
         displayed_current_drawdown = report.current_drawdown
         displayed_current_drawdown_percent = report.current_drawdown_percent
-    with st.container(horizontal=True, gap="small"):
-        _render_dashboard_metric(
-            "Account balance",
-            "—" if report.ending_balance is None else format_currency(report.ending_balance, currency, signed=False),
-            key="headline-account-balance", tone="info",
-        )
-        _render_dashboard_metric(
-            "Account growth",
-            "—" if report.balance_growth_percent is None else format_percent(report.balance_growth_percent, signed=True),
-            key="headline-account-growth", tone=_signed_metric_tone(report.balance_growth_percent),
-        )
-        _render_dashboard_metric(
-            "Realized P&L", format_currency(report.net_pnl, currency),
-            key="headline-realized-pnl", tone=_signed_metric_tone(report.net_pnl),
-        )
-        _render_dashboard_metric(
-            "Account drawdown", format_currency(-Decimal(displayed_max_drawdown), currency),
-            key="headline-account-drawdown", tone=_signed_metric_tone(-Decimal(displayed_max_drawdown)),
-        )
+    _render_stat_grid(
+        [
+            (
+                "Account balance",
+                "—" if report.ending_balance is None else format_currency(report.ending_balance, currency, signed=False),
+                "info",
+            ),
+            (
+                "Account growth",
+                "—" if report.balance_growth_percent is None else format_percent(report.balance_growth_percent, signed=True),
+                _signed_metric_tone(report.balance_growth_percent),
+            ),
+            ("Realized P&L", format_currency(report.net_pnl, currency), _signed_metric_tone(report.net_pnl)),
+            (
+                "Account drawdown",
+                format_currency(-Decimal(displayed_max_drawdown), currency),
+                _signed_metric_tone(-Decimal(displayed_max_drawdown)),
+            ),
+        ]
+    )
 
     st.markdown("#### Logical-trade quality")
-    with st.container(horizontal=True, gap="small"):
-        _render_dashboard_metric(
-            "Total R", "Awaiting risk" if report.total_r is None else format_r(report.total_r),
-            key="quality-total-r", tone=_risk_metric_tone(report.total_r, report.trade_count),
-        )
-        _render_dashboard_metric(
-            "Win rate", format_percent(report.win_rate), key="quality-win-rate", tone="info",
-        )
-        _render_dashboard_metric(
-            "Profit factor", "No losses" if report.profit_factor is None else format_number(report.profit_factor, 2),
-            key="quality-profit-factor", tone=_profit_factor_metric_tone(report.profit_factor),
-        )
-        _render_dashboard_metric(
-            "Expectancy", "—" if report.expectancy is None else format_currency(report.expectancy, currency),
-            key="quality-expectancy", tone=_signed_metric_tone(report.expectancy),
-        )
-        _render_dashboard_metric(
-            "Worst day", "—" if report.worst_day is None else format_currency(report.worst_day, currency),
-            key="quality-worst-day", tone=_signed_metric_tone(report.worst_day),
-        )
+    _render_stat_grid(
+        [
+            (
+                "Total R",
+                "Awaiting risk" if report.total_r is None else format_r(report.total_r),
+                _risk_metric_tone(report.total_r, report.trade_count),
+            ),
+            ("Win rate", format_percent(report.win_rate), "info"),
+            (
+                "Profit factor",
+                "No losses" if report.profit_factor is None else format_number(report.profit_factor, 2),
+                _profit_factor_metric_tone(report.profit_factor),
+            ),
+            (
+                "Expectancy",
+                "—" if report.expectancy is None else format_currency(report.expectancy, currency),
+                _signed_metric_tone(report.expectancy),
+            ),
+            (
+                "Worst day",
+                "—" if report.worst_day is None else format_currency(report.worst_day, currency),
+                _signed_metric_tone(report.worst_day),
+            ),
+        ]
+    )
     if report.trade_count == 0:
         st.caption(tr("No logical trades have been closed yet."))
     elif report.r_trade_count < report.trade_count:
