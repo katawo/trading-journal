@@ -6,6 +6,7 @@ from collections import Counter
 from collections.abc import MutableMapping, Sequence
 from datetime import datetime, timedelta
 from decimal import Decimal
+from html import escape
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -188,7 +189,7 @@ def _rubric_label(rubric_version: str | None) -> str:
 
 
 def _render_rubric_sample_caption(scores: tuple[PillarScore, ...], window: int) -> None:
-    reviewed = min((score.reviewed_total for score in scores), default=0)
+    reviewed = min((score.sample_size for score in scores), default=0)
     legacy = max((score.legacy_reviewed_total for score in scores), default=0)
     st.caption(
         tr(
@@ -459,6 +460,82 @@ def _render_pillar_radar(scores: tuple[PillarScore, ...]) -> None:
                     st.caption(tr("Pillars without a scored sample yet show as 0 on this chart."))
 
 
+def _pillar_monitor_status(score: PillarScore) -> tuple[str, str]:
+    if score.hard_block:
+        return tr("FAIL"), "#c73545"
+    if score.score is None:
+        return tr("Incomplete"), "#7a828e"
+    if score.status == "incomplete":
+        return tr("Early estimate"), "#7a828e"
+    if score.status == "caution":
+        return tr("Caution"), "#a65f00"
+    return tr(score.status.capitalize()), "#0e9163"
+
+
+def _build_pillar_score_figure(scores: tuple[PillarScore, ...]) -> go.Figure:
+    """Use precise bars rather than a three-axis radar for pillar comparison."""
+    labels = [tr(PILLAR_NAMES[score.pillar]) for score in scores]
+    values = [float(Decimal(score.score)) if score.score is not None else 0.0 for score in scores]
+    statuses = [_pillar_monitor_status(score) for score in scores]
+    display_values = [_score_text(score.score) for score in scores]
+    customdata = [
+        [status, _score_text(score.raw_score), format_count(score.sample_size)]
+        for score, (status, _) in zip(scores, statuses, strict=True)
+    ]
+    figure = go.Figure(
+        go.Bar(
+            x=values,
+            y=labels,
+            orientation="h",
+            marker_color=[colour for _, colour in statuses],
+            marker_line_width=0,
+            customdata=customdata,
+            text=display_values,
+            textposition="outside",
+            cliponaxis=False,
+            hovertemplate=(
+                "%{y}<br><b>%{text}</b> · %{customdata[0]}"
+                f"<br>{tr('Raw score')}: %{{customdata[1]}}"
+                f"<br>{tr('Sample')}: %{{customdata[2]}}<extra></extra>"
+            ),
+        )
+    )
+    figure.update_layout(
+        height=200,
+        margin=dict(l=12, r=60, t=20, b=12),
+        showlegend=False,
+        bargap=0.42,
+    )
+    figure.update_xaxes(range=[0, 100], visible=False, fixedrange=True)
+    figure.update_yaxes(showgrid=False, zeroline=False, autorange="reversed", fixedrange=True)
+    return figure
+
+
+def _render_empty_pillar_scores(scores: tuple[PillarScore, ...], window: int) -> None:
+    """Keep an all-incomplete sample compact instead of drawing three zero bars."""
+    rows = "".join(
+        '<div class="dashboard-pillar-empty-row">'
+        f'<div class="dashboard-pillar-empty-label">{escape(tr(PILLAR_NAMES[score.pillar]))}</div>'
+        '<div class="dashboard-pillar-empty-track"></div>'
+        f'<div class="dashboard-pillar-empty-value">— · {escape(tr("Incomplete"))} · {score.sample_size}/{window}</div>'
+        "</div>"
+        for score in scores
+    )
+    st.markdown(f'<div class="dashboard-pillar-empty">{rows}</div>', unsafe_allow_html=True)
+
+
+def _render_framework_stat_grid(items: list[tuple[str, str, str, str]]) -> None:
+    cells = "".join(
+        '<div class="dashboard-stat">'
+        f'<div class="dashboard-stat-label">{escape(label)}</div>'
+        f'<div class="dashboard-stat-value dashboard-stat-tone-{tone}">{escape(value)}</div>'
+        f'<div class="dashboard-stat-note">{escape(note)}</div>'
+        "</div>"
+        for label, value, note, tone in items
+    )
+    st.markdown(f'<div class="dashboard-stat-grid dashboard-framework-stats">{cells}</div>', unsafe_allow_html=True)
+
+
 def _render_risk_configuration_notice(service: FrameworkService, account_id: int) -> None:
     """Keep the setup-only risk notice visible without duplicating global alerts."""
     notice = next((alert for alert in service.framework_alerts(account_id) if alert.code == "risk_unconfigured"), None)
@@ -473,40 +550,72 @@ def render_framework_dashboard(repo: SQLiteJournalRepository, account: AccountLi
     scores = service.pillar_scores(account.id)
     readiness = service.readiness(account.id)
     policy = repo.get_active_risk_policy(account.id)
-    st.markdown(tr("#### Three-pillar monitor"))
-    st.caption(tr("This compact view always uses a fixed 20-trade window. Open Bearings → Monitor to adjust the rolling sample."))
-    _render_rubric_sample_caption(scores, 20)
-    _render_risk_configuration_notice(service, account.id)
     readiness_value, readiness_delta, readiness_color = _readiness_metric(readiness)
     state_value, state_delta, state_color = _risk_state_metric(snapshot)
     daily_value, daily_delta, daily_color = _daily_r_metric(snapshot.daily_r)
     drawdown_value, drawdown_delta, drawdown_color = _drawdown_metric(snapshot.max_drawdown_percent)
-    with st.container(horizontal=True, gap="small"):
-        st.metric(
-            tr("Overall readiness"), readiness_value, tr(readiness_delta),
-            delta_color=readiness_color, delta_arrow="off", border=True,
-        )
-        st.metric(
-            tr("Risk state"), state_value, tr(state_delta),
-            delta_color=state_color, delta_arrow="off", border=True,
-        )
-        st.metric(
-            tr("Today"), daily_value, tr(daily_delta),
-            delta_color=daily_color,
-            delta_arrow="off",
-            delta_description=None if policy is None else f"{format_exposure_r(policy.daily_loss_limit_r)} daily loss limit",
-            border=True,
-        )
-        st.metric(
-            tr("Max drawdown"), drawdown_value, tr(drawdown_delta),
-            delta_color=drawdown_color,
-            delta_arrow="off",
-            delta_description=None if not snapshot.configured else tr("Resets {period}", period=_reset_period_label(snapshot.drawdown_reset_period).lower()),
-            border=True,
-        )
-    _render_score_cards(scores, account)
-    _render_pillar_radar(scores)
-    st.caption(tr(readiness.detail))
+    tone_by_delta_color = {"green": "positive", "red": "negative", "orange": "warning", "gray": "neutral"}
+    with st.container(border=True):
+        st.markdown(tr("#### Process & risk"))
+        st.caption(tr("Fixed 20-trade process window · outcome performance above does not determine readiness."))
+        _render_risk_configuration_notice(service, account.id)
+        process_risk_columns = st.container(key="dashboard-process-risk-columns")
+        stats, pillars = process_risk_columns.columns([1, 1.45], gap="large")
+        with stats:
+            _render_framework_stat_grid(
+                [
+                    (
+                        tr("Overall readiness"),
+                        "—" if readiness_value is None else str(readiness_value),
+                        tr(readiness_delta),
+                        tone_by_delta_color[readiness_color],
+                    ),
+                    (
+                        tr("Risk state"),
+                        str(state_value),
+                        tr(state_delta),
+                        tone_by_delta_color[state_color],
+                    ),
+                    (
+                        tr("Today"),
+                        "—" if daily_value is None else str(daily_value),
+                        tr(daily_delta)
+                        + ("" if policy is None else f" · {format_exposure_r(policy.daily_loss_limit_r)} {tr('limit')}"),
+                        tone_by_delta_color[daily_color],
+                    ),
+                    (
+                        tr("Max drawdown"),
+                        "—" if drawdown_value is None else str(drawdown_value),
+                        tr(drawdown_delta)
+                        + (
+                            ""
+                            if not snapshot.configured
+                            else f" · {tr('Resets {period}', period=_reset_period_label(snapshot.drawdown_reset_period).lower())}"
+                        ),
+                        tone_by_delta_color[drawdown_color],
+                    ),
+                ]
+            )
+            st.caption(tr(readiness.detail))
+        with pillars:
+            if all(score.score is None for score in scores):
+                _render_empty_pillar_scores(scores, 20)
+            else:
+                st.plotly_chart(
+                    _build_pillar_score_figure(scores),
+                    width="stretch",
+                    config={"displayModeBar": False},
+                    key="dashboard-pillar-scores",
+                )
+        _render_rubric_sample_caption(scores, 20)
+        non_ready_scores = [score for score in scores if score.status != "ready"]
+        if non_ready_scores:
+            with st.popover(tr("Pillar score details"), icon=":material/help:", width="content"):
+                for score in non_ready_scores:
+                    status, _ = _pillar_monitor_status(score)
+                    st.markdown(f"**{tr(PILLAR_NAMES[score.pillar])} · {status}**")
+                    st.caption(tr(score.detail))
+                    st.caption(_score_scope_label(score, account))
 
 
 def _render_framework_page_header(repo: SQLiteJournalRepository) -> AccountListItem | None:

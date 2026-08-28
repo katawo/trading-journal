@@ -1,32 +1,35 @@
-# Dashboard: dense analytics layout (replacing metric cards)
+# Dashboard: dense review workspace
 
-**Status:** Approved 2026-08-28. Visual mockup: see the "Dashboard Density Preview" artifact reviewed during design.
+**Status:** Implemented 2026-08-29. Supersedes the first dense-stat-grid layout from 2026-08-28.
 
-## Problem
+## Intent
 
-`render_dashboard` / `_render_dashboard_statistics` (`app.py`) build the Dashboard page almost entirely from `st.metric` "cards" (`_render_dashboard_metric` → `render_accent_metric`, a colored-left-border box per number), 4-6 per row, repeated across a headline row, a "Logical-trade quality" row, and — behind `st.tabs` (Performance / Consistency / Breakdowns) — two more rows each. Cards take a lot of vertical space per number and hide most of the Statistics content behind tab clicks, which reads as consumer/card-dashboard style rather than a professional analytics report.
+The Dashboard is a professional review workspace, not a collection of metric cards. It keeps account outcomes, historical risk, analytical drivers, and three-pillar process evidence distinct while making them easy to scan on one page.
 
-## Scope
+## Layout
 
-Presentation-layer only, confined to `app.py`. `DashboardService` / `DashboardReport` (`application/dashboard.py`) are untouched — no data contract change, no new metrics, no test changes needed there (existing tests only exercise `DashboardService.build_report`, never the Streamlit widgets).
+The page uses three primary review regions beneath a compact account header; the middle region uses separate history and analysis surfaces so its charts remain readable:
 
-Not touched: the two side-by-side charts (balance/equity curve, drawdown), the daily/per-trade P&L bar chart, the "Closed-trade detail" table, and the Concentration (80/20) section — all already chart/table-based, not card-based.
+1. **Account and trade outcomes** — a six-value account strip followed by three columns for Profit, Loss, and a legend-free percentage Outcome mix. Win rate, payoff ratio, Expectancy R, and R coverage form a 2×2 outcome grid; day and streak statistics form one compact footer row.
+2. **Performance history and analysis** — one synchronized chart aligns the balance/cumulative-P&L line, negative drawdown area, and daily/per-trade P&L bars. An always-visible analysis surface places breakdown and profit/loss concentration charts side by side, followed by a compact breakdown table. Closed-trade detail appears only in Per-trade view.
+3. **Process and risk** — operational risk/readiness values sit beside horizontal Psychology, Risk management, and Trading system score bars. Outcome profitability never determines these process scores.
 
-`render_accent_metric` in `presentation/formatting.py` and its other caller (`ongoing.py`) are untouched — Ongoing keeps today's card look. The Dashboard gets its own new rendering helper(s) in `app.py`.
+The floating coaching focus remains available without occupying document flow. On narrow screens, the three-column overview and two-column analysis layouts stack using Streamlit's native responsive columns.
 
-## Design
+## Chart choices
 
-**Dense stat grid.** A new helper renders `label → value` pairs as a CSS grid (`auto-fill`, wraps responsively) instead of `st.metric` cards: no borders/backgrounds, small single-line rows, tight gaps. Tone (positive/negative/warning/info/neutral) is computed exactly as today via the existing `_signed_metric_tone` / `_profit_factor_metric_tone` / `_risk_metric_tone` / `_r_coverage_metric_tone` / `_streak_metric_tone` helpers, but instead of driving a card's border color it colors the value text, reusing the same `--st-green-color` / `--st-red-color` / `--st-orange-color` / `--st-blue-color` / `--st-gray-color` CSS variables already defined in `apply_application_style()`. The one metric with a "delta" today (Profitable days' rate) becomes inline text, e.g. `24/39 (61.5%)`.
+- Outcome mix: 100% stacked horizontal bar for proportions.
+- Performance history: shared-axis line, filled negative area, and diverging bars for level, drawdown, and periodic results.
+- Direction/symbol breakdown: diverging horizontal bars for signed comparison.
+- Concentration: paired Pareto bars and cumulative-share lines so profit and loss remain visible together.
+- Pillars: horizontal 0–100 bars for accurate comparison; status color and text preserve incomplete, caution-capped, and hard-blocked states. The previous three-axis radar is retained only on the dedicated Bearings monitor.
 
-**Sections replace tabs.** The Statistics `st.tabs` (Performance / Consistency / Breakdowns) become three always-visible stacked sections (`st.container(border=True)` each, matching the current tab-panel framing) — no click required to compare them. Breakdowns keeps its existing chart + `st.dataframe` table (already dense), just no longer gated behind a tab.
+The daily-result-range chart is removed because its three values already appear in the outcome statistics and do not require another plot.
 
-**Profit/loss split where metrics naturally pair.** Where a section's metrics have a real profit-side/loss-side counterpart, split them into two columns (mirroring the existing Concentration section's profit/loss column pattern) instead of one flat grid:
+## Data and behavior
 
-- **Performance**: a Profit column (Gross profit, Average win, Wins) and a Loss column (Gross loss, Average loss, Losses); metrics with no side (Payoff ratio, Expectancy R, Breakevens, R coverage) stay in one shared grid row underneath.
-- **Consistency**: a Best column (Best day, Longest win streak) and a Worst column (Worst day, Longest loss streak); the rest (Active trading days, Profitable days, Average day, Recovery factor, Current streak) stay in one shared grid row above.
-
-Headline row (Account balance / growth / Realized P&L / Account drawdown) and the "Logical-trade quality" row (Total R / Win rate / Profit factor / Expectancy / Worst day) stay as single flowing dense grids — none of those metrics have a profit/loss counterpart.
+`DashboardService` and `DashboardReport` remain unchanged. Daily remains the default history view. Per trade changes the history grain and reveals the logical-trade detail table; the Daily view stays focused on account history and aggregate drivers.
 
 ## Verification
 
-UI-only, data contract unchanged: verify by running the app (`make run`) and visually checking the Dashboard in both light and dark theme with a real account's data, per this repo's UI-testing convention. No automated test changes.
+Automated tests cover chart traces, semantic colors, shared axes, empty concentration sides, pillar status encoding, controls, and the full Streamlit dashboard. Final verification uses `make check` plus light/dark and narrow-width visual inspection when the app is running.

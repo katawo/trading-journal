@@ -1959,15 +1959,16 @@ def test_dashboard_renders_graphics_for_imported_trades(monkeypatch, tmp_path):
 
     assert not app.exception
     assert app.subheader[0].value == "Performance dashboard"
-    assert any(item.value == "Concentration (80/20)" for item in app.subheader)
     stat_markup = "\n".join(item.value for item in app.markdown)
+    assert "Concentration" in stat_markup
+    assert "Process & risk" in stat_markup
     assert stat_markup.count("dashboard-stat-label") >= 10
     assert any(item.label == "Sync MT5 now" for item in app.button)
     concentration_control = next(item for item in app.segmented_control if item.label == "Concentration view")
     assert concentration_control.options == ["Trade", "Symbol"]
     assert concentration_control.value == "Trade"
-    assert any("No losing logical trades" in item.value for item in app.info)
-    assert len(app.get("plotly_chart")) >= 7
+    assert any("No losing logical trades" in item.value for item in app.caption)
+    assert len(app.get("plotly_chart")) == 4
     statistics_breakdown = next(item for item in app.segmented_control if item.label == "Breakdown view")
     assert statistics_breakdown.options == ["Direction", "Symbol"]
     assert statistics_breakdown.value == "Direction"
@@ -2110,7 +2111,12 @@ def test_dashboard_switches_to_per_trade_view(monkeypatch, tmp_path):
     assert breakdown["Profit factor"].dtype.kind in "fi"
     assert any("Logical trade" in item.value.columns for item in app.dataframe)
     section_headers = {item.value for item in app.markdown}
-    assert {"**Performance**", "**Consistency**", "**Breakdowns**"}.issubset(section_headers)
+    assert {
+        "#### Trade outcomes",
+        "#### Performance history",
+        "#### Concentration",
+        "#### Process & risk",
+    }.issubset(section_headers)
     assert any("current logical-trade grouping" in item.value for item in app.caption)
 
 

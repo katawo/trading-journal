@@ -13,6 +13,7 @@ from trading_journal.application.framework import (
     FrameworkService,
     LEGACY_TRADE_WEIGHTS,
     PERIOD_WEIGHTS,
+    PillarScore,
     ROADMAP_ITEMS,
     TRADE_WEIGHTS,
     ReadinessAssessment,
@@ -33,6 +34,7 @@ from trading_journal.presentation.framework import (
     _advance_review_queue,
     _auto_risk_label,
     _automatic_risk_monitoring_detail,
+    _build_pillar_score_figure,
     _clear_review_dialog,
     _default_policy_adherence_grade,
     _daily_r_metric,
@@ -73,6 +75,24 @@ def test_monitor_metrics_distinguish_unavailable_values_and_breached_drawdown() 
     assert _daily_r_metric(None) == (None, "Unavailable", "gray")
     assert _drawdown_metric(None) == (None, "Unavailable", "gray")
     assert _drawdown_metric("0") == ("0.0%", "No drawdown", "gray")
+
+
+def test_dashboard_pillar_bars_preserve_hard_blocks_cautions_and_missing_evidence() -> None:
+    scores = (
+        PillarScore("psychology", "86", "86", "ready", 20, 20, 0, 0, False, 0, (), "Ready.", "account"),
+        PillarScore("risk", "59", "78", "caution", 20, 20, 0, 0, False, 2, (), "Capped.", "account"),
+        PillarScore("system", None, None, "incomplete", 0, 0, 0, 0, True, 0, (), "Missing.", "system"),
+    )
+
+    figure = _build_pillar_score_figure(scores)
+
+    trace = figure.data[0]
+    assert list(trace.x) == [86.0, 59.0, 0.0]
+    assert list(trace.marker.color) == ["#0e9163", "#a65f00", "#c73545"]
+    assert list(trace.text) == ["86%", "59%", "—"]
+    assert [row[0] for row in trace.customdata] == ["Ready", "Caution", "FAIL"]
+    assert figure.layout.xaxis.range == (0, 100)
+    assert figure.layout.xaxis.visible is False
 
 
 def test_coaching_focus_metrics_use_compact_display_formatting() -> None:
