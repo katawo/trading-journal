@@ -3,6 +3,12 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from typing import Literal
+
+import streamlit as st
+
+
+AccentMetricTone = Literal["positive", "negative", "warning", "info", "neutral"]
 
 
 _CURRENCY_SYMBOLS = {
@@ -69,3 +75,33 @@ def format_score(value: str | Decimal) -> str:
 
 def format_count(value: int) -> str:
     return f"{value:,}"
+
+
+def render_accent_metric(
+    label: str,
+    value: str | None,
+    *,
+    key: str,
+    tone: AccentMetricTone,
+    delta: str | None = None,
+    delta_color: str = "normal",
+    delta_arrow: str = "auto",
+    delta_description: str | None = None,
+) -> None:
+    """Render a native st.metric with the shared colored left-border accent.
+
+    The accent styling is injected once, globally, by app.py's
+    apply_application_style(); this only needs to match its "dashboard-metric-
+    {tone}-" container key convention so every page's status metrics look
+    consistent rather than each page inventing its own coloring.
+    """
+    with st.container(key=f"dashboard-metric-{tone}-{key}"):
+        st.metric(
+            label,
+            value,
+            delta,
+            delta_color=delta_color,
+            delta_arrow=delta_arrow,
+            delta_description=delta_description,
+            border=True,
+        )

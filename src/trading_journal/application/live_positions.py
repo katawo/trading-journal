@@ -11,7 +11,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from trading_journal.domain.errors import ImportValidationError
-from trading_journal.domain.models import MT5LivePositionExport, MT5LiveSnapshotExport
+from trading_journal.domain.models import MT5LivePositionExport, MT5LiveSnapshotExport, is_valid_protective_stop
 from trading_journal.infrastructure.sqlite_repository import LivePositionItem, SQLiteJournalRepository
 
 
@@ -210,9 +210,7 @@ class LivePositionService:
     def _has_protective_stop(position: LivePositionItem) -> bool:
         if position.stop_price is None:
             return False
-        stop = Decimal(position.stop_price)
-        current = Decimal(position.current_price)
-        return stop < current if position.direction == "long" else stop > current
+        return is_valid_protective_stop(position.direction, Decimal(position.stop_price), Decimal(position.current_price))
 
     def _record_incidents(self, account_id: int, report: LivePositionReport) -> None:
         # A stale or missing feed cannot safely resolve a previous live-risk event.

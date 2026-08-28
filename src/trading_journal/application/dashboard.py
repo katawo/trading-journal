@@ -154,6 +154,32 @@ class DashboardReport:
     concentration: list[ConcentrationBreakdown]
 
 
+class _DrawdownTracker:
+    """Shared peak/drawdown accumulation for the lifetime, per-trade, and daily series below."""
+
+    def __init__(self, starting_balance: Decimal | None) -> None:
+        self.cumulative_pnl = Decimal("0")
+        self.peak_pnl = Decimal("0")
+        self.balance = starting_balance
+        self.peak_balance = starting_balance
+        self.max_drawdown = Decimal("0")
+        self.max_drawdown_percent: Decimal | None = None
+
+    def advance(self, pnl: Decimal) -> tuple[Decimal, Decimal | None]:
+        """Apply one pnl increment; return this point's (drawdown, drawdown_percent)."""
+        self.cumulative_pnl += pnl
+        self.peak_pnl = max(self.peak_pnl, self.cumulative_pnl)
+        drawdown = self.peak_pnl - self.cumulative_pnl
+        self.max_drawdown = max(self.max_drawdown, drawdown)
+        drawdown_percent = None
+        if self.balance is not None and self.peak_balance is not None:
+            self.balance += pnl
+            self.peak_balance = max(self.peak_balance, self.balance)
+            drawdown_percent = drawdown * Decimal("100") / self.peak_balance
+            self.max_drawdown_percent = max(self.max_drawdown_percent or Decimal("0"), drawdown_percent)
+        return drawdown, drawdown_percent
+
+
 class DashboardService:
     def __init__(self, repository: SQLiteJournalRepository) -> None:
         self._repository = repository
@@ -235,7 +261,6 @@ class DashboardService:
         ]
 
         cumulative: list[CumulativePoint] = []
-        cumulative_pnl = Decimal("0")
         cumulative_r = Decimal("0")
         has_r = False
         account_baseline = self._repository.get_account_opening_balance(account_id)
@@ -247,40 +272,19 @@ class DashboardService:
         starting_balance = None if configured_starting_balance is None else configured_starting_balance + prior_pnl
 
         # Lifetime account drawdown is assessed at every logical-trade close.
-        raw_cumulative_pnl = Decimal("0")
-        raw_peak_pnl = Decimal("0")
-        account_balance = starting_balance
-        account_peak_balance = starting_balance
-        account_max_drawdown = Decimal("0")
-        account_max_drawdown_percent: Decimal | None = None
+        account_tracker = _DrawdownTracker(starting_balance)
         account_current_drawdown = Decimal("0")
         account_current_drawdown_percent: Decimal | None = None
         for trade in trades:
-            raw_cumulative_pnl += Decimal(trade.net_pnl)
-            raw_peak_pnl = max(raw_peak_pnl, raw_cumulative_pnl)
-            account_current_drawdown = raw_peak_pnl - raw_cumulative_pnl
-            account_max_drawdown = max(account_max_drawdown, account_current_drawdown)
-            if account_balance is not None and account_peak_balance is not None:
-                account_balance += Decimal(trade.net_pnl)
-                account_peak_balance = max(account_peak_balance, account_balance)
-                account_current_drawdown_percent = account_current_drawdown * Decimal("100") / account_peak_balance
-                account_max_drawdown_percent = max(account_max_drawdown_percent or Decimal("0"), account_current_drawdown_percent)
+            account_current_drawdown, account_current_drawdown_percent = account_tracker.advance(Decimal(trade.net_pnl))
+        account_max_drawdown = account_tracker.max_drawdown
+        account_max_drawdown_percent = account_tracker.max_drawdown_percent
 
         per_trade: list[TradePerformancePoint] = []
-        trade_cumulative_pnl = Decimal("0")
-        trade_peak_pnl = Decimal("0")
-        trade_balance = starting_balance
-        trade_peak_balance = starting_balance
+        trade_tracker = _DrawdownTracker(starting_balance)
         for sequence, trade in enumerate(trades, start=1):
             trade_pnl = Decimal(trade.net_pnl)
-            trade_cumulative_pnl += trade_pnl
-            trade_peak_pnl = max(trade_peak_pnl, trade_cumulative_pnl)
-            trade_drawdown = trade_peak_pnl - trade_cumulative_pnl
-            trade_drawdown_percent = None
-            if trade_balance is not None and trade_peak_balance is not None:
-                trade_balance += trade_pnl
-                trade_peak_balance = max(trade_peak_balance, trade_balance)
-                trade_drawdown_percent = trade_drawdown * Decimal("100") / trade_peak_balance
+            trade_drawdown, trade_drawdown_percent = trade_tracker.advance(trade_pnl)
             per_trade.append(
                 TradePerformancePoint(
                     sequence=sequence,
@@ -295,45 +299,33 @@ class DashboardService:
                     net_pnl=_decimal_string(trade_pnl),
                     result_r=trade.result_r,
                     strategy=trade.strategy,
-                    cumulative_pnl=_decimal_string(trade_cumulative_pnl),
-                    balance=None if trade_balance is None else _decimal_string(trade_balance),
+                    cumulative_pnl=_decimal_string(trade_tracker.cumulative_pnl),
+                    balance=None if trade_tracker.balance is None else _decimal_string(trade_tracker.balance),
                     drawdown=_decimal_string(trade_drawdown),
                     drawdown_percent=None if trade_drawdown_percent is None else _decimal_string(trade_drawdown_percent),
                 )
             )
 
-        peak_pnl = Decimal("0")
-        peak_balance = starting_balance
+        daily_tracker = _DrawdownTracker(starting_balance)
         daily_current_drawdown = Decimal("0")
         daily_current_drawdown_percent: Decimal | None = None
-        daily_max_drawdown = Decimal("0")
-        daily_max_drawdown_percent: Decimal | None = None
         for trade_date, pnl in sorted(daily.items()):
-            cumulative_pnl += pnl
             if trade_date in daily_r:
                 cumulative_r += daily_r[trade_date]
                 has_r = True
-            peak_pnl = max(peak_pnl, cumulative_pnl)
-            daily_current_drawdown = peak_pnl - cumulative_pnl
-            daily_max_drawdown = max(daily_max_drawdown, daily_current_drawdown)
-            balance = None if starting_balance is None else starting_balance + cumulative_pnl
-            if balance is not None and peak_balance is not None:
-                peak_balance = max(peak_balance, balance)
-                daily_current_drawdown_percent = daily_current_drawdown * Decimal("100") / peak_balance
-                daily_max_drawdown_percent = max(
-                    daily_max_drawdown_percent or Decimal("0"),
-                    daily_current_drawdown_percent,
-                )
+            daily_current_drawdown, daily_current_drawdown_percent = daily_tracker.advance(pnl)
             cumulative.append(
                 CumulativePoint(
                     trade_date,
-                    _decimal_string(cumulative_pnl),
+                    _decimal_string(daily_tracker.cumulative_pnl),
                     _decimal_string(cumulative_r) if has_r else None,
-                    None if balance is None else _decimal_string(balance),
+                    None if daily_tracker.balance is None else _decimal_string(daily_tracker.balance),
                     _decimal_string(daily_current_drawdown),
                     None if daily_current_drawdown_percent is None else _decimal_string(daily_current_drawdown_percent),
                 )
             )
+        daily_max_drawdown = daily_tracker.max_drawdown
+        daily_max_drawdown_percent = daily_tracker.max_drawdown_percent
 
         ending_balance = None if starting_balance is None else starting_balance + pnl_total
         balance_growth_percent = None if starting_balance is None else pnl_total * Decimal("100") / starting_balance

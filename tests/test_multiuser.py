@@ -76,6 +76,19 @@ def test_resolve_username_for_token_matches_a_stored_hash(tmp_path) -> None:
     tokens_path = ingestion_tokens_path(environment=environment)
     tokens_path.parent.mkdir(parents=True, exist_ok=True)
     tokens_path.write_text(f"tokens:\n  {hash_ingestion_token(token)}: alice\n", encoding="utf-8")
+    users_config_path(environment=environment).write_text("credentials:\n  usernames:\n    alice: {}\n", encoding="utf-8")
 
     assert resolve_username_for_token(token, environment=environment) == "alice"
     assert resolve_username_for_token("wrong-token", environment=environment) is None
+
+
+def test_resolve_username_for_token_rejects_a_user_removed_from_users_yaml(tmp_path) -> None:
+    pytest.importorskip("yaml", reason="pyyaml is only installed via the optional 'multiuser'/'ingestion' extras")
+    environment = {"TRADING_JOURNAL_MULTIUSER_DATA_DIR": str(tmp_path)}
+    token = "example-token-value"
+    tokens_path = ingestion_tokens_path(environment=environment)
+    tokens_path.parent.mkdir(parents=True, exist_ok=True)
+    tokens_path.write_text(f"tokens:\n  {hash_ingestion_token(token)}: alice\n", encoding="utf-8")
+    users_config_path(environment=environment).write_text("credentials:\n  usernames: {}\n", encoding="utf-8")
+
+    assert resolve_username_for_token(token, environment=environment) is None

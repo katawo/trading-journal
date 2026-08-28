@@ -15,8 +15,10 @@ from trading_journal.infrastructure.sqlite_repository import (
     PSYCHOLOGY_CRITERIA,
     RISK_CRITERIA,
     SYSTEM_CRITERIA,
+    AccountListItem,
     AccountRiskPolicyView,
     ClosedTradeReviewItem,
+    FrameworkRuleSettingsView,
     PillarRoadmapEvidenceView,
     PostTradeAssessmentView,
     FrameworkFocusView,
@@ -138,6 +140,7 @@ class AutoRiskEvidence:
     initial_rr: str | None
     observed_stop_widened: bool | None
     policy_version: int | None
+    policy_id: int | None
 
     @property
     def source_amount(self) -> str | None:
@@ -382,6 +385,8 @@ class FrameworkService:
         self._risk_event_cache: dict[int, dict[int, dict[str, object]]] = {}
         self._pillar_score_cache: dict[tuple[int, int, date | None], tuple[PillarScore, ...]] = {}
         self._reporting_time_basis_cache: str | None = None
+        self._framework_rule_settings_cache: FrameworkRuleSettingsView | None = None
+        self._mt5_accounts_cache: tuple[AccountListItem, ...] | None = None
 
     def trade_process_scores(self, account_id: int) -> tuple[TradeProcessScore, ...]:
         account_scores, _ = self._account_trade_scores(account_id)
@@ -685,6 +690,10 @@ class FrameworkService:
         if dimension not in {"setup", "session", "regime"}:
             raise ValueError("Context dimension must be setup, session, or regime")
         attribute = f"{dimension}_snapshot"
+        # Join the journal's standard 1R convention (list_trade_performance), the same
+        # source monitor_analysis uses, rather than recomputing R from policy_risk_amount
+        # (maximum risk) — that would silently halve R relative to every other R metric.
+        performance = {item.logical_trade_id: item for item in self._repository.list_trade_performance(account_id)}
         manual = [item for item in self.trade_process_scores(account_id) if item.review_kind == "manual_review"][-window:]
         buckets: dict[str, list[TradeProcessScore]] = {}
         for item in manual:
@@ -694,8 +703,11 @@ class FrameworkService:
         for label, items in sorted(buckets.items()):
             scores = [Decimal(item.overall_score) for item in items if item.overall_score is not None]
             wins = sum(Decimal(item.net_pnl) > 0 for item in items)
-            # Normalised R uses the attached account policy evidence where available.
-            r_values = [Decimal(item.net_pnl) / Decimal(item.policy_risk_amount) for item in items if item.policy_risk_amount and Decimal(item.policy_risk_amount) > 0]
+            r_values = [
+                Decimal(performance[item.trade_id].result_r)
+                for item in items
+                if item.trade_id in performance and performance[item.trade_id].result_r is not None
+            ]
             rows.append(ContextBreakdown(
                 label, len(items), None if not scores else _decimal_text(sum(scores, Decimal("0")) / len(scores)),
                 _decimal_text(Decimal(wins * 100) / len(items)),
@@ -1159,7 +1171,7 @@ class FrameworkService:
         trades = sorted(cached_trades, key=lambda item: (item.exit_time, item.id))
         self._account_trade_cache[account_id] = tuple(trades)
         assessments = {item.trade_id: item for item in self._repository.list_active_post_trade_assessments(account_id)}
-        policies = self._policies_for(trades, assessments, account_id)
+        policies = self._policies_for(account_id)
         active_policy = self._repository.get_active_risk_policy(account_id)
         funded = self._repository.get_account_funded_capital(account_id)
         account_strategy = self._repository.get_account_strategy(account_id)
@@ -1212,7 +1224,7 @@ class FrameworkService:
         raw = None if not available else sum((value * weight for value, weight in available), Decimal("0")) / weight_total
         hard_block = any(getattr(item, f"{pillar}_hard_block") for item in sample)
         critical = sum(1 for item in sample if self._is_critical_violation(pillar, item))
-        settings = self._repository.get_framework_rule_settings()
+        settings = self._cached_framework_rule_settings()
         reviewed_after_critical, last_critical_date = self._review_after_last_critical(pillar, sample)
         capped = critical >= settings.repeated_critical_threshold and not reviewed_after_critical
         score = None if raw is None else min(raw, Decimal("59")) if capped else raw
@@ -1739,13 +1751,11 @@ class FrameworkService:
         parsed = datetime.fromisoformat(value)
         return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
 
-    def _policies_for(self, trades, assessments, account_id: int):  # type: ignore[no-untyped-def]
-        ids = {item.auto_risk_policy_id for item in trades if item.auto_risk_policy_id is not None}
-        ids.update(item.risk_policy_id for item in assessments.values() if item.risk_policy_id is not None)
-        active = self._repository.get_active_risk_policy(account_id)
-        if active is not None:
-            ids.add(active.id)
-        return {policy_id: policy for policy_id in ids if (policy := self._repository.get_risk_policy(policy_id)) is not None}
+    def _policies_for(self, account_id: int):  # type: ignore[no-untyped-def]
+        # The account's full version history is a superset of any auto_risk_policy_id/
+        # risk_policy_id referenced by its trades/assessments (both are foreign keys
+        # scoped to this account), so one batch query replaces one get_risk_policy() per id.
+        return {policy.id: policy for policy in self._repository.list_account_risk_policies(account_id)}
 
     @staticmethod
     def _risk_policy_for_trade(assessment, trade, policies, active_policy):  # type: ignore[no-untyped-def]
@@ -1759,18 +1769,6 @@ class FrameworkService:
     @staticmethod
     def _maximum_risk_amount(funded: str | None, policy: AccountRiskPolicyView | None) -> Decimal:
         return Decimal("0") if funded is None or policy is None else Decimal(funded) * Decimal(policy.maximum_risk_per_trade_percent) / Decimal("100")
-
-    @staticmethod
-    def _risk_amount(assessment, trade, fallback: Decimal, policy: AccountRiskPolicyView | None) -> Decimal:  # type: ignore[no-untyped-def]
-        if assessment is not None and assessment.method == "manual" and assessment.declared_actual_risk_amount is not None:
-            return Decimal(assessment.declared_actual_risk_amount)
-        if (value := FrameworkService._specific_preset_sl_amount(trade)) is not None:
-            return Decimal(value)
-        if (value := FrameworkService._real_loss_sl_amount(trade)) is not None:
-            return Decimal(value)
-        if (value := FrameworkService._pretrade_account_balance_sl_amount(trade, policy)) is not None:
-            return Decimal(value)
-        return fallback
 
     @staticmethod
     def _specific_preset_sl_amount(trade) -> str | None:  # type: ignore[no-untyped-def]
@@ -1812,8 +1810,10 @@ class FrameworkService:
         all_rewards = True
         observed_stops: list[bool | None] = []
         earliest_member = min(members, key=lambda item: (item.entry_time, item.id))
-        earliest_policy = policies.get(earliest_member.auto_risk_policy_id) or active_policy
-        group_pretrade = self._pretrade_account_balance_sl_amount(earliest_member, earliest_policy)
+        # The opt-in is read from the currently active policy, not the trade's original
+        # auto_risk_policy_id — otherwise a trade imported while the opt-in was off would
+        # never pick up a later policy version that turns it on.
+        group_pretrade = self._pretrade_account_balance_sl_amount(earliest_member, active_policy)
         needs_group_pretrade = False
         for member in members:
             specific = self._specific_preset_sl_amount(member)
@@ -1856,7 +1856,7 @@ class FrameworkService:
         initial_rr = _decimal_text(reward_total / specific_total) if all_specific and all_rewards and specific_total > 0 else None
         policy = policies.get(trade.auto_risk_policy_id) or active_policy
         if not member_sources:
-            return AutoRiskEvidence("unavailable", "No usable automatic risk source is available.", specific, real_loss, pretrade, basis, confidence, initial_reward, initial_rr, observed_stop, None if policy is None else policy.version)
+            return AutoRiskEvidence("unavailable", "No usable automatic risk source is available.", specific, real_loss, pretrade, basis, confidence, initial_reward, initial_rr, observed_stop, None if policy is None else policy.version, None if policy is None else policy.id)
         source_description = {
             "specific_preset_sl": "Specific preset SL",
             "real_loss_sl": "Real-loss estimate",
@@ -1882,12 +1882,13 @@ class FrameworkService:
                 initial_rr,
                 observed_stop,
                 None if policy is None else policy.version,
+                None if policy is None else policy.id,
             )
         if policy is None or funded is None:
-            return AutoRiskEvidence("unavailable", f"{source_description} totals {amount_text}. Set funded capital and save a Risk policy to compare it.{pretrade_balance_note}", specific, real_loss, pretrade, basis, confidence, initial_reward, initial_rr, observed_stop, None if policy is None else policy.version)
+            return AutoRiskEvidence("unavailable", f"{source_description} totals {amount_text}. Set funded capital and save a Risk policy to compare it.{pretrade_balance_note}", specific, real_loss, pretrade, basis, confidence, initial_reward, initial_rr, observed_stop, None if policy is None else policy.version, None if policy is None else policy.id)
         limit = self._maximum_risk_amount(funded, policy)
         state = "within_policy" if amount <= limit else "over_policy"
-        return AutoRiskEvidence(state, f"{source_description} total {amount_text} is {'within' if state == 'within_policy' else 'over'} policy v{policy.version} limit {_decimal_text(limit)} across {trade.position_count} position(s).{pretrade_balance_note}", specific, real_loss, pretrade, basis, confidence, initial_reward, initial_rr, observed_stop, policy.version)
+        return AutoRiskEvidence(state, f"{source_description} total {amount_text} is {'within' if state == 'within_policy' else 'over'} policy v{policy.version} limit {_decimal_text(limit)} across {trade.position_count} position(s).{pretrade_balance_note}", specific, real_loss, pretrade, basis, confidence, initial_reward, initial_rr, observed_stop, policy.version, policy.id)
 
     @staticmethod
     def _observed_stop_widened(trade) -> bool | None:  # type: ignore[no-untyped-def]
@@ -1900,6 +1901,16 @@ class FrameworkService:
             self._reporting_time_basis_cache = self._repository.get_journal_settings().reporting_time_basis
         return self._reporting_time_basis_cache
 
+    def _cached_framework_rule_settings(self) -> FrameworkRuleSettingsView:
+        if self._framework_rule_settings_cache is None:
+            self._framework_rule_settings_cache = self._repository.get_framework_rule_settings()
+        return self._framework_rule_settings_cache
+
+    def _cached_mt5_accounts(self) -> tuple[AccountListItem, ...]:
+        if self._mt5_accounts_cache is None:
+            self._mt5_accounts_cache = tuple(self._repository.list_mt5_accounts())
+        return self._mt5_accounts_cache
+
     def _trade_date(self, value: str, server_utc_offset_minutes: int) -> date:
         return reporting_date(
             value,
@@ -1910,7 +1921,7 @@ class FrameworkService:
 
     def _current_report_date(self, value: datetime, account_id: int) -> date:
         timestamp = value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
-        account = next((item for item in self._repository.list_mt5_accounts() if item.id == account_id), None)
+        account = next((item for item in self._cached_mt5_accounts() if item.id == account_id), None)
         offset = 0 if account is None or account.latest_server_utc_offset_minutes is None else account.latest_server_utc_offset_minutes
         return reporting_datetime(
             timestamp.isoformat(),

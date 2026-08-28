@@ -82,6 +82,17 @@ def ingest(request: IngestRequest, authorization: str | None = Header(default=No
             error=error,
         )
         raise HTTPException(status_code=422, detail=str(error)) from error
+    except ValueError as error:
+        # E.g. the account was deactivated between token resolution and the write.
+        first_position = request.positions[0] if request.positions else {}
+        _log_validation_rejection(
+            endpoint="/ingest",
+            username=username,
+            payload=first_position,
+            item_count=len(request.positions),
+            error=error,
+        )
+        raise HTTPException(status_code=422, detail=str(error)) from error
     except (IntegrityError, OperationalError) as error:
         # Two overlapping pushes for the same account can both pass the upsert's
         # lookup before either commits; unlike the desktop path's single-writer

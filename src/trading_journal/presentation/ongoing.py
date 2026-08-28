@@ -9,11 +9,18 @@ import streamlit as st
 
 from trading_journal.application.live_positions import LivePositionService
 from trading_journal.infrastructure.sqlite_repository import AccountListItem, SQLiteJournalRepository
-from trading_journal.presentation.formatting import format_currency, format_exposure_r
+from trading_journal.presentation.formatting import AccentMetricTone, format_currency, format_exposure_r, render_accent_metric
 from trading_journal.presentation.i18n import tr
 
 
 ONGOING_REFRESH_INTERVAL_SECONDS = 5
+
+_METRIC_COLOR_TO_TONE: dict[str, AccentMetricTone] = {
+    "gray": "neutral",
+    "red": "negative",
+    "green": "positive",
+    "orange": "warning",
+}
 
 
 @st.fragment(run_every=ONGOING_REFRESH_INTERVAL_SECONDS)
@@ -32,32 +39,40 @@ def render_ongoing_positions_page(repo: SQLiteJournalRepository) -> None:
     unprotected_value, unprotected_delta, unprotected_color = _unprotected_metric(report)
     pnl_value, pnl_delta, pnl_color = _pnl_metric(report, account.account_currency)
     with st.container(horizontal=True, gap="small"):
-        st.metric(
+        render_accent_metric(
             tr("Unprotected"),
             unprotected_value,
-            unprotected_delta,
+            key="ongoing-unprotected",
+            tone=_METRIC_COLOR_TO_TONE[unprotected_color],
+            delta=unprotected_delta,
             delta_color=unprotected_color,
             delta_arrow="off",
-            border=True,
         )
-        st.metric(
+        render_accent_metric(
             tr("Known open risk"),
             risk_value,
-            risk_delta,
+            key="ongoing-known-open-risk",
+            tone=_METRIC_COLOR_TO_TONE[risk_color],
+            delta=risk_delta,
             delta_color=risk_color,
             delta_arrow="off",
             delta_description=risk_description,
-            border=True,
         )
-        st.metric(tr("Open positions"), None if report.snapshot_time is None else str(len(report.positions)), border=True)
-        st.metric(
+        render_accent_metric(
+            tr("Open positions"),
+            None if report.snapshot_time is None else str(len(report.positions)),
+            key="ongoing-open-positions",
+            tone="neutral",
+        )
+        render_accent_metric(
             tr("Unrealized P&L"),
             pnl_value,
-            pnl_delta,
+            key="ongoing-unrealized-pnl",
+            tone=_METRIC_COLOR_TO_TONE[pnl_color],
+            delta=pnl_delta,
             delta_color=pnl_color,
             delta_arrow="off",
             delta_description="floating" if report.snapshot_time is not None else None,
-            border=True,
         )
     _render_positions(report, account)
     _render_incidents(repo, account)
@@ -76,49 +91,49 @@ def _render_status(status: str, detail: str) -> None:
 
 def _unprotected_metric(report) -> tuple[str | None, str, str]:
     if report.snapshot_time is None:
-        return None, "Unavailable", "gray"
+        return None, tr("Unavailable"), "gray"
     if report.unprotected_count:
-        detail = "Position needs a stop" if report.unprotected_count == 1 else "Positions need stops"
+        detail = tr("Position needs a stop") if report.unprotected_count == 1 else tr("Positions need stops")
         return str(report.unprotected_count), detail, "red"
     if report.positions:
-        return "0", "All protected", "green"
-    return "0", "No open positions", "gray"
+        return "0", tr("All protected"), "green"
+    return "0", tr("No open positions"), "gray"
 
 
 def _risk_metric(report) -> tuple[str | None, str, str, str | None]:
-    limit_description = None if report.limit_r is None else f"{format_exposure_r(report.limit_r)} account limit"
+    limit_description = None if report.limit_r is None else tr("{limit} account limit", limit=format_exposure_r(report.limit_r))
     value = None if report.total_risk_r is None else format_exposure_r(report.total_risk_r)
     if report.snapshot_time is None:
-        return value, "Unavailable", "gray", limit_description
+        return value, tr("Unavailable"), "gray", limit_description
     if report.status == "stop":
-        label = "Limit reached" if report.limit_r == report.total_risk_r else "Over limit"
+        label = tr("Limit reached") if report.limit_r == report.total_risk_r else tr("Over limit")
         return value, label, "red", limit_description
     if report.unprotected_count:
-        label = "position" if report.unprotected_count == 1 else "positions"
-        return value, f"{report.unprotected_count} {label} unavailable", "red", limit_description
+        label = tr("position") if report.unprotected_count == 1 else tr("positions")
+        return value, tr("{count} {label} unavailable", count=report.unprotected_count, label=label), "red", limit_description
     if report.status == "stale":
-        return value, "Snapshot stale", "orange", limit_description
+        return value, tr("Snapshot stale"), "orange", limit_description
     if report.risk_unavailable_count:
-        label = "position" if report.risk_unavailable_count == 1 else "positions"
-        return value, f"{report.risk_unavailable_count} {label} risk unavailable", "orange", limit_description
+        label = tr("position") if report.risk_unavailable_count == 1 else tr("positions")
+        return value, tr("{count} {label} risk unavailable", count=report.risk_unavailable_count, label=label), "orange", limit_description
     if not report.positions:
-        return value, "No open risk", "gray", limit_description
+        return value, tr("No open risk"), "gray", limit_description
     if report.status == "unconfigured" or value is None:
-        return value, "Risk unavailable", "orange", limit_description
+        return value, tr("Risk unavailable"), "orange", limit_description
     if report.status == "caution":
-        return value, "Near limit", "orange", limit_description
-    return value, "Within limit", "green", limit_description
+        return value, tr("Near limit"), "orange", limit_description
+    return value, tr("Within limit"), "green", limit_description
 
 
 def _pnl_metric(report, currency: str) -> tuple[str | None, str, str]:
     if report.snapshot_time is None:
-        return None, "Unavailable", "gray"
+        return None, tr("Unavailable"), "gray"
     value = format_currency(report.net_unrealized_pnl, currency)
     if report.net_unrealized_pnl > 0:
-        return value, "Profit", "green"
+        return value, tr("Profit"), "green"
     if report.net_unrealized_pnl < 0:
-        return value, "Loss", "red"
-    return value, "Flat", "gray"
+        return value, tr("Loss"), "red"
+    return value, tr("Flat"), "gray"
 
 
 def _render_positions(report, account: AccountListItem) -> None:

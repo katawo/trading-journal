@@ -11,7 +11,7 @@ pytest.importorskip("fastapi", reason="fastapi is only installed via the optiona
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from trading_journal.application.multiuser import generate_ingestion_token, hash_ingestion_token, ingestion_tokens_path, user_database_path
+from trading_journal.application.multiuser import generate_ingestion_token, hash_ingestion_token, ingestion_tokens_path, user_database_path, users_config_path
 from trading_journal.infrastructure.sqlite_repository import SQLiteJournalRepository
 from trading_journal.ingestion_api import IngestLivePositionsRequest, IngestRequest, app, ingest, ingest_live_positions
 
@@ -23,6 +23,7 @@ def _seed_multiuser_environment(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
     tokens_path = ingestion_tokens_path()
     tokens_path.parent.mkdir(parents=True, exist_ok=True)
     tokens_path.write_text(f"tokens:\n  {hash_ingestion_token(TOKEN)}: alice\n", encoding="utf-8")
+    users_config_path().write_text("credentials:\n  usernames:\n    alice: {}\n", encoding="utf-8")
 
     database_path = user_database_path("alice")
     database_path.parent.mkdir(parents=True, exist_ok=True)

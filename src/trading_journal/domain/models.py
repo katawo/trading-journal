@@ -6,6 +6,11 @@ from decimal import Decimal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
+def is_valid_protective_stop(direction: str, stop_price: Decimal, current_price: Decimal) -> bool:
+    """A stop only protects a position if it sits on the losing side of the current price."""
+    return stop_price < current_price if direction == "long" else stop_price > current_price
+
+
 class MT5PositionExport(BaseModel):
     """A completed position emitted by the local MQL5 exporter."""
 
@@ -120,8 +125,7 @@ class MT5LivePositionExport(BaseModel):
             return self
         if self.stop_price is None:
             raise ValueError("risk_to_stop_amount requires a stop_price")
-        valid_stop = self.stop_price < self.current_price if self.direction == "long" else self.stop_price > self.current_price
-        if not valid_stop:
+        if not is_valid_protective_stop(self.direction, self.stop_price, self.current_price):
             raise ValueError("risk_to_stop_amount requires a protective stop")
         return self
 

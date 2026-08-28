@@ -62,7 +62,7 @@ def hash_ingestion_token(token: str) -> str:
 
 
 def resolve_username_for_token(token: str, environment: dict[str, str] | None = None) -> str | None:
-    """Which user a bearer token from the MT5 EA belongs to, or None if unknown."""
+    """Which user a bearer token from the MT5 EA belongs to, or None if unknown or removed."""
 
     path = ingestion_tokens_path(environment)
     if not path.is_file():
@@ -71,4 +71,13 @@ def resolve_username_for_token(token: str, environment: dict[str, str] | None = 
 
     with path.open("r", encoding="utf-8") as handle:
         config = yaml.safe_load(handle) or {}
-    return config.get("tokens", {}).get(hash_ingestion_token(token))
+    username = config.get("tokens", {}).get(hash_ingestion_token(token))
+    if not isinstance(username, str) or not is_valid_username(username):
+        return None
+    users_path = users_config_path(environment)
+    if not users_path.is_file():
+        return None
+    with users_path.open("r", encoding="utf-8") as handle:
+        users_config = yaml.safe_load(handle) or {}
+    known_usernames = users_config.get("credentials", {}).get("usernames", {})
+    return username if username in known_usernames else None

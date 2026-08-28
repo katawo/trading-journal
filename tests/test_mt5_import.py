@@ -302,6 +302,36 @@ def test_account_identity_cannot_change_after_mt5_trades_are_imported(repository
         )
 
 
+def test_deleting_an_account_does_not_leak_roadmap_or_period_review_evidence_to_a_reused_id(repository: SQLiteJournalRepository) -> None:
+    repository.register_mt5_account(
+        display_name="Secondary",
+        login="654321",
+        broker_server="DemoBroker-Live",
+        account_currency="USD",
+        export_file_path="",
+    )
+    secondary = next(item for item in repository.list_mt5_accounts() if item.display_name == "Secondary")
+    repository.save_pillar_roadmap_evidence(
+        account_id=secondary.id, pillar="psychology", level=1, item_key="triggers", completed=True, evidence_note="Deleted account's own evidence"
+    )
+    repository.save_framework_period_review(
+        account_id=secondary.id, cadence="weekly", period_start="2026-01-05", period_end="2026-01-11",
+        psychology_score=None, risk_score=None, system_score=None, readiness_score=None,
+        alert_codes=(), recurring_issues=(), review_note="note", priority_action="Stay disciplined.",
+    )
+
+    repository.delete_mt5_account(secondary.id)
+
+    # SQLite reuses the freed integer id for the next created account.
+    repository.register_mt5_account(
+        display_name="Reused id", login="999999", broker_server="DemoBroker-Live", account_currency="USD", export_file_path="",
+    )
+    reused = next(item for item in repository.list_mt5_accounts() if item.display_name == "Reused id")
+    assert reused.id == secondary.id
+    assert repository.list_pillar_roadmap_evidence(reused.id) == []
+    assert repository.list_framework_period_reviews(reused.id) == []
+
+
 def test_imported_mt5_account_cannot_be_deleted(repository: SQLiteJournalRepository, tmp_path: Path) -> None:
     export_path = tmp_path / "positions.csv"
     write_export(export_path)

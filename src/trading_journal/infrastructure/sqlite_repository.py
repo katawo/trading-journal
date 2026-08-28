@@ -337,12 +337,17 @@ class PostTradeAssessmentRevision(Base):
     risk_policy_state: Mapped[str | None] = mapped_column(String(32), nullable=True)
     strategy_profile_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     strategy_snapshot: Mapped[str | None] = mapped_column(Text, nullable=True)
+    setup_snapshot: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    session_snapshot: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    regime_snapshot: Mapped[str | None] = mapped_column(String(80), nullable=True)
     criterion_grades: Mapped[str] = mapped_column(Text, nullable=False)
     violation_codes: Mapped[str] = mapped_column(Text, nullable=False)
     hard_rule_codes: Mapped[str] = mapped_column(Text, nullable=False)
     declared_actual_risk_amount: Mapped[str | None] = mapped_column(String, nullable=True)
     post_review_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     corrective_action: Mapped[str | None] = mapped_column(Text, nullable=True)
+    assessed_position_ids: Mapped[str | None] = mapped_column(Text, nullable=True)
+    assessed_trade_label: Mapped[str | None] = mapped_column(String(160), nullable=True)
     archived_at: Mapped[str] = mapped_column(String(64), nullable=False)
 
 
@@ -702,12 +707,17 @@ class PostTradeAssessmentRevisionView:
     risk_policy_state: str | None
     strategy_profile_id: int | None
     strategy_snapshot: "StrategyEvidenceSnapshot | None"
+    setup_snapshot: str | None
+    session_snapshot: str | None
+    regime_snapshot: str | None
     criterion_grades: dict[str, str]
     violation_codes: tuple[str, ...]
     hard_rule_codes: tuple[str, ...]
     declared_actual_risk_amount: str | None
     post_review_note: str | None
     corrective_action: str | None
+    assessed_position_ids: tuple[str, ...]
+    assessed_trade_label: str | None
     archived_at: str
 
 
@@ -842,6 +852,16 @@ class SQLiteJournalRepository:
             ):
                 if column_name not in assessment_columns:
                     connection.exec_driver_sql(f"ALTER TABLE post_trade_assessments ADD COLUMN {column_name} {column_type}")
+            revision_columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(post_trade_assessment_revisions)")}
+            for column_name, column_type in (
+                ("setup_snapshot", "VARCHAR(100)"),
+                ("session_snapshot", "VARCHAR(80)"),
+                ("regime_snapshot", "VARCHAR(80)"),
+                ("assessed_position_ids", "TEXT"),
+                ("assessed_trade_label", "VARCHAR(160)"),
+            ):
+                if column_name not in revision_columns:
+                    connection.exec_driver_sql(f"ALTER TABLE post_trade_assessment_revisions ADD COLUMN {column_name} {column_type}")
             focus_columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(framework_focuses)")}
             for column_name, column_type in (("source", "VARCHAR(16) NOT NULL DEFAULT 'manual'"), ("coach_reason", "TEXT")):
                 if column_name not in focus_columns:
@@ -943,6 +963,14 @@ class SQLiteJournalRepository:
                 "superseded_reason",
             },
             "post_trade_assessment_revisions": {"method", "criterion_grades", "violation_codes", "hard_rule_codes"},
+            "live_positions": {"mt5_account_id", "mt5_position_id"},
+            "live_position_snapshots": {"mt5_account_id", "snapshot_time"},
+            "live_position_incidents": {"mt5_account_id"},
+            "strategy_setups": {"strategy_profile_id", "name"},
+            "review_context_tags": {"kind", "name"},
+            "framework_focuses": {"account_id", "status"},
+            "pillar_roadmap_evidence": {"scope_key", "pillar", "level", "item_key"},
+            "framework_period_reviews": {"mt5_account_id", "cadence", "period_start", "period_end"},
         }
         with self._engine.connect() as connection:
             tables = {row[0] for row in connection.exec_driver_sql("SELECT name FROM sqlite_master WHERE type = 'table'")}
@@ -1029,6 +1057,13 @@ class SQLiteJournalRepository:
         opening_balance: str | None = None,
         strategy_profile_id: int | None = None,
     ) -> None:
+        """Test/bootstrap-only account upsert — the app itself always uses `create_configured_mt5_account`.
+
+        Deliberately looser than the production path: it silently updates an
+        existing login instead of rejecting the duplicate, and it does not
+        check `active`/disabled-account state. Do not call this from `app.py`
+        or `presentation/` — those invariants belong to the production flow.
+        """
         baseline = None if opening_balance is None or not opening_balance.strip() else _decimal_string(
             self._required_decimal(opening_balance, "Funded capital", minimum=Decimal("0.01"))
         )
@@ -1271,6 +1306,10 @@ class SQLiteJournalRepository:
             session.execute(delete(LivePositionSnapshot).where(LivePositionSnapshot.mt5_account_id == account_id))
             session.execute(delete(AccountRiskPolicy).where(AccountRiskPolicy.mt5_account_id == account_id))
             session.execute(delete(FrameworkFocus).where(FrameworkFocus.account_id == account_id))
+            session.execute(delete(FrameworkPeriodReview).where(FrameworkPeriodReview.mt5_account_id == account_id))
+            # SQLite reuses this integer id for the next account created, so a deleted
+            # account's roadmap progress must not be left behind to be inherited by it.
+            session.execute(delete(PillarRoadmapEvidence).where(PillarRoadmapEvidence.scope_key == self._roadmap_scope_key(account_id)))
             settings = session.get(JournalSettings, 1)
             if settings is not None and settings.active_mt5_account_id == account_id:
                 settings.active_mt5_account_id = None
@@ -1656,20 +1695,6 @@ class SQLiteJournalRepository:
                 select(Trade).where(Trade.mt5_account_id == account_id).order_by(Trade.exit_time, Trade.id)
             ).all()
             return [self._to_imported_position_review_item(row) for row in rows]
-
-    def list_groupable_logical_trades(self, account_id: int) -> list[ClosedTradeReviewItem]:
-        """Backward-compatible list of singleton logical trades.
-
-        The regrouping UI works from raw positions and may now regroup reviewed
-        trades.  This remains useful to callers that only need the default
-        one-position units.
-        """
-        with self._sessions() as session:
-            return [
-                item
-                for item in self._logical_trade_review_items(session, account_id)
-                if not item.is_group
-            ]
 
     def list_imported_positions_for_grouping(self, account_id: int) -> list[ImportedPositionReviewItem]:
         """Return every raw MT5 position that may be moved between logical trades."""
@@ -2236,12 +2261,17 @@ class SQLiteJournalRepository:
                         risk_policy_state=row.risk_policy_state,
                         strategy_profile_id=row.strategy_profile_id,
                         strategy_snapshot=row.strategy_snapshot,
+                        setup_snapshot=row.setup_snapshot,
+                        session_snapshot=row.session_snapshot,
+                        regime_snapshot=row.regime_snapshot,
                         criterion_grades=row.criterion_grades,
                         violation_codes=row.violation_codes,
                         hard_rule_codes=row.hard_rule_codes,
                         declared_actual_risk_amount=row.declared_actual_risk_amount,
                         post_review_note=row.post_review_note,
                         corrective_action=row.corrective_action,
+                        assessed_position_ids=row.assessed_position_ids,
+                        assessed_trade_label=row.assessed_trade_label,
                         archived_at=now,
                     )
                 )
@@ -3049,12 +3079,17 @@ class SQLiteJournalRepository:
             risk_policy_state=row.risk_policy_state,
             strategy_profile_id=row.strategy_profile_id,
             strategy_snapshot=None if row.strategy_snapshot is None else SQLiteJournalRepository._strategy_snapshot_from_json(row.strategy_snapshot),
+            setup_snapshot=row.setup_snapshot,
+            session_snapshot=row.session_snapshot,
+            regime_snapshot=row.regime_snapshot,
             criterion_grades=dict(json.loads(row.criterion_grades)),
             violation_codes=tuple(json.loads(row.violation_codes)),
             hard_rule_codes=tuple(json.loads(row.hard_rule_codes)),
             declared_actual_risk_amount=row.declared_actual_risk_amount,
             post_review_note=row.post_review_note,
             corrective_action=row.corrective_action,
+            assessed_position_ids=() if row.assessed_position_ids is None else tuple(json.loads(row.assessed_position_ids)),
+            assessed_trade_label=row.assessed_trade_label,
             archived_at=row.archived_at,
         )
 
@@ -3289,8 +3324,21 @@ class SQLiteJournalRepository:
                 .where(AccountRiskPolicy.mt5_account_id == account_id, AccountRiskPolicy.active.is_(True))
                 .order_by(AccountRiskPolicy.version.desc())
             )
+            existing_trades_by_position_id = (
+                {
+                    trade.mt5_position_id: trade
+                    for trade in session.scalars(
+                        select(Trade).where(
+                            Trade.mt5_account_id == account_id,
+                            Trade.mt5_position_id.in_([position.position_id for position in positions]),
+                        )
+                    ).all()
+                }
+                if positions
+                else {}
+            )
             for position in positions:
-                trade = session.scalar(select(Trade).where(Trade.mt5_account_id == account_id, Trade.mt5_position_id == position.position_id))
+                trade = existing_trades_by_position_id.get(position.position_id)
                 values = {
                     "source_updated_at": now,
                     "symbol": position.symbol,
@@ -3330,17 +3378,19 @@ class SQLiteJournalRepository:
                     )
                     session.add(logical_trade)
                     session.flush()
-                    session.add(
-                        Trade(
-                            source="mt5",
-                            mt5_account_id=account_id,
-                            mt5_position_id=position.position_id,
-                            logical_trade_id=logical_trade.id,
-                            auto_risk_policy_id=active_policy.id if active_policy else None,
-                            **imported_times,
-                            **values,
-                        )
+                    new_trade = Trade(
+                        source="mt5",
+                        mt5_account_id=account_id,
+                        mt5_position_id=position.position_id,
+                        logical_trade_id=logical_trade.id,
+                        auto_risk_policy_id=active_policy.id if active_policy else None,
+                        **imported_times,
+                        **values,
                     )
+                    session.add(new_trade)
+                    # Guards a duplicate position_id within the same batch: the
+                    # pre-fetched map above can't see rows created mid-loop.
+                    existing_trades_by_position_id[position.position_id] = new_trade
                     created += 1
                 else:
                     for field, value in values.items():

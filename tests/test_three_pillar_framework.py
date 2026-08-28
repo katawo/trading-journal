@@ -2764,6 +2764,60 @@ def test_corrections_archive_complete_prior_assessment(tmp_path) -> None:
     assert history[0].criterion_grades["impulse_control"] == "pass"
 
 
+def test_corrections_archive_the_prior_context_snapshot(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    setup = repository.save_strategy_setup(strategy_profile_id=strategy.id, name="London pullback")
+    session = repository.save_review_context_tag(kind="session", name="London")
+    regime = repository.save_review_context_tag(kind="regime", name="Trending")
+    trade_id = _import_position(repository, account_id)
+    repository.save_post_trade_assessment(
+        account_id=account_id, trade_id=trade_id, risk_policy_id=policy.id, strategy_profile_id=strategy.id,
+        criterion_grades=ALL_PASS, violation_codes=(), hard_rule_codes=(), declared_actual_risk_amount="10",
+        post_review_note="Reviewed.", corrective_action=None,
+        review_context=ReviewContextSelection(setup.id, session.id, regime.id),
+    )
+
+    # The correction switches to a different setup; the original context must
+    # still be recoverable from the archived revision, not overwritten.
+    other_setup = repository.save_strategy_setup(strategy_profile_id=strategy.id, name="NY reversal")
+    repository.save_post_trade_assessment(
+        account_id=account_id, trade_id=trade_id, risk_policy_id=policy.id, strategy_profile_id=strategy.id,
+        criterion_grades={**ALL_PASS, "impulse_control": "partial"}, violation_codes=("fomo_or_chase",), hard_rule_codes=(),
+        declared_actual_risk_amount="10", post_review_note="Corrected.", corrective_action="Wait for the setup.",
+        review_context=ReviewContextSelection(other_setup.id, session.id, regime.id),
+    )
+
+    history = repository.list_post_trade_assessment_revisions(trade_id)
+    assert (history[0].setup_snapshot, history[0].session_snapshot, history[0].regime_snapshot) == ("London pullback", "London", "Trending")
+    assert history[0].assessed_trade_label
+    assert history[0].assessed_position_ids
+
+
+def test_auto_migration_adds_missing_revision_context_columns_without_a_reset(tmp_path) -> None:
+    """A database created before the revision context-snapshot columns existed must not require a reset."""
+    repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    trade_id = _import_position(repository, account_id)
+    _review(repository, account_id, trade_id, policy, strategy)
+    _review(repository, account_id, trade_id, policy, strategy, grades={**ALL_PASS, "impulse_control": "partial"}, tags=("fomo_or_chase",), action="Wait for the setup.")
+    database = repository.database_path
+    repository.close()
+
+    with sqlite3.connect(database) as connection:
+        for column in ("setup_snapshot", "session_snapshot", "regime_snapshot", "assessed_position_ids", "assessed_trade_label"):
+            connection.execute(f"ALTER TABLE post_trade_assessment_revisions DROP COLUMN {column}")
+
+    reopened = SQLiteJournalRepository(database)
+    reopened.initialize()  # must not raise JournalDatabaseResetRequiredError
+
+    columns = {row[1] for row in sqlite3.connect(database).execute("PRAGMA table_info(post_trade_assessment_revisions)")}
+    assert {"setup_snapshot", "session_snapshot", "regime_snapshot", "assessed_position_ids", "assessed_trade_label"} <= columns
+    # The pre-existing revision row survives with NULLs for the newly-added columns.
+    history = reopened.list_post_trade_assessment_revisions(trade_id)
+    assert history[0].setup_snapshot is None
+
+
 def test_greenfield_database_rejects_legacy_framework_schema(tmp_path) -> None:
     database = tmp_path / "legacy.db"
     with sqlite3.connect(database) as connection:

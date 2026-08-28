@@ -7,7 +7,6 @@ from uuid import uuid4
 from decimal import Decimal
 from datetime import date
 from pathlib import Path
-from typing import Literal
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -43,6 +42,7 @@ from trading_journal.presentation.i18n import (
     tr,
 )
 from trading_journal.presentation.formatting import (
+    AccentMetricTone,
     currency_decimal_places,
     currency_prefix,
     format_count,
@@ -50,6 +50,7 @@ from trading_journal.presentation.formatting import (
     format_number,
     format_percent,
     format_r,
+    render_accent_metric,
 )
 from trading_journal.presentation.trade_tags import direction_tag, outcome_tag
 
@@ -62,7 +63,7 @@ _CHART_NEGATIVE = "#c73545"
 _CHART_NEUTRAL = "#7a828e"
 _STATISTICS_BREAKDOWN_CHART_LIMIT = 12
 
-_DashboardMetricTone = Literal["positive", "negative", "warning", "info", "neutral"]
+_DashboardMetricTone = AccentMetricTone
 
 
 def application_version() -> str:
@@ -144,16 +145,7 @@ def _render_dashboard_metric(
     delta_color: str = "normal",
     delta_arrow: str = "auto",
 ) -> None:
-    """Render a native metric inside a stable, semantically styled wrapper."""
-    with st.container(key=f"dashboard-metric-{tone}-{key}"):
-        st.metric(
-            label,
-            value,
-            delta,
-            delta_color=delta_color,
-            delta_arrow=delta_arrow,
-            border=True,
-        )
+    render_accent_metric(label, value, key=key, tone=tone, delta=delta, delta_color=delta_color, delta_arrow=delta_arrow)
 
 
 def style_chart(figure: go.Figure, *, yaxis_title: str, currency: str | None = None) -> go.Figure:
@@ -163,13 +155,17 @@ def style_chart(figure: go.Figure, *, yaxis_title: str, currency: str | None = N
     Avoid baking a server-side palette into Plotly so that switch remains
     coherent with the rest of the application.
     """
-    figure.update_layout(
+    layout_update = dict(
         height=330,
         margin=dict(l=12, r=12, t=42, b=12),
-        title=dict(x=0.02, y=0.96),
         hovermode="x unified",
         showlegend=False,
     )
+    if figure.layout.title.text:
+        # Position an already-set title; don't create an empty one (Plotly.js
+        # renders a title object with no `text` as the literal string "undefined").
+        layout_update["title"] = dict(x=0.02, y=0.96)
+    figure.update_layout(**layout_update)
     figure.update_xaxes(showgrid=False, zeroline=False)
     yaxis = {"title": yaxis_title, "zeroline": True}
     if currency is not None:
@@ -944,7 +940,6 @@ def _clear_account_onboarding() -> None:
         st.session_state.pop(key, None)
 
 
-@st.dialog("Create import-ready account", width="large", on_dismiss=_clear_account_onboarding)
 def _render_account_onboarding_dialog(repo: SQLiteJournalRepository, strategy_profiles, common_files_location) -> None:  # type: ignore[no-untyped-def]
     """Collect the minimum system, account, capital, and risk evidence before import."""
     prefix = "account-onboarding-"
@@ -1002,7 +997,7 @@ def _render_account_onboarding_dialog(repo: SQLiteJournalRepository, strategy_pr
             st.markdown("###### Trading system")
             mode_options = ["Create system"] if not strategy_profiles else ["Use saved system", "Create system"]
             mode_default = value("mode") if value("mode") in mode_options else mode_options[0]
-            st.segmented_control("System source", mode_options, default=mode_default, key=f"{prefix}mode", required=True, on_change=sync, args=("mode",))
+            st.segmented_control(tr("System source"), mode_options, format_func=tr, default=mode_default, key=f"{prefix}mode", required=True, on_change=sync, args=("mode",))
             if value("mode") == "Use saved system":
                 strategy_ids = list(profile_by_id)
                 strategy_index = strategy_ids.index(value("strategy-id")) if value("strategy-id") in strategy_ids else 0
@@ -1215,7 +1210,9 @@ def render_mt5_account_settings(repo: SQLiteJournalRepository) -> AccountListIte
                         )
 
     if st.session_state.get("account-onboarding-open"):
-        _render_account_onboarding_dialog(repo, strategy_profiles, common_files_location)
+        st.dialog(tr("Create import-ready account"), width="large", on_dismiss=_clear_account_onboarding)(_render_account_onboarding_dialog)(
+            repo, strategy_profiles, common_files_location
+        )
 
     selected = accounts_by_id.get(selected_id)
     if selected is None:
@@ -1822,8 +1819,9 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
     _render_dashboard_statistics(report, currency)
 
     chart_view = st.segmented_control(
-        "Chart view",
+        tr("Chart view"),
         ["Daily", "Per trade"],
+        format_func=tr,
         default="Daily",
         required=True,
         key="dashboard_chart_view",

@@ -633,7 +633,6 @@ def _change_logical_trade_page(account_id: int, change: int, page_count: int) ->
     st.session_state[_logical_trade_page_key(account_id)] = max(1, min(page_count, current + change))
 
 
-@st.dialog("Quick review selected trades", width="large", on_dismiss=_dismiss_bulk_quick_review)
 def _render_bulk_quick_review_dialog(repo: SQLiteJournalRepository, account: AccountListItem, trades, scores: dict[int, TradeProcessScore]) -> None:  # type: ignore[no-untyped-def]
     confirmation = st.session_state.get(_bulk_quick_review_key(account.id))
     if confirmation is None or confirmation.get("account_id") != account.id:
@@ -678,7 +677,7 @@ def _render_bulk_quick_review_dialog(repo: SQLiteJournalRepository, account: Acc
         for trade, score in eligible:
             try:
                 repo.approve_auto_review(
-                    account_id=account.id, trade_id=trade.id, risk_policy_id=active_policy.id if active_policy else None,
+                    account_id=account.id, trade_id=trade.id, risk_policy_id=score.auto_risk.policy_id,
                     risk_evidence_source=score.risk_evidence_source, risk_policy_state=score.risk_policy_state,
                     actual_risk_amount=score.actual_risk_amount,
                     criterion_grades=FrameworkService._automatic_review_grades(score.risk_policy_state),
@@ -801,7 +800,6 @@ def _grade_summary(trade_id: int, criteria: Sequence[str], existing: dict[str, s
     return completed, exceptions
 
 
-@st.dialog("Post-trade assessment", width="large", on_dismiss=_clear_review_dialog)
 def _render_post_trade_review_dialog(repo: SQLiteJournalRepository, account: AccountListItem, trade, score: TradeProcessScore, profiles) -> None:  # type: ignore[no-untyped-def]
     existing = repo.get_post_trade_assessment_for_trade(trade.id)
     # A prior "auto" row is not a human review — only a "manual" row is safe to pre-fill
@@ -1056,7 +1054,6 @@ def _render_review_history(repo: SQLiteJournalRepository, account_id: int, trade
                 st.write(assessment.post_review_note)
 
 
-@st.dialog("Manage logical-trade positions", width="large", on_dismiss=_clear_group_dialog)
 def _render_logical_trade_group_dialog(
     repo: SQLiteJournalRepository,
     account: AccountListItem,
@@ -1416,7 +1413,7 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
             for trade, score in auto_reviewed_visible:
                 try:
                     repo.approve_auto_review(
-                        account_id=account.id, trade_id=trade.id, risk_policy_id=active_policy.id if active_policy else None,
+                        account_id=account.id, trade_id=trade.id, risk_policy_id=score.auto_risk.policy_id,
                         risk_evidence_source=score.risk_evidence_source,
                         risk_policy_state=score.risk_policy_state,
                         actual_risk_amount=score.actual_risk_amount,
@@ -1579,7 +1576,7 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
                         try:
                             with st.spinner(tr("Saving…")):
                                 repo.approve_auto_review(
-                                    account_id=account.id, trade_id=trade.id, risk_policy_id=active_policy.id if active_policy else None,
+                                    account_id=account.id, trade_id=trade.id, risk_policy_id=score.auto_risk.policy_id,
                                     risk_evidence_source=score.risk_evidence_source,
                                     risk_policy_state=score.risk_policy_state,
                                     actual_risk_amount=score.actual_risk_amount,
@@ -1627,7 +1624,7 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
         group_id = group_editor.get("logical_trade_id")
         group = next((item for item in trades if item.id == group_id), None) if group_id is not None else None
         if group_id is None or group is not None:
-            _render_logical_trade_group_dialog(
+            st.dialog(tr("Manage logical-trade positions"), width="large", on_dismiss=_clear_group_dialog)(_render_logical_trade_group_dialog)(
                 repo,
                 account,
                 group,
@@ -1637,7 +1634,7 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
         else:
             _clear_group_dialog()
     if st.session_state.get(_bulk_quick_review_key(account.id)) is not None:
-        _render_bulk_quick_review_dialog(repo, account, trades, scores)
+        st.dialog(tr("Quick review selected trades"), width="large", on_dismiss=_dismiss_bulk_quick_review)(_render_bulk_quick_review_dialog)(repo, account, trades, scores)
     selected = st.session_state.get("post-trade-review-trade-id")
     if selected is None:
         return
@@ -1658,7 +1655,7 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
     if item is None:
         _clear_review_dialog()
         return
-    _render_post_trade_review_dialog(repo, account, item[0], item[1], profiles)
+    st.dialog(tr("Post-trade assessment"), width="large", on_dismiss=_clear_review_dialog)(_render_post_trade_review_dialog)(repo, account, item[0], item[1], profiles)
 
 
 def _render_monitor(repo: SQLiteJournalRepository, account: AccountListItem) -> None:
@@ -1670,7 +1667,7 @@ def _render_monitor(repo: SQLiteJournalRepository, account: AccountListItem) -> 
     controls, scope_note = st.columns((2, 3))
     with controls:
         window = st.slider(tr("Rolling sample"), min_value=10, max_value=100, value=20, step=5, key=f"framework-window-{account.id}")
-        period = st.segmented_control("Analysis period", ["This month", "Last 90 days", "All time", "Custom"], default="Last 90 days", required=True, key=f"framework-analysis-period-{account.id}")
+        period = st.segmented_control(tr("Analysis period"), ["This month", "Last 90 days", "All time", "Custom"], format_func=tr, default="Last 90 days", required=True, key=f"framework-analysis-period-{account.id}")
     today = service.today(account.id)
     if period == "This month":
         start_date, end_date = today.replace(day=1), today
@@ -1707,7 +1704,7 @@ def _render_monitor(repo: SQLiteJournalRepository, account: AccountListItem) -> 
     )
     st.caption(readiness.detail)
     with st.container(horizontal=True, gap="small", vertical_alignment="center"):
-        st.metric("Risk checks", f"{coverage.approved}/{coverage.total}", "approved evidence", border=True)
+        st.metric(tr("Risk checks"), f"{coverage.approved}/{coverage.total}", tr("approved evidence"), border=True)
         st.metric("Risk pending", str(coverage.pending), border=True)
         st.metric("Over policy", str(coverage.over_policy), border=True)
         st.metric("Risk unavailable", str(coverage.unavailable), border=True)
@@ -1853,7 +1850,6 @@ def _render_monitor_system(analysis: MonitorAnalysisReport) -> None:
             st.dataframe(frame, hide_index=True, width="stretch", column_config={"Process score": st.column_config.NumberColumn(format="%.0f"), "Win rate": st.column_config.NumberColumn(format="%.1f%%"), "Average R": st.column_config.NumberColumn(format="%+.2fR")})
 
 
-@st.dialog("Edit coaching action", icon=":material/edit:")
 def _render_framework_focus_action_dialog(
     repo: SQLiteJournalRepository,
     *,
@@ -1879,7 +1875,6 @@ def _render_framework_focus_action_dialog(
         st.rerun()
 
 
-@st.dialog("Resolve coaching focus", icon=":material/task_alt:")
 def _render_framework_focus_resolution_dialog(
     repo: SQLiteJournalRepository,
     *,
@@ -1890,6 +1885,7 @@ def _render_framework_focus_resolution_dialog(
         outcome = st.segmented_control(
             tr("Focus outcome"),
             ["completed", "abandoned"],
+            format_func=tr,
             default="completed",
             required=True,
         )
@@ -1956,13 +1952,13 @@ def _render_framework_focus(repo: SQLiteJournalRepository, account: AccountListI
                     icon=":material/task_alt:",
                 )
             if edit_action:
-                _render_framework_focus_action_dialog(
+                st.dialog(tr("Edit coaching action"), icon=":material/edit:")(_render_framework_focus_action_dialog)(
                     repo,
                     focus_id=focus.id,
                     action_text=focus.action_text,
                 )
             elif resolve_focus:
-                _render_framework_focus_resolution_dialog(repo, focus_id=focus.id)
+                st.dialog(tr("Resolve coaching focus"), icon=":material/task_alt:")(_render_framework_focus_resolution_dialog)(repo, focus_id=focus.id)
             history = [item for item in repo.list_framework_focuses(account.id) if item.status != "active"]
             if history and not compact:
                 with st.expander(tr("Coaching history")):
@@ -2163,7 +2159,6 @@ def _render_period_reviews(repo: SQLiteJournalRepository, account: AccountListIt
                         st.error(str(error))
                     else:
                         queue_toast(tr("Period review saved."))
-                        st.success("Period review saved.")
                         st.rerun()
         else:
             st.warning(tr("Review every closed trade in this period before saving its reflection, or skip the period with a reason."))
@@ -2275,7 +2270,6 @@ def _render_roadmap(repo: SQLiteJournalRepository, account: AccountListItem) -> 
                             else:
                                 completed_message = tr("{name} roadmap item completed.", name=tr(name))
                                 queue_toast(completed_message)
-                                st.success(completed_message)
                                 st.rerun()
 
             history_items = [item for item in status.items if item.completed]
@@ -2344,7 +2338,6 @@ def _render_risk_policy(repo: SQLiteJournalRepository, account: AccountListItem)
             st.error(str(error))
         else:
             queue_toast(tr("Risk policy saved as a new version."))
-            st.success(tr("Risk policy saved as a new version."))
             st.rerun()
 
 
@@ -2370,5 +2363,4 @@ def _render_framework_rules(repo: SQLiteJournalRepository) -> None:
             st.error(str(error))
         else:
             queue_toast(tr("Review rules saved."))
-            st.success(tr("Review rules saved."))
             st.rerun()
