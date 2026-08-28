@@ -18,11 +18,20 @@ from trading_journal.domain.review_taxonomy import HARD_RULE_CODES, VIOLATION_CO
 _UNSET = object()
 ASSESSMENT_GRADES = frozenset({"pass", "partial", "fail"})
 MONITORING_RESET_PERIODS = frozenset({"daily", "weekly", "monthly", "all_time"})
-PSYCHOLOGY_CRITERIA = (
+LEGACY_RUBRIC_VERSION = "legacy_v1"
+CURRENT_RUBRIC_VERSION = "zone_v2"
+RUBRIC_VERSIONS = frozenset({LEGACY_RUBRIC_VERSION, CURRENT_RUBRIC_VERSION})
+LEGACY_PSYCHOLOGY_CRITERIA = (
     "rule_adherence",
     "impulse_control",
     "emotional_control",
     "patience_discipline",
+)
+PSYCHOLOGY_CRITERIA = (
+    "edge_execution",
+    "risk_acceptance",
+    "probability_mindset",
+    "outcome_independence",
 )
 RISK_CRITERIA = (
     "policy_adherence",
@@ -30,14 +39,25 @@ RISK_CRITERIA = (
     "stop_discipline",
     "exposure_limit_compliance",
 )
-SYSTEM_CRITERIA = (
+LEGACY_SYSTEM_CRITERIA = (
     "setup_validity",
     "context_alignment",
     "entry_fidelity",
     "invalidation_fidelity",
     "management_exit_fidelity",
 )
+SYSTEM_CRITERIA = (
+    "setup_validity",
+    "context_alignment",
+    "entry_fidelity",
+    "management_exit_fidelity",
+)
 ASSESSMENT_CRITERIA = PSYCHOLOGY_CRITERIA + RISK_CRITERIA + SYSTEM_CRITERIA
+LEGACY_ASSESSMENT_CRITERIA = LEGACY_PSYCHOLOGY_CRITERIA + RISK_CRITERIA + LEGACY_SYSTEM_CRITERIA
+RUBRIC_CRITERIA = {
+    LEGACY_RUBRIC_VERSION: LEGACY_ASSESSMENT_CRITERIA,
+    CURRENT_RUBRIC_VERSION: ASSESSMENT_CRITERIA,
+}
 
 
 def _decimal_string(value: Decimal | str) -> str:
@@ -281,7 +301,7 @@ class PostTradeAssessment(Base):
 
     `method` distinguishes the two: "auto" rows are evidence-driven (neutral Psychology/
     Trading-system defaults; no strategy, note, violations, or hard-rules), "manual" rows
-    are a full 13-criterion assessment. Both count toward pillar scores identically once active.
+    are a complete assessment under the rubric version stored with the row.
     """
 
     __tablename__ = "post_trade_assessments"
@@ -299,6 +319,7 @@ class PostTradeAssessment(Base):
     mt5_account_id: Mapped[int] = mapped_column(ForeignKey("mt5_accounts.id"), nullable=False)
     logical_trade_id: Mapped[int] = mapped_column(ForeignKey("logical_trades.id"), nullable=False)
     method: Mapped[str] = mapped_column(String(16), nullable=False)
+    rubric_version: Mapped[str] = mapped_column(String(24), nullable=False, default=CURRENT_RUBRIC_VERSION)
     risk_policy_id: Mapped[int | None] = mapped_column(ForeignKey("account_risk_policies.id"), nullable=True)
     risk_evidence_source: Mapped[str | None] = mapped_column(String(64), nullable=True)
     risk_policy_state: Mapped[str | None] = mapped_column(String(32), nullable=True)
@@ -332,6 +353,7 @@ class PostTradeAssessmentRevision(Base):
     post_trade_assessment_id: Mapped[int] = mapped_column(ForeignKey("post_trade_assessments.id"), nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     method: Mapped[str] = mapped_column(String(16), nullable=False)
+    rubric_version: Mapped[str] = mapped_column(String(24), nullable=False, default=CURRENT_RUBRIC_VERSION)
     risk_policy_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     risk_evidence_source: Mapped[str | None] = mapped_column(String(64), nullable=True)
     risk_policy_state: Mapped[str | None] = mapped_column(String(32), nullable=True)
@@ -368,7 +390,16 @@ class FrameworkPeriodReview(Base):
     """A saved weekly or monthly reflection with immutable calculated metrics."""
 
     __tablename__ = "framework_period_reviews"
-    __table_args__ = (UniqueConstraint("mt5_account_id", "cadence", "period_start", "period_end", name="uq_framework_period"),)
+    __table_args__ = (
+        UniqueConstraint(
+            "mt5_account_id",
+            "cadence",
+            "period_start",
+            "period_end",
+            "rubric_version",
+            name="uq_framework_period",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     mt5_account_id: Mapped[int] = mapped_column(ForeignKey("mt5_accounts.id"), nullable=False)
@@ -376,6 +407,7 @@ class FrameworkPeriodReview(Base):
     period_start: Mapped[str] = mapped_column(String(10), nullable=False)
     period_end: Mapped[str] = mapped_column(String(10), nullable=False)
     status: Mapped[str] = mapped_column(String(12), nullable=False, default="reviewed")
+    rubric_version: Mapped[str] = mapped_column(String(24), nullable=False, default=CURRENT_RUBRIC_VERSION)
     psychology_score: Mapped[str | None] = mapped_column(String, nullable=True)
     risk_score: Mapped[str | None] = mapped_column(String, nullable=True)
     system_score: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -420,6 +452,7 @@ class FrameworkFocus(Base):
     target_reviews: Mapped[int] = mapped_column(Integer, nullable=False)
     starting_manual_reviews: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+    rubric_version: Mapped[str] = mapped_column(String(24), nullable=False, default=CURRENT_RUBRIC_VERSION)
     source: Mapped[str] = mapped_column(String(16), nullable=False, default="manual")
     coach_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     resolution_note: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -675,6 +708,7 @@ class PostTradeAssessmentView:
     account_id: int
     trade_id: int
     method: str
+    rubric_version: str
     risk_policy_id: int | None
     risk_evidence_source: str | None
     risk_policy_state: str | None
@@ -702,6 +736,7 @@ class PostTradeAssessmentView:
 class PostTradeAssessmentRevisionView:
     version: int
     method: str
+    rubric_version: str
     risk_policy_id: int | None
     risk_evidence_source: str | None
     risk_policy_state: str | None
@@ -756,6 +791,7 @@ class FrameworkPeriodReviewView:
     period_start: str
     period_end: str
     status: str
+    rubric_version: str
     psychology_score: str | None
     risk_score: str | None
     system_score: str | None
@@ -792,6 +828,7 @@ class FrameworkFocusView:
     target_reviews: int
     starting_manual_reviews: int
     status: str
+    rubric_version: str
     source: str
     coach_reason: str | None
     resolution_note: str | None
@@ -845,6 +882,10 @@ class SQLiteJournalRepository:
             if live_snapshot_columns and "export_interval_seconds" not in live_snapshot_columns:
                 connection.exec_driver_sql("ALTER TABLE live_position_snapshots ADD COLUMN export_interval_seconds INTEGER NOT NULL DEFAULT 60")
             assessment_columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(post_trade_assessments)")}
+            if assessment_columns and "rubric_version" not in assessment_columns:
+                connection.exec_driver_sql(
+                    "ALTER TABLE post_trade_assessments ADD COLUMN rubric_version VARCHAR(24) NOT NULL DEFAULT 'legacy_v1'"
+                )
             for column_name, column_type in (
                 ("setup_snapshot", "VARCHAR(100)"),
                 ("session_snapshot", "VARCHAR(80)"),
@@ -853,6 +894,10 @@ class SQLiteJournalRepository:
                 if column_name not in assessment_columns:
                     connection.exec_driver_sql(f"ALTER TABLE post_trade_assessments ADD COLUMN {column_name} {column_type}")
             revision_columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(post_trade_assessment_revisions)")}
+            if revision_columns and "rubric_version" not in revision_columns:
+                connection.exec_driver_sql(
+                    "ALTER TABLE post_trade_assessment_revisions ADD COLUMN rubric_version VARCHAR(24) NOT NULL DEFAULT 'legacy_v1'"
+                )
             for column_name, column_type in (
                 ("setup_snapshot", "VARCHAR(100)"),
                 ("session_snapshot", "VARCHAR(80)"),
@@ -863,6 +908,10 @@ class SQLiteJournalRepository:
                 if column_name not in revision_columns:
                     connection.exec_driver_sql(f"ALTER TABLE post_trade_assessment_revisions ADD COLUMN {column_name} {column_type}")
             focus_columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(framework_focuses)")}
+            if focus_columns and "rubric_version" not in focus_columns:
+                connection.exec_driver_sql(
+                    "ALTER TABLE framework_focuses ADD COLUMN rubric_version VARCHAR(24) NOT NULL DEFAULT 'legacy_v1'"
+                )
             for column_name, column_type in (("source", "VARCHAR(16) NOT NULL DEFAULT 'manual'"), ("coach_reason", "TEXT")):
                 if column_name not in focus_columns:
                     connection.exec_driver_sql(f"ALTER TABLE framework_focuses ADD COLUMN {column_name} {column_type}")
@@ -872,6 +921,11 @@ class SQLiteJournalRepository:
             period_review_columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(framework_period_reviews)")}
             if period_review_columns and "status" not in period_review_columns:
                 connection.exec_driver_sql("ALTER TABLE framework_period_reviews ADD COLUMN status VARCHAR(12) NOT NULL DEFAULT 'reviewed'")
+            if period_review_columns and "rubric_version" not in period_review_columns:
+                connection.exec_driver_sql(
+                    "ALTER TABLE framework_period_reviews ADD COLUMN rubric_version VARCHAR(24) NOT NULL DEFAULT 'legacy_v1'"
+                )
+            self._migrate_framework_period_review_unique_constraint(connection)
             risk_policy_columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(account_risk_policies)")}
             if risk_policy_columns and "drawdown_reset_period" not in risk_policy_columns:
                 connection.exec_driver_sql("ALTER TABLE account_risk_policies ADD COLUMN drawdown_reset_period VARCHAR(16) NOT NULL DEFAULT 'daily'")
@@ -900,12 +954,23 @@ class SQLiteJournalRepository:
             # existing index of that name blocks create_all from redefining it, so migrate it.
             connection.exec_driver_sql("DROP INDEX IF EXISTS uq_active_framework_focus")
             connection.exec_driver_sql("CREATE UNIQUE INDEX IF NOT EXISTS uq_active_framework_focus ON framework_focuses (account_id) WHERE status = 'active'")
+            if focus_columns:
+                archived_at = datetime.now(timezone.utc).isoformat()
+                connection.exec_driver_sql(
+                    "UPDATE framework_focuses "
+                    "SET status = 'abandoned', "
+                    "resolution_note = 'Archived during the Zone-aligned rubric upgrade; legacy evidence is not reused for v2 coaching.', "
+                    "resolved_at = ? "
+                    "WHERE status = 'active' AND rubric_version = 'legacy_v1'",
+                    (archived_at,),
+                )
         with self._sessions.begin() as session:
             settings = session.get(JournalSettings, 1)
             if settings is None:
                 settings = JournalSettings(id=1, reporting_time_basis="server", display_language="en")
                 session.add(settings)
                 session.flush()
+
             if settings.default_strategy_profile_id is None and session.scalar(select(StrategyProfile.id).limit(1)) is None:
                 default = session.scalar(select(StrategyProfile).where(StrategyProfile.normalized_name == "journal default"))
                 if default is None:
@@ -940,6 +1005,32 @@ class SQLiteJournalRepository:
                 ).all()
                 for row in stale_roadmap_rows:
                     row.scope_key = f"account:{active_account_id}"
+
+    @staticmethod
+    def _migrate_framework_period_review_unique_constraint(connection) -> None:  # type: ignore[no-untyped-def]
+        """Allow one immutable period reflection per rubric without losing legacy history."""
+        indexes = connection.exec_driver_sql("PRAGMA index_list(framework_period_reviews)").all()
+        unique_column_sets: set[tuple[str, ...]] = set()
+        for index in indexes:
+            if not index[2]:
+                continue
+            index_name = str(index[1]).replace("'", "''")
+            columns = connection.exec_driver_sql(f"PRAGMA index_info('{index_name}')").all()
+            unique_column_sets.add(tuple(str(column[2]) for column in columns))
+        legacy_columns = ("mt5_account_id", "cadence", "period_start", "period_end")
+        current_columns = (*legacy_columns, "rubric_version")
+        if legacy_columns not in unique_column_sets or current_columns in unique_column_sets:
+            return
+
+        archived_table = "framework_period_reviews_legacy_unique"
+        connection.exec_driver_sql(f"ALTER TABLE framework_period_reviews RENAME TO {archived_table}")
+        FrameworkPeriodReview.__table__.create(connection)
+        column_names = ", ".join(column.name for column in FrameworkPeriodReview.__table__.columns)
+        connection.exec_driver_sql(
+            f"INSERT INTO framework_period_reviews ({column_names}) "
+            f"SELECT {column_names} FROM {archived_table}"
+        )
+        connection.exec_driver_sql(f"DROP TABLE {archived_table}")
 
     def _require_clean_framework_schema(self) -> None:
         """Greenfield-only persistence: an old database must be reset, never migrated."""
@@ -2030,7 +2121,7 @@ class SQLiteJournalRepository:
     def approve_auto_review(self, *, account_id: int, trade_id: int, risk_policy_id: int | None,
                             risk_evidence_source: str, risk_policy_state: str,
                             actual_risk_amount: str | None, criterion_grades: Mapping[str, str]) -> PostTradeAssessmentView:
-        grades = self._normalize_criterion_grades(criterion_grades)
+        grades = self._normalize_criterion_grades(criterion_grades, CURRENT_RUBRIC_VERSION)
         if risk_policy_state not in {"within_policy", "over_policy", "unavailable"}:
             raise ValueError("Unrecognized automatic risk-policy state")
         now = datetime.now(timezone.utc).isoformat()
@@ -2052,6 +2143,7 @@ class SQLiteJournalRepository:
                     mt5_account_id=account_id,
                     logical_trade_id=trade_id,
                     method="auto",
+                    rubric_version=CURRENT_RUBRIC_VERSION,
                     risk_policy_id=risk_policy_id,
                     risk_evidence_source=risk_evidence_source,
                     risk_policy_state=risk_policy_state,
@@ -2158,7 +2250,7 @@ class SQLiteJournalRepository:
         review_context: ReviewContextSelection | None = None,
     ) -> PostTradeAssessmentView:
         """Create or correct the review for one already-imported logical trade."""
-        normalized_grades = self._normalize_criterion_grades(criterion_grades)
+        normalized_grades = self._normalize_criterion_grades(criterion_grades, CURRENT_RUBRIC_VERSION)
         normalized_violations = self._normalize_codes(violation_codes, VIOLATION_CODES, "violation")
         normalized_hard_rules = self._normalize_codes(hard_rule_codes, HARD_RULE_CODES, "hard-rule")
         if ("mandatory_setup_absent" in normalized_hard_rules) != ("mandatory_setup_absent" in normalized_violations):
@@ -2227,6 +2319,7 @@ class SQLiteJournalRepository:
                     mt5_account_id=account_id,
                     logical_trade_id=trade_id,
                     method="manual",
+                    rubric_version=CURRENT_RUBRIC_VERSION,
                     risk_policy_id=risk_policy_id,
                     strategy_profile_id=strategy_profile_id,
                     strategy_snapshot=self._strategy_snapshot_json(strategy),
@@ -2256,6 +2349,7 @@ class SQLiteJournalRepository:
                         post_trade_assessment_id=row.id,
                         version=row.version,
                         method=row.method,
+                        rubric_version=row.rubric_version,
                         risk_policy_id=row.risk_policy_id,
                         risk_evidence_source=row.risk_evidence_source,
                         risk_policy_state=row.risk_policy_state,
@@ -2276,6 +2370,7 @@ class SQLiteJournalRepository:
                     )
                 )
                 row.method = "manual"
+                row.rubric_version = CURRENT_RUBRIC_VERSION
                 row.risk_evidence_source = None
                 row.risk_policy_state = None
                 row.risk_policy_id = risk_policy_id
@@ -2314,13 +2409,18 @@ class SQLiteJournalRepository:
         return row.name
 
     @staticmethod
-    def _normalize_criterion_grades(values: Mapping[str, str]) -> dict[str, str]:
-        unknown = set(values) - set(ASSESSMENT_CRITERIA)
-        missing = set(ASSESSMENT_CRITERIA) - set(values)
+    def _normalize_criterion_grades(
+        values: Mapping[str, str], rubric_version: str = CURRENT_RUBRIC_VERSION
+    ) -> dict[str, str]:
+        criteria = RUBRIC_CRITERIA.get(rubric_version)
+        if criteria is None:
+            raise ValueError("Unknown assessment rubric version")
+        unknown = set(values) - set(criteria)
+        missing = set(criteria) - set(values)
         invalid = {key for key, value in values.items() if value not in ASSESSMENT_GRADES}
         if unknown or missing or invalid:
             raise ValueError("Every three-pillar criterion must be explicitly rated Pass, Partial, or Fail")
-        return {key: values[key] for key in ASSESSMENT_CRITERIA}
+        return {key: values[key] for key in criteria}
 
     @staticmethod
     def _normalize_codes(values: tuple[str, ...], allowed: frozenset[str], label: str) -> tuple[str, ...]:
@@ -2409,6 +2509,7 @@ class SQLiteJournalRepository:
                     FrameworkPeriodReview.cadence == cadence,
                     FrameworkPeriodReview.period_start == period_start,
                     FrameworkPeriodReview.period_end == period_end,
+                    FrameworkPeriodReview.rubric_version == CURRENT_RUBRIC_VERSION,
                 )
             )
             if row is not None:
@@ -2421,6 +2522,7 @@ class SQLiteJournalRepository:
                 period_start=period_start,
                 period_end=period_end,
                 status="reviewed",
+                rubric_version=CURRENT_RUBRIC_VERSION,
                 created_at=datetime.now(timezone.utc).isoformat(),
                 psychology_score=psychology_score,
                 risk_score=risk_score,
@@ -2458,6 +2560,7 @@ class SQLiteJournalRepository:
                     FrameworkPeriodReview.cadence == cadence,
                     FrameworkPeriodReview.period_start == period_start,
                     FrameworkPeriodReview.period_end == period_end,
+                    FrameworkPeriodReview.rubric_version == CURRENT_RUBRIC_VERSION,
                 )
             )
             if existing is not None:
@@ -2468,6 +2571,7 @@ class SQLiteJournalRepository:
                 period_start=period_start,
                 period_end=period_end,
                 status="skipped",
+                rubric_version=CURRENT_RUBRIC_VERSION,
                 created_at=datetime.now(timezone.utc).isoformat(),
                 psychology_score=None,
                 risk_score=None,
@@ -2502,7 +2606,13 @@ class SQLiteJournalRepository:
 
     def get_active_framework_focus(self, account_id: int) -> FrameworkFocusView | None:
         with self._sessions() as session:
-            row = session.scalar(select(FrameworkFocus).where(FrameworkFocus.account_id == account_id, FrameworkFocus.status == "active"))
+            row = session.scalar(
+                select(FrameworkFocus).where(
+                    FrameworkFocus.account_id == account_id,
+                    FrameworkFocus.status == "active",
+                    FrameworkFocus.rubric_version == CURRENT_RUBRIC_VERSION,
+                )
+            )
             return None if row is None else self._to_framework_focus_view(row)
 
     def list_framework_focuses(self, account_id: int) -> list[FrameworkFocusView]:
@@ -2541,7 +2651,8 @@ class SQLiteJournalRepository:
                 metric_kind=metric_kind, metric_code=metric_code, hypothesis=self._required_text(hypothesis, "Focus hypothesis"),
                 action_text=self._required_text(action_text, "Focus action"), baseline_value=baseline_value,
                 target_value=target_value, target_reviews=target_reviews, starting_manual_reviews=starting_manual_reviews,
-                status="active", source=source, coach_reason=self._optional_text(coach_reason), resolution_note=None,
+                status="active", rubric_version=CURRENT_RUBRIC_VERSION,
+                source=source, coach_reason=self._optional_text(coach_reason), resolution_note=None,
                 created_at=datetime.now(timezone.utc).isoformat(), resolved_at=None,
             )
             session.add(row)
@@ -2573,7 +2684,8 @@ class SQLiteJournalRepository:
         return FrameworkFocusView(
             row.id, row.account_id, row.pillar, row.metric_kind, row.metric_code, row.hypothesis,
             row.action_text, row.baseline_value, row.target_value, row.target_reviews,
-            row.starting_manual_reviews, row.status, row.source, row.coach_reason, row.resolution_note, row.created_at, row.resolved_at,
+            row.starting_manual_reviews, row.status, row.rubric_version, row.source, row.coach_reason,
+            row.resolution_note, row.created_at, row.resolved_at,
         )
 
     def save_pillar_roadmap_evidence(
@@ -3046,6 +3158,7 @@ class SQLiteJournalRepository:
             account_id=row.mt5_account_id,
             trade_id=row.logical_trade_id,
             method=row.method,
+            rubric_version=row.rubric_version,
             risk_policy_id=row.risk_policy_id,
             risk_evidence_source=row.risk_evidence_source,
             risk_policy_state=row.risk_policy_state,
@@ -3074,6 +3187,7 @@ class SQLiteJournalRepository:
         return PostTradeAssessmentRevisionView(
             version=row.version,
             method=row.method,
+            rubric_version=row.rubric_version,
             risk_policy_id=row.risk_policy_id,
             risk_evidence_source=row.risk_evidence_source,
             risk_policy_state=row.risk_policy_state,
@@ -3112,6 +3226,7 @@ class SQLiteJournalRepository:
             row.period_start,
             row.period_end,
             row.status,
+            row.rubric_version,
             row.psychology_score,
             row.risk_score,
             row.system_score,

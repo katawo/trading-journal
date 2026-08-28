@@ -1010,9 +1010,9 @@ def test_monitor_tab_shows_early_estimate_not_incomplete_for_a_partial_sample(mo
         backtest_notes=None,
     )
     all_pass = {
-        "rule_adherence": "pass", "impulse_control": "pass", "emotional_control": "pass", "patience_discipline": "pass",
+        "edge_execution": "pass", "risk_acceptance": "pass", "probability_mindset": "pass", "outcome_independence": "pass",
         "policy_adherence": "pass", "position_size_accuracy": "pass", "stop_discipline": "pass", "exposure_limit_compliance": "pass",
-        "setup_validity": "pass", "context_alignment": "pass", "entry_fidelity": "pass", "invalidation_fidelity": "pass", "management_exit_fidelity": "pass",
+        "setup_validity": "pass", "context_alignment": "pass", "entry_fidelity": "pass", "management_exit_fidelity": "pass",
     }
     repository.upsert_mt5_positions(
         account.id,
@@ -1141,9 +1141,9 @@ def test_monitor_tab_explains_why_a_pillar_is_capped(monkeypatch, tmp_path):
         backtest_notes=None,
     )
     all_pass = {
-        "rule_adherence": "pass", "impulse_control": "pass", "emotional_control": "pass", "patience_discipline": "pass",
+        "edge_execution": "pass", "risk_acceptance": "pass", "probability_mindset": "pass", "outcome_independence": "pass",
         "policy_adherence": "pass", "position_size_accuracy": "pass", "stop_discipline": "pass", "exposure_limit_compliance": "pass",
-        "setup_validity": "pass", "context_alignment": "pass", "entry_fidelity": "pass", "invalidation_fidelity": "pass", "management_exit_fidelity": "pass",
+        "setup_validity": "pass", "context_alignment": "pass", "entry_fidelity": "pass", "management_exit_fidelity": "pass",
     }
     for index in range(2):
         repository.upsert_mt5_positions(
@@ -1223,9 +1223,9 @@ def test_register_flags_the_specific_hard_blocked_pillar(monkeypatch, tmp_path):
         backtest_notes=None,
     )
     all_pass = {
-        "rule_adherence": "pass", "impulse_control": "pass", "emotional_control": "pass", "patience_discipline": "pass",
+        "edge_execution": "pass", "risk_acceptance": "pass", "probability_mindset": "pass", "outcome_independence": "pass",
         "policy_adherence": "pass", "position_size_accuracy": "pass", "stop_discipline": "pass", "exposure_limit_compliance": "pass",
-        "setup_validity": "pass", "context_alignment": "pass", "entry_fidelity": "pass", "invalidation_fidelity": "pass", "management_exit_fidelity": "pass",
+        "setup_validity": "pass", "context_alignment": "pass", "entry_fidelity": "pass", "management_exit_fidelity": "pass",
     }
     repository.upsert_mt5_positions(
         account.id,
@@ -1379,9 +1379,9 @@ def test_framework_renders_a_filtered_review_register(monkeypatch, tmp_path):
         risk_policy_id=policy.id,
         strategy_profile_id=strategy.id,
         criterion_grades={
-            "rule_adherence": "pass", "impulse_control": "pass", "emotional_control": "pass", "patience_discipline": "pass",
+            "edge_execution": "pass", "risk_acceptance": "pass", "probability_mindset": "pass", "outcome_independence": "pass",
             "policy_adherence": "pass", "position_size_accuracy": "pass", "stop_discipline": "pass", "exposure_limit_compliance": "pass",
-            "setup_validity": "pass", "context_alignment": "pass", "entry_fidelity": "pass", "invalidation_fidelity": "pass", "management_exit_fidelity": "pass",
+            "setup_validity": "pass", "context_alignment": "pass", "entry_fidelity": "pass", "management_exit_fidelity": "pass",
         },
         violation_codes=(),
         hard_rule_codes=(),

@@ -93,7 +93,7 @@ Chính sách rủi ro có phiên bản. Một đánh giá đã hoàn tất giữ
 | Cần xem xét | Bằng chứng rủi ro tự động vượt chính sách hoặc chưa khả dụng, và chưa được phê duyệt. | Không | Xem xét nhanh để phê duyệt bằng một nhấp chuột, hoặc hoàn tất đánh giá đầy đủ sau giao dịch. |
 | Đã đánh giá tự động | Bằng chứng rủi ro tự động trong chính sách và vẫn đang chờ phê duyệt. | Không | Phê duyệt bằng một nhấp chuột, hoặc hoàn tất đánh giá đầy đủ. |
 | Đánh giá nhanh | Bằng chứng tự động bạn đã phê duyệt, được đánh dấu **Tự động**. | Có | Dùng khi bằng chứng rủi ro đủ để chấp nhận nhanh; Đánh giá thủ công vẫn có thể thay thế sau. |
-| Đánh giá chuyên sâu | Đánh giá thủ công đầy đủ 13 tiêu chí, được đánh dấu **Thủ công**. | Có | Dùng để ghi thẻ, hành động cải thiện, sự kiện quy tắc cứng và bối cảnh tùy chọn. |
+| Đánh giá chuyên sâu | Đánh giá thủ công đầy đủ 12 tiêu chí theo Zone, được đánh dấu **Thủ công**. | Có | Dùng để ghi thẻ, hành động cải thiện, sự kiện quy tắc cứng và bối cảnh tùy chọn. |
 
 Không bằng chứng rủi ro tự động nào tự nó được tính vào điểm số các trụ cột hay lộ trình sẵn sàng — kể cả khi nó trong chính sách. Nó phải được phê duyệt rõ ràng bằng một nhấp chuột, hoặc được thay bằng Đánh giá chuyên sâu, trước đã. Sau khi phê duyệt, Đánh giá nhanh dùng `Một phần` (trung lập) cho Tâm lý và Hệ thống. Với Quản lý rủi ro, tuân thủ chính sách là `Đạt` khi số tiền tự động trong chính sách; các tiêu chí còn lại là trung lập. Phê duyệt bằng chứng vượt chính sách ghi tuân thủ chính sách là `Không đạt`. Đánh giá chuyên sâu vẫn là cách duy nhất để ghi vi phạm hoặc sự kiện quy tắc cứng, và luôn thay thế một phê duyệt hiện có.
 
@@ -115,7 +115,9 @@ Với giao dịch logic có lần vào sớm nhất sau thời điểm đóng cu
 
 ## 3. Hoàn tất một đánh giá sau giao dịch
 
-Mở **Định hướng → Đánh giá** và chọn một giao dịch logic từ **Cần xem xét**, **Đã đánh giá tự động** hoặc **Đã đánh giá**. Bất kỳ bằng chứng rủi ro tự động nào cũng có thể được chấp nhận bằng một nhấp chuột, hoặc bạn có thể chấm đủ 13 tiêu chí. Một giao dịch logic đã gộp chỉ đóng góp một đánh giá vào mẫu trượt, không phải một đánh giá cho mỗi vị thế thành viên.
+Mở **Định hướng → Đánh giá** và chọn một giao dịch logic từ **Cần xem xét**, **Đã đánh giá tự động** hoặc **Đã đánh giá**. Bất kỳ bằng chứng rủi ro tự động nào cũng có thể được chấp nhận bằng một nhấp chuột, hoặc bạn có thể chấm đủ 12 tiêu chí hiện tại. Một giao dịch logic đã gộp chỉ đóng góp một đánh giá vào mẫu trượt, không phải một đánh giá cho mỗi vị thế thành viên.
+
+Rubric hiện tại có mã `zone_v2`. Các đánh giá 13 tiêu chí sẵn có được giữ là `legacy_v1`: điểm gốc vẫn xuất hiện trong lịch sử và xu hướng, nhưng không tham gia mẫu Theo dõi, mức sẵn sàng, huấn luyện hoặc lộ trình hiện tại. Khi sửa một đánh giá cũ, ứng dụng lưu trữ bản gốc và tạo một đánh giá `zone_v2` mới.
 
 | Đánh giá | Giá trị số | Dùng khi |
 |---|---:|---|
@@ -129,10 +131,10 @@ Mở **Định hướng → Đánh giá** và chọn một giao dịch logic t�
 
 | Tiêu chí | Trọng số | Câu hỏi đánh giá |
 |---|---:|---|
-| Tuân thủ quy tắc | 35% | Tôi có theo quy tắc hành vi và thực hiện đã ghi chép không? |
-| Kiểm soát bốc đồng | 25% | Tôi có tránh đuổi giá, vào lệnh vì chán và trả thù thị trường không? |
-| Kiểm soát cảm xúc | 20% | Sợ hãi, tham lam, thất vọng hay FOMO có thay đổi quyết định không? |
-| Kiên nhẫn và kỷ luật | 20% | Tôi có chờ cơ hội hợp lệ và thực hiện không ứng biến không? |
+| Thực thi lợi thế | 35% | Tôi có chỉ vào và quản lý lợi thế đã xác định trước giao dịch không? |
+| Chấp nhận rủi ro | 25% | Trước khi vào lệnh, tôi có hoàn toàn chấp nhận khoản lỗ dự kiến mà không cần giao dịch phải thắng không? |
+| Tư duy xác suất | 20% | Tôi có xem giao dịch này là một sự kiện trong chuỗi thay vì đòi hỏi sự chắc chắn không? |
+| Độc lập với kết quả và tái thiết lập | 20% | Tôi có tránh đổi quy trình vì kết quả và tái thiết lập trước quyết định tiếp theo không? |
 
 ### Tiêu chí Quản lý rủi ro — 35% / 20% / 25% / 20%
 
@@ -145,15 +147,16 @@ Mở **Định hướng → Đánh giá** và chọn một giao dịch logic t�
 
 Rủi ro mở và kiểm soát tương quan được tự đánh giá vì cầu nối MT5 của giao dịch đóng không thể chứng minh tự động.
 
-### Tiêu chí Hệ thống giao dịch — 30% / 20% / 20% / 15% / 15%
+### Tiêu chí Hệ thống giao dịch — 30% / 25% / 20% / 25%
 
 | Tiêu chí | Trọng số | Câu hỏi đánh giá |
 |---|---:|---|
 | Tính hợp lệ của setup | 30% | Setup chiến lược được chọn có thực sự hiện diện không? |
-| Phù hợp bối cảnh | 20% | Thị trường, phiên, khung thời gian và regime có đáp ứng quy tắc chiến lược không? |
+| Phù hợp bối cảnh | 25% | Thị trường, phiên, khung thời gian và regime có đáp ứng quy tắc chiến lược không? |
 | Tuân thủ điểm vào lệnh | 20% | Điểm vào có theo trigger đã ghi chép không? |
-| Tuân thủ điều kiện invalidation / Stop Loss | 15% | Logic vô hiệu hóa/stop có được áp dụng như đã ghi chép không? |
-| Tuân thủ kế hoạch quản lý / thoát lệnh | 15% | Quản lý giao dịch và thoát lệnh có nhất quán với chiến lược không? |
+| Tuân thủ kế hoạch quản lý / thoát lệnh | 25% | Quản lý giao dịch và thoát lệnh có nhất quán với chiến lược không? |
+
+Invalidation chỉ được đánh giá một lần trong **Kỷ luật Stop Loss** của Quản lý rủi ro, tránh phạt trùng giữa các trụ cột.
 
 ## 4. Cách chấm một giao dịch
 
@@ -176,7 +179,7 @@ Nhật ký chủ đích hiển thị hai kết quả riêng:
 
 ### Ví dụ: giao dịch tốt có một lệch hành vi
 
-Giả sử mọi tiêu chí là **Đạt**, trừ **Tuân thủ quy tắc** của Tâm lý là **Một phần**.
+Giả sử mọi tiêu chí là **Đạt**, trừ **Thực thi lợi thế** của Tâm lý là **Một phần**.
 
 ```text
 Tâm lý = (50 × 35%) + (100 × 25%) + (100 × 20%) + (100 × 20%)
@@ -226,7 +229,9 @@ Thẻ lý do cũng làm mẫu hình lặp lại hiển thị. Thẻ nghiêm tr�
 
 ## 6. Cách tính theo dõi trượt
 
-Trong **Định hướng → Theo dõi**, chọn cửa sổ trượt từ 10 đến 100 giao dịch (thanh trượt, bước 5; ô xem gọn trên Dashboard luôn hiển thị cửa sổ cố định 20 giao dịch). Điểm trụ cột, mức sẵn sàng, vấn đề lặp lại và huấn luyện dùng các đánh giá Tự động đã duyệt và Thủ công gần nhất. Đánh giá nhanh vẫn hiển thị riêng dưới dạng độ phủ bằng chứng rủi ro trên các giao dịch logic đã đóng gần nhất của tài khoản. Bản nhập **Đang chờ phê duyệt** hoặc **Cần đánh giá** nằm ngoài mẫu cho đến khi được phê duyệt hoặc đánh giá chuyên sâu. Cửa sổ nhỏ hơn sẽ đạt ngưỡng Cảnh báo do vi phạm nghiêm trọng lặp lại sớm hơn cửa sổ lớn hơn, vì ngưỡng này là một số đếm cố định, không phải tỷ lệ phần trăm của cửa sổ.
+Trong **Định hướng → Theo dõi**, chọn cửa sổ trượt từ 10 đến 100 giao dịch (thanh trượt, bước 5; ô xem gọn trên Dashboard luôn hiển thị cửa sổ cố định 20 giao dịch). Điểm trụ cột, mức sẵn sàng, vấn đề lặp lại, huấn luyện và cổng lộ trình chỉ dùng các đánh giá `zone_v2` Tự động đã duyệt và Thủ công gần nhất. Đánh giá cũ vẫn xuất hiện trong lịch sử và xu hướng, đồng thời được báo là đã loại khỏi mẫu hiện tại. Đánh giá nhanh vẫn hiển thị riêng dưới dạng độ phủ bằng chứng rủi ro trên các giao dịch logic đã đóng gần nhất của tài khoản. Bản nhập **Đang chờ phê duyệt** hoặc **Cần đánh giá** nằm ngoài mẫu cho đến khi được phê duyệt hoặc đánh giá chuyên sâu. Cửa sổ nhỏ hơn sẽ đạt ngưỡng Cảnh báo do vi phạm nghiêm trọng lặp lại sớm hơn cửa sổ lớn hơn, vì ngưỡng này là một số đếm cố định, không phải tỷ lệ phần trăm của cửa sổ.
+
+Xu hướng điểm giữ chuỗi rubric hiện tại đồng bộ với cửa sổ trượt đã chọn. Chuỗi cũ được gắn nhãn riêng và hiển thị điểm trụ cột gốc của từng giao dịch cũ, nên các công thức theo dõi khác nhau không bị trộn. Số lượng hoàn tất tuần và tháng cũng chỉ tính đánh giá giao dịch v2; nếu kỳ đó đã có phản hồi cũ, phản hồi này vẫn nằm trong lịch sử và có thể lưu một phản hồi v2 riêng sau khi mọi giao dịch trong kỳ có đánh giá hiện tại.
 
 Theo dõi còn có **Kỳ phân tích** (Tháng này, 90 ngày qua, Tất cả thời gian hoặc Tùy chỉnh). Kỳ này chỉ thay đổi các biểu đồ mô tả; không thay đổi điểm trượt, mức sẵn sàng hoặc cổng lộ trình. Các góc nhìn Quy trình & kết quả, Rủi ro và Hệ thống & bối cảnh tách riêng chất lượng quy trình khỏi kết quả, độ phủ đánh giá khỏi bằng chứng chính sách, và quan sát bối cảnh khỏi kết luận nhân quả. Giao dịch không có 1R chuẩn dùng được bị loại khỏi biểu đồ R và được báo là thiếu bằng chứng.
 
@@ -236,10 +241,10 @@ Theo dõi tính một bộ thành phần giai đoạn thứ hai từ cửa sổ 
 
 | Thành phần | Trọng số | Cách đo |
 |---|---:|---|
-| Tuân thủ quy tắc | 35% | Trung bình mức Tuân thủ quy tắc đã đánh giá. |
-| Kiểm soát bốc đồng | 25% | Trung bình mức Kiểm soát bốc đồng đã đánh giá. |
-| Kiểm soát cảm xúc | 20% | Trung bình mức Kiểm soát cảm xúc đã đánh giá. |
-| Kỷ luật sau lỗ | 20% | Giao dịch đã đánh giá tiếp theo sau một lỗ trên tài khoản này: mức Kiểm soát bốc đồng của nó, hoặc 0 khi gắn thẻ `post_loss_reset`. Là 100 khi mẫu không có chuỗi sau-lỗ đủ điều kiện. |
+| Thực thi lợi thế | 35% | Trung bình mức Thực thi lợi thế đã đánh giá. |
+| Chấp nhận rủi ro | 25% | Trung bình mức Chấp nhận rủi ro đã đánh giá. |
+| Tư duy xác suất | 20% | Trung bình mức Tư duy xác suất đã đánh giá. |
+| Độc lập với kết quả và tái thiết lập | 20% | Trung bình mức Độc lập với kết quả và tái thiết lập đã đánh giá. |
 
 ### Điểm theo dõi Quản lý rủi ro
 
@@ -254,11 +259,10 @@ Theo dõi tính một bộ thành phần giai đoạn thứ hai từ cửa sổ 
 
 | Thành phần | Trọng số | Cách đo |
 |---|---:|---|
-| Tính hợp lệ của setup | 20% | Trung bình mức Tính hợp lệ của setup đã đánh giá. |
-| Tuân thủ kế hoạch execution | 20% | Trung bình mức Điểm vào, Vô hiệu hóa và Quản lý/thoát lệnh. |
-| Phù hợp bối cảnh | 15% | Trung bình mức Phù hợp bối cảnh đã đánh giá. |
-| Chất lượng bằng chứng | 20% | 100 khi backtest của chiến lược gắn được đánh dấu đã xác minh; nếu không là 0. |
-| Bằng chứng edge | 25% | 100 khi backtest của chiến lược gắn được đánh dấu đã xác minh; nếu không là 0. |
+| Tính hợp lệ của setup | 25% | Trung bình mức Tính hợp lệ của setup đã đánh giá. |
+| Phù hợp bối cảnh | 20% | Trung bình mức Phù hợp bối cảnh đã đánh giá. |
+| Tuân thủ kế hoạch execution | 25% | Trung bình mức Điểm vào và Quản lý/thoát lệnh. |
+| Bằng chứng edge | 30% | 100 khi backtest của chiến lược gắn được đánh dấu đã xác minh; nếu không là 0. |
 
 ### Trạng thái, mức độ đầy đủ và mức sẵn sàng
 
@@ -311,6 +315,8 @@ Ba trụ cột tiến song song:
 | Tối ưu | Một giả thuyết, đường cơ sở, kết quả và quyết định giữ/loại đã được ghi lại. |
 
 Lộ trình sẵn sàng tiến song song ở cả ba trụ cột. Bằng chứng **Tâm lý** tập trung vào hành vi; **Quản lý rủi ro** là bằng chứng chính sách và khối lượng theo tài khoản; **Hệ thống giao dịch** là quy tắc chiến lược, ví dụ và bằng chứng backtest.
+
+Các ghi chú lộ trình Tâm lý trước v2 vẫn hiển thị trong **Bằng chứng lộ trình Tâm lý cũ**. Chúng chỉ là lịch sử kiểm toán và không đáp ứng yêu cầu mới về tư duy xác suất, chấp nhận rủi ro hoặc thực hành theo mẫu cố định.
 
 Hầu hết các mục trong lộ trình được tự động phát hiện từ dữ liệu đã lưu sẵn ở nơi khác trong nhật ký, không cần thao tác thủ công:
 

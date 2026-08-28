@@ -1,5 +1,5 @@
 @startuml
-title Post-trade review — redesigned state machine (target design, migration ignored)
+title Post-trade review — versioned Zone-aligned state machine
 
 skinparam shadowing false
 skinparam defaultFontName Arial
@@ -11,7 +11,7 @@ state "Pending" as Pending {
 
 state "Reviewed" as Reviewed {
   state "method: auto\n(one-click, evidence-driven)" as Auto
-  state "method: manual\n(full 13-criterion assessment)" as Manual
+  state "method: manual\n(current 12-criterion assessment)" as Manual
 }
 
 state "Reclassified" as Reclassified <<choice>>
@@ -36,7 +36,10 @@ Reclassified --> [*] : new logical_trade_id,\nre-enters at [*] fresh
 
 note bottom of Reviewed
   Both Auto and Manual count toward
-  pillar scores / readiness roadmap.
+  current pillar scores / readiness roadmap
+  when rubric_version = zone_v2.
+  legacy_v1 reviews remain in history/trends
+  but are excluded from current monitoring.
   Only Manual can record violation tags
   or hard-rule events.
 end note

@@ -13,6 +13,7 @@ import streamlit as st
 import altair as alt
 
 from trading_journal.application.framework import (
+    LEGACY_PSYCHOLOGY_ROADMAP_ITEMS,
     PILLAR_NAMES,
     ROADMAP_LEVEL_NAMES,
     FrameworkService,
@@ -27,6 +28,8 @@ from trading_journal.application.reporting_time import reporting_datetime
 from trading_journal.domain.review_taxonomy import REVIEW_MISTAKE_CODES, REVIEW_MISTAKES_BY_PILLAR
 from trading_journal.infrastructure.sqlite_repository import (
     ASSESSMENT_CRITERIA,
+    CURRENT_RUBRIC_VERSION,
+    LEGACY_RUBRIC_VERSION,
     PSYCHOLOGY_CRITERIA,
     RISK_CRITERIA,
     SYSTEM_CRITERIA,
@@ -46,6 +49,11 @@ REVIEW_PAGE_SIZE = 25
 CRITERIA_GRID_COLUMNS = 4
 PILLAR_ACCENT_COLORS = {"Psychology": "blue", "Risk management": "orange", "Trading system": "violet"}
 CRITERION_LABELS = {
+    "edge_execution": "Edge execution",
+    "risk_acceptance": "Risk acceptance",
+    "probability_mindset": "Probability mindset",
+    "outcome_independence": "Outcome independence and reset",
+    # Legacy labels remain available for rubric-v1 history.
     "rule_adherence": "Rule adherence",
     "impulse_control": "Impulse control",
     "emotional_control": "Emotional control",
@@ -60,6 +68,20 @@ CRITERION_LABELS = {
     "invalidation_fidelity": "Invalidation / stop fidelity",
     "management_exit_fidelity": "Management / exit fidelity",
 }
+CRITERION_HELP = {
+    "edge_execution": "When the documented edge appeared, did I execute it without hesitation, chasing, or improvisation?",
+    "risk_acceptance": "Before entry, had I genuinely accepted the predefined loss so fear or hope did not alter the trade?",
+    "probability_mindset": "Did I treat this trade as one uncertain event in a series rather than needing to predict the outcome?",
+    "outcome_independence": "Did I judge the trade by process and reset after its result before making another decision?",
+    "policy_adherence": "Was the trade compatible with the account Risk policy?",
+    "position_size_accuracy": "Was position size appropriate for the intended risk?",
+    "stop_discipline": "Was invalidation defined before entry and was the stop respected rather than widened or ignored?",
+    "exposure_limit_compliance": "Were the applicable exposure and loss-limit controls respected?",
+    "setup_validity": "Was the documented strategy setup actually present?",
+    "context_alignment": "Did market, session, timeframe, and regime meet the strategy rules?",
+    "entry_fidelity": "Did entry follow the documented trigger?",
+    "management_exit_fidelity": "Were trade management and exit consistent with the strategy?",
+}
 VIOLATION_LABELS = {
     "fomo_or_chase": "FOMO / chased price",
     "revenge": "Revenge traded",
@@ -68,6 +90,9 @@ VIOLATION_LABELS = {
     "fear_hesitation": "Hesitated because of fear",
     "forced_trade": "Forced an impatient trade",
     "post_loss_reset": "Failed to reset after a loss",
+    "certainty_seeking": "Needed certainty or tried to predict",
+    "risk_not_accepted": "Had not accepted the predefined risk",
+    "outcome_attachment": "Let a prior outcome influence the decision",
     "position_size_too_large": "Position size was too large",
     "overtrading_positions": "Opened too many positions",
     "correlation_exposure": "Took too much correlated exposure",
@@ -124,18 +149,17 @@ PERIOD_ALERT_LABELS = {
     "monthly_review_due": "Monthly review due",
 }
 COMPONENT_DEFINITIONS = {
-    "Rule adherence": "Average reviewed Rule adherence grade.",
-    "Impulse control": "Average reviewed Impulse control grade.",
-    "Emotional control": "Average reviewed Emotional control grade.",
-    "Post-loss discipline": "The next reviewed trade after a loss across all active accounts: its Impulse control grade, or 0 when tagged post_loss_reset. 100 when the sample has no eligible post-loss sequence.",
+    "Edge execution": "Average reviewed Edge execution grade.",
+    "Risk acceptance": "Average reviewed Risk acceptance grade.",
+    "Probability mindset": "Average reviewed Probability mindset grade.",
+    "Outcome independence and reset": "Average reviewed Outcome independence and reset grade.",
     "Policy adherence": "Average reviewed Policy adherence grade.",
     "Stop discipline": "Average reviewed Stop discipline grade.",
     "Limit compliance": "100 for a reviewed trade with no historical daily/weekly/drawdown/streak event; 0 when an event occurred.",
     "Exposure control": "Average reviewed Exposure-limit compliance grade.",
     "Setup validity": "Average reviewed Setup validity grade.",
-    "Execution fidelity": "Average of Entry, Invalidation, and Management/exit grades.",
+    "Execution fidelity": "Average of Entry and Management/exit grades.",
     "Context alignment": "Average reviewed Context alignment grade.",
-    "Evidence quality": "100 when the attached strategy's backtest is marked verified; otherwise 0.",
     "Edge evidence": "100 when the attached strategy's backtest is marked verified; otherwise 0.",
 }
 
@@ -158,6 +182,23 @@ def _render_help_popover(*captions: str, icon: str = ":material/help:") -> None:
 
 def _score_text(value: str | None) -> str:
     return "—" if value is None else format_score(value)
+
+
+def _rubric_label(rubric_version: str | None) -> str:
+    return tr("Legacy 13-criterion") if rubric_version == LEGACY_RUBRIC_VERSION else tr("Zone-aligned 12-criterion")
+
+
+def _render_rubric_sample_caption(scores: tuple[PillarScore, ...], window: int) -> None:
+    reviewed = min((score.reviewed_total for score in scores), default=0)
+    legacy = max((score.legacy_reviewed_total for score in scores), default=0)
+    st.caption(
+        tr(
+            "Zone-aligned sample: {reviewed}/{window} reviewed trades · {legacy} legacy review(s) retained in history and excluded",
+            reviewed=reviewed,
+            window=window,
+            legacy=legacy,
+        )
+    )
 
 
 def _review_history_code_label(code: str, *, alert: bool = False) -> str:
@@ -435,6 +476,7 @@ def render_framework_dashboard(repo: SQLiteJournalRepository, account: AccountLi
     policy = repo.get_active_risk_policy(account.id)
     st.markdown(tr("#### Three-pillar monitor"))
     st.caption(tr("This compact view always uses a fixed 20-trade window. Open Bearings → Monitor to adjust the rolling sample."))
+    _render_rubric_sample_caption(scores, 20)
     _render_risk_configuration_notice(service, account.id)
     readiness_value, readiness_delta, readiness_color = _readiness_metric(readiness)
     state_value, state_delta, state_color = _risk_state_metric(snapshot)
@@ -753,12 +795,20 @@ def _render_imported_execution(repo: SQLiteJournalRepository, account: AccountLi
             )
 
 
-def _grade_control(label: str, *, existing: str | None, key: str) -> str | None:
+def _grade_control(label: str, *, existing: str | None, key: str, help_text: str | None = None) -> str | None:
     # Only pass a default on this widget's first render. Once a value is stored under `key`
     # (e.g. by a "Mark as Pass" button's on_click), passing a non-None default alongside it is
     # ambiguous to Streamlit and logs a "default value but also set via Session State" warning.
     default = existing.capitalize() if existing and key not in st.session_state else None
-    choice = st.segmented_control(label, GRADE_OPTIONS, format_func=tr, default=default, key=key, width="content")
+    choice = st.segmented_control(
+        label,
+        GRADE_OPTIONS,
+        format_func=tr,
+        default=default,
+        key=key,
+        help=None if help_text is None else tr(help_text),
+        width="content",
+    )
     return None if choice is None else choice.casefold()
 
 
@@ -825,6 +875,13 @@ def _render_post_trade_review_dialog(repo: SQLiteJournalRepository, account: Acc
         st.rerun()
     if existing is not None:
         st.caption("Changing member positions supersedes this assessment and requires a new review. Changing only the label keeps it active.")
+    if existing_manual is not None and existing_manual.rubric_version == LEGACY_RUBRIC_VERSION:
+        st.info(
+            tr(
+                "This review uses the legacy 13-criterion rubric. Saving a correction preserves it in history and creates a Zone-aligned 12-criterion review; rate the four new Psychology criteria explicitly."
+            ),
+            icon=":material/history:",
+        )
     strategy = repo.get_account_strategy(account.id)
     policy = repo.get_active_risk_policy(account.id)
     rule_settings = repo.get_framework_rule_settings()
@@ -928,6 +985,7 @@ def _render_post_trade_review_dialog(repo: SQLiteJournalRepository, account: Acc
                             f"{tr(CRITERION_LABELS[criterion])} *",
                             existing=criterion_existing,
                             key=f"assessment-{trade.id}-{criterion}",
+                            help_text=CRITERION_HELP.get(criterion),
                         )
         legacy_mistakes = tuple(
             code for code in (existing_manual.violation_codes if existing_manual else ()) if code not in REVIEW_MISTAKE_CODES
@@ -1040,14 +1098,20 @@ def _render_review_history(repo: SQLiteJournalRepository, account_id: int, trade
         for revision in revisions:
             failed = sum(value == "fail" for value in revision.criterion_grades.values())
             strategy_label = revision.strategy_snapshot.name if revision.strategy_snapshot is not None else tr("Auto-approved")
-            st.markdown(f"**{tr('Version {version}', version=revision.version)}** · {revision.archived_at[:19]} · {strategy_label}")
+            st.markdown(
+                f"**{tr('Version {version}', version=revision.version)}** · "
+                f"{_rubric_label(revision.rubric_version)} · {revision.archived_at[:19]} · {strategy_label}"
+            )
             hard_rule_text = ", ".join(tr(HARD_RULE_LABELS.get(code, code)) for code in revision.hard_rule_codes) or tr("none")
             st.caption(tr("{failed} failed criterion/criteria · Hard rules: {hard_rules}", failed=failed, hard_rules=hard_rule_text))
             if revision.post_review_note:
                 st.write(revision.post_review_note)
         for assessment in superseded:
             positions = ", ".join(f"#{position_id}" for position_id in assessment.assessed_position_ids)
-            st.markdown(f"**{tr('Superseded assessment')}** · {assessment.superseded_at[:19] if assessment.superseded_at else '—'} · {assessment.assessed_trade_label}")
+            st.markdown(
+                f"**{tr('Superseded assessment')}** · {_rubric_label(assessment.rubric_version)} · "
+                f"{assessment.superseded_at[:19] if assessment.superseded_at else '—'} · {assessment.assessed_trade_label}"
+            )
             reason = tr(assessment.superseded_reason) if assessment.superseded_reason else tr("Logical-trade membership changed")
             st.caption(tr("Assessed {positions} · {reason}", positions=positions, reason=reason))
             if assessment.post_review_note:
@@ -1487,7 +1551,7 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
                         with st.container(horizontal=True, vertical_alignment="center", gap="small", width="content"):
                             st.caption(tr(label))
                             _render_help_popover(
-                                "P = Psychology · R = Risk management · S = Trading system. This is each trade's own 13-criterion score — the Monitor tab's rolling pillar scores use a different calculation and can show a different number.",
+                                "P = Psychology · R = Risk management · S = Trading system. Each trade keeps the rubric used when it was reviewed; the Monitor uses only Zone-aligned reviews and a different rolling calculation.",
                                 "Classification below: first word = process quality (Good/Needs improvement/Bad), second word = P&L outcome (Win/Loss/Breakeven) — independent of each other.",
                             )
                 else:
@@ -1540,6 +1604,8 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
                     f"R {_score_text(score.risk_score)}{risk_flag}  \n"
                     f"S {_score_text(score.system_score)}{system_flag}"
                 )
+                if score.rubric_version is not None:
+                    score_column.caption(_rubric_label(score.rubric_version))
                 _mobile_field_label(process_column, "Hard rules")
                 if score.process_status == "FAIL":
                     process_column.badge(tr("Fail"), icon=":material/error:", color="red")
@@ -1564,7 +1630,7 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
                     help_text = (
                         "Approve this within-policy automatic risk evidence so it counts toward your pillar scores."
                         if is_within_policy
-                        else "Accept the automatic risk evidence in one click instead of a full 13-criterion review."
+                        else "Accept the automatic risk evidence in one click instead of a full Zone-aligned 12-criterion review."
                     )
                     if actions_column.button(
                         label,
@@ -1696,6 +1762,7 @@ def _render_monitor(repo: SQLiteJournalRepository, account: AccountListItem) -> 
     readiness = service.readiness(account.id, window=int(window))
     coverage = service.risk_evidence_coverage(account.id, window=int(window))
     analysis = service.monitor_analysis(account.id, start_date=start_date, end_date=end_date, window=int(window))
+    _render_rubric_sample_caption(scores, int(window))
     _render_framework_focus(repo, account, service, scores)
     readiness_value, readiness_delta, readiness_color = _readiness_metric(readiness)
     st.metric(
@@ -1749,8 +1816,17 @@ def _render_monitor_process(service: FrameworkService, account: AccountListItem,
     if trend:
         with st.container(horizontal=True, vertical_alignment="center", gap="small", width="content"):
             st.markdown("##### Score trend")
-            _render_help_popover("Each point keeps the same approved-review scoring rules as the score cards.")
-        frame = pd.DataFrame(trend, columns=["Closed", "Psychology", "Risk management", "Trading system"]).set_index("Closed")
+            _render_help_popover("Zone-aligned series follow the selected rolling window. Legacy series preserve each trade's original score, and the rubrics remain separate so unlike criteria are never silently blended.")
+        records = []
+        for closed, psychology, risk, system, rubric_version in trend:
+            rubric = _rubric_label(rubric_version)
+            records.append({
+                "Closed": closed,
+                f"Psychology · {rubric}": None if psychology is None else float(psychology),
+                f"Risk management · {rubric}": None if risk is None else float(risk),
+                f"Trading system · {rubric}": None if system is None else float(system),
+            })
+        frame = pd.DataFrame(records).groupby("Closed", as_index=True).first()
         st.line_chart(frame, width="stretch")
     else:
         st.info("No approved review trend exists in this analysis period.")
@@ -2056,7 +2132,7 @@ def _render_period_reviews(repo: SQLiteJournalRepository, account: AccountListIt
                 if status.closed_trades:
                     st.write(
                         tr(
-                            "{reviewed} of {closed} closed trades reviewed · {pending} pending",
+                            "{reviewed} of {closed} closed trades reviewed with the current rubric · {pending} pending",
                             reviewed=format_count(status.reviewed_trades),
                             closed=format_count(status.closed_trades),
                             pending=format_count(pending),
@@ -2087,7 +2163,7 @@ def _render_period_reviews(repo: SQLiteJournalRepository, account: AccountListIt
                 st.caption(f"{status.period_start} to {status.period_end}")
                 st.caption(
                     tr(
-                        "{reviewed} reviewed · {closed} closed",
+                        "{reviewed} current-rubric reviewed · {closed} closed",
                         reviewed=format_count(status.reviewed_trades),
                         closed=format_count(status.closed_trades),
                     )
@@ -2189,6 +2265,7 @@ def _render_period_reviews(repo: SQLiteJournalRepository, account: AccountListIt
                     tr("Cadence"): tr(f"{review.cadence.capitalize()} review"),
                     tr("Period"): f"{review.period_start} to {review.period_end}",
                     tr("Status"): tr(review.status.capitalize()),
+                    tr("Rubric"): _rubric_label(review.rubric_version),
                     tr("Psychology"): _score_text(review.psychology_score),
                     tr("Risk management"): _score_text(review.risk_score),
                     tr("Trading system"): _score_text(review.system_score),
@@ -2210,6 +2287,7 @@ def _render_period_reviews(repo: SQLiteJournalRepository, account: AccountListIt
 def _render_roadmap(repo: SQLiteJournalRepository, account: AccountListItem) -> None:
     service = FrameworkService(repo)
     statuses = {item.pillar: item for item in service.roadmap_status(account.id)}
+    legacy_psychology_evidence = service.legacy_psychology_roadmap_evidence(account.id)
     with st.container(horizontal=True, vertical_alignment="center", gap="small", width="content"):
         st.markdown("#### Readiness roadmap")
         _render_help_popover("Define, Test, Execute, Measure, then Optimize. Most steps are detected automatically as you use the journal — only a few still need your own note.")
@@ -2279,6 +2357,18 @@ def _render_roadmap(repo: SQLiteJournalRepository, account: AccountListItem) -> 
                         tag = tr("Auto") if item.is_auto else tr("Manual")
                         detail = f" — {item.evidence_summary}" if item.evidence_summary else ""
                         st.markdown(f"- {tr('Level')} {item.level} · {tag}: {tr(item.label)}{detail}")
+            if pillar == "psychology" and legacy_psychology_evidence:
+                with st.expander(tr("Legacy Psychology roadmap evidence"), icon=":material/archive:"):
+                    st.caption(
+                        tr(
+                            "These pre-v2 notes are retained for audit history. They do not satisfy the Zone-aligned roadmap because the underlying Psychology evidence changed."
+                        )
+                    )
+                    for item in sorted(legacy_psychology_evidence, key=lambda entry: (entry.level, entry.item_key)):
+                        state = tr("Completed") if item.completed else tr("Not completed")
+                        detail = f" — {item.evidence_note}" if item.evidence_note else ""
+                        label = LEGACY_PSYCHOLOGY_ROADMAP_ITEMS[item.item_key]
+                        st.markdown(f"- {tr('Level')} {item.level} · {state}: {tr(label)}{detail}")
 def _render_risk_policy(repo: SQLiteJournalRepository, account: AccountListItem) -> None:
     policy = repo.get_active_risk_policy(account.id)
     funded = repo.get_account_funded_capital(account.id)

@@ -532,7 +532,7 @@ Focus on:
 - Psychology patterns
 - Risk violations
 - Setup quality
-- Rule adherence
+- Edge execution, risk acceptance, probability mindset, and outcome independence
 - Repeated mistakes
 - R performance
 - One priority for improvement
@@ -607,9 +607,9 @@ Keep the app simple enough that post-trade assessment actually gets completed.
 | Module | Minimum data |
 |---|---|
 | Trade | Instrument, direction, entry, exit, result in R, date/time |
-| Psychology Assessment | Rule adherence, FOMO/chase/revenge flags, emotional interference, violations |
+| Psychology Assessment | Edge execution, risk acceptance, probability mindset, outcome independence/reset, behavioural flags |
 | Risk Assessment | Planned risk, actual risk, stop behavior, daily/open risk, breaches |
-| System Assessment | Setup, context/regime, entry fidelity, invalidation, management/exit fidelity, system version |
+| System Assessment | Setup, context/regime, entry fidelity, management/exit fidelity, system version |
 | Trade Review | Hard-rule status, lesson, trade quality classification |
 | Period Review | Three pillar scores, repeated issues, strongest/weakest pillar, priority action |
 | Dashboard | Pillar trends, Process Quality, R performance, violations, readiness |

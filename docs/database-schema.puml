@@ -140,6 +140,7 @@ entity "post_trade_assessments" as post_trade_assessments {
   + mt5_account_id : INTEGER
   + logical_trade_id : INTEGER
   method : VARCHAR(16)
+  rubric_version : VARCHAR(24)
   + risk_policy_id : INTEGER?
   risk_evidence_source : VARCHAR(64)?
   risk_policy_state : VARCHAR(32)?
@@ -168,6 +169,7 @@ entity "post_trade_assessment_revisions" as post_trade_assessment_revisions {
   + post_trade_assessment_id : INTEGER
   version : INTEGER
   method : VARCHAR(16)
+  rubric_version : VARCHAR(24)
   risk_policy_id : INTEGER?
   risk_evidence_source : VARCHAR(64)?
   risk_policy_state : VARCHAR(32)?
@@ -199,6 +201,7 @@ entity "framework_period_reviews" as framework_period_reviews {
   --
   + mt5_account_id : INTEGER
   cadence : VARCHAR(12)
+  rubric_version : VARCHAR(24)
   period_start : VARCHAR(10)
   period_end : VARCHAR(10)
   psychology_score : VARCHAR?
@@ -211,7 +214,7 @@ entity "framework_period_reviews" as framework_period_reviews {
   priority_action : TEXT
   created_at : VARCHAR(64)
   --
-  UQ(mt5_account_id, cadence, period_start, period_end)
+  UQ(mt5_account_id, cadence, period_start, period_end, rubric_version)
 }
 
 entity "pillar_roadmap_evidence" as pillar_roadmap_evidence {
@@ -228,6 +231,19 @@ entity "pillar_roadmap_evidence" as pillar_roadmap_evidence {
   UQ(scope_key, pillar, level, item_key)
 }
 
+entity "framework_focuses" as framework_focuses {
+  * id : INTEGER
+  --
+  account_id : INTEGER?
+  pillar : VARCHAR(24)
+  metric_kind : VARCHAR(24)
+  metric_code : VARCHAR(80)?
+  rubric_version : VARCHAR(24)
+  status : VARCHAR(16)
+  created_at : VARCHAR(64)
+  resolved_at : VARCHAR(64)?
+}
+
 journal_settings }o--|| strategy_profiles : default strategy profile
 strategy_profiles ||--o{ strategy_magic_numbers : maps
 mt5_accounts ||--o{ logical_trades : owns
@@ -242,6 +258,7 @@ account_risk_policies ||--o{ post_trade_assessments : baseline for
 strategy_profiles ||--o{ post_trade_assessments : evaluated against
 post_trade_assessments ||--o{ post_trade_assessment_revisions : archives
 mt5_accounts ||--o{ framework_period_reviews : summarizes
+mt5_accounts ||--o{ framework_focuses : coaches
 
 note bottom of post_trade_assessment_revisions
   risk_policy_id and strategy_profile_id are historical
@@ -253,9 +270,11 @@ note top of post_trade_assessments
   regardless of method. "auto" rows (one-click approvals) leave
   strategy_profile_id/strategy_snapshot/post_review_note null and
   carry risk_evidence_source/risk_policy_state as an approval-time
-  snapshot; "manual" rows (full 13-criterion assessments) populate
+  snapshot; "manual" rows (current 12-criterion assessments) populate
   everything and leave those two risk fields null. Both count toward
-  pillar scores identically once active.
+  current pillar scores identically once active and tagged zone_v2.
+  Migrated legacy_v1 rows retain historical scores but are excluded
+  from current monitoring, readiness, coaching, and roadmap gates.
 end note
 
 note bottom of pillar_roadmap_evidence

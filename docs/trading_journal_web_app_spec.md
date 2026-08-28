@@ -1681,7 +1681,7 @@ This is a **post-trade journal only**. MT5 is the execution terminal. The app ne
 1. MT5 exports a completed position to the local CSV.
 2. The app imports that immutable position.
 3. Open **Framework → Review trades**, filter the register by **Needs approval**, **Reviewed**, **Failed**, or **All**, then open a trade row.
-4. Record or correct all 13 three-pillar criteria as **Pass**, **Partial**, or **Fail**, then add reason tags, hard-rule events, a review note, and a corrective action when required.
+4. Record or correct all 12 current three-pillar criteria as **Pass**, **Partial**, or **Fail**, then add reason tags, hard-rule events, a review note, and a corrective action when required.
 5. Use the Dashboard, rolling Framework scorecards, saved period reviews, and Roadmap to spot repeated process failures.
 
 Every imported closed position is visible in the review register. Within-policy automatic Risk evidence becomes an **Auto-review**; over-policy or unavailable evidence is **Needs approval**. The register also shows the attached **Risk limit** (the policy maximum) and **Actual risk** amount in the account currency. Actual risk uses the declared review value when present, otherwise a usable automatic Risk source; it is never silently replaced by the policy limit. A full post-trade review replaces an auto-approval. One review belongs to one MT5 position, so a review cannot be attached to a different account’s trade.
@@ -1692,15 +1692,15 @@ Schema-v5 MT5 exports provide entry SL/TP, calculated initial risk/reward where 
 
 | Pillar | Explicit post-trade criteria | Trade-level weights |
 |---|---|---|
-| Psychology | Rule adherence, impulse control, emotional control, patience & discipline. | 35 / 25 / 20 / 20 |
+| Psychology | Edge execution, risk acceptance, probability mindset, outcome independence & reset. | 35 / 25 / 20 / 20 |
 | Risk management | Policy adherence, position-size accuracy, stop discipline, exposure & limit compliance. | 35 / 20 / 25 / 20 |
-| Trading system | Setup validity, context, entry, invalidation, management/exit fidelity. | 30 / 20 / 20 / 15 / 15 |
+| Trading system | Setup validity, context alignment, entry fidelity, management/exit fidelity. | 30 / 25 / 20 / 25 |
 
 Every criterion is rated **Pass = 100**, **Partial = 50**, or **Fail = 0**. Failed criteria require at least one reason tag; a Partial, Fail, or hard-rule event requires one corrective action. The raw process average is retained for diagnosis, but a configured hard-rule event sets **Process Quality = FAIL**. Outcomes are separately classified as Good/Bad Win, Loss, or Breakeven.
 
 The review is independent of P&L: a losing rule-following trade may be good process, while a profitable rule-breaking trade is not.
 
-The strategy profile is snapshotted with the review, so later strategy edits do not reinterpret historic System evidence. A correction creates a new review version and archives the prior version, including its strategy snapshot and all recorded evidence. The selected account’s active risk-policy version is attached to the review when available.
+The strategy profile is snapshotted with the review, so later strategy edits do not reinterpret historic System evidence. A correction creates a new review version and archives the prior version, including its strategy snapshot and all recorded evidence. The selected account’s active risk-policy version is attached to the review when available. Current reviews use rubric version `zone_v2`; migrated 13-criterion reviews retain `legacy_v1` scores in history and trends but are excluded from current monitoring, readiness, coaching, and roadmap gates.
 
 ## 37.3 Post-trade Risk Monitoring
 
@@ -1716,7 +1716,7 @@ These statuses are retrospective monitoring signals for the next review or sessi
 
 ## 37.4 Scores, roadmap, and interpretation
 
-Scores use a selectable rolling sample of 20, 30, or 50 **reviewed** closed trades, including Auto-reviews and approved Auto-reviews. These use neutral (`Partial`) Psychology/System defaults; Risk policy adherence is Pass only when automatic evidence is within policy. Needs-approval imports are excluded until approved or fully assessed. P&L and other outcome metrics never alter Psychology, Trading System, or Process evidence. Psychology, Risk, and Trading System scores and monitoring are all account-specific because each account represents an independent system. Readiness is the lowest complete pillar, never an average. A configured hard-rule event sets the affected pillar and readiness to **FAIL** for its active rolling sample. Repeated tagged critical breaches cap the affected numeric pillar score at 59 until a later weekly or monthly review records the response.
+Scores use a selectable rolling sample of **reviewed** `zone_v2` closed trades, including approved Auto-reviews and Manual reviews. These use neutral (`Partial`) Psychology/System defaults; Risk policy adherence is Pass only when automatic evidence is within policy. Needs-approval imports and legacy reviews are excluded until approved or assessed with the current rubric. P&L and other outcome metrics never alter Psychology, Trading System, or Process evidence. Psychology, Risk, and Trading System scores and monitoring are all account-specific because each account represents an independent system. Readiness is the lowest complete pillar, never an average. A configured hard-rule event sets the affected pillar and readiness to **FAIL** for its active rolling sample. Repeated tagged critical breaches cap the affected numeric pillar score at 59 until a later weekly or monthly review records the response.
 
 The three roadmap pillars progress in parallel through Define, Test, Execute, Measure, and Optimise. Level 3 requires 20 post-trade reviews, a score of at least 70, and no active hard failure. Level 4 requires 30 reviews, a score of at least 80, no active hard failure, and a saved period review. Auto-reviews and approved Auto-reviews advance a roadmap gate; needs-approval imports do not. Checklist completion needs a written evidence note, while reviewed evidence is required for maturity decisions. Saved weekly/monthly reviews snapshot the period-end scores, alerts, recurring issues, reflection, and one priority action.
 

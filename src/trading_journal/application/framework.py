@@ -12,6 +12,8 @@ from trading_journal.application.reporting_time import reporting_date, reporting
 from trading_journal.domain.review_taxonomy import canonical_violation_code, violation_pillars, violation_sort_key
 
 from trading_journal.infrastructure.sqlite_repository import (
+    CURRENT_RUBRIC_VERSION,
+    LEGACY_RUBRIC_VERSION,
     PSYCHOLOGY_CRITERIA,
     RISK_CRITERIA,
     SYSTEM_CRITERIA,
@@ -32,15 +34,20 @@ PILLAR_NAMES = {"psychology": "Psychology", "risk": "Risk management", "system":
 GRADE_VALUES = {"pass": Decimal("100"), "partial": Decimal("50"), "fail": Decimal("0")}
 GOOD_PROCESS_SCORE = Decimal("70")
 REVIEWED_KINDS = frozenset({"approved_auto_review", "manual_review"})
-TRADE_WEIGHTS = {
+LEGACY_TRADE_WEIGHTS = {
     "psychology": (("rule_adherence", Decimal("0.35")), ("impulse_control", Decimal("0.25")), ("emotional_control", Decimal("0.20")), ("patience_discipline", Decimal("0.20"))),
     "risk": (("policy_adherence", Decimal("0.35")), ("position_size_accuracy", Decimal("0.20")), ("stop_discipline", Decimal("0.25")), ("exposure_limit_compliance", Decimal("0.20"))),
     "system": (("setup_validity", Decimal("0.30")), ("context_alignment", Decimal("0.20")), ("entry_fidelity", Decimal("0.20")), ("invalidation_fidelity", Decimal("0.15")), ("management_exit_fidelity", Decimal("0.15"))),
 }
+TRADE_WEIGHTS = {
+    "psychology": (("edge_execution", Decimal("0.35")), ("risk_acceptance", Decimal("0.25")), ("probability_mindset", Decimal("0.20")), ("outcome_independence", Decimal("0.20"))),
+    "risk": (("policy_adherence", Decimal("0.35")), ("position_size_accuracy", Decimal("0.20")), ("stop_discipline", Decimal("0.25")), ("exposure_limit_compliance", Decimal("0.20"))),
+    "system": (("setup_validity", Decimal("0.30")), ("context_alignment", Decimal("0.25")), ("entry_fidelity", Decimal("0.20")), ("management_exit_fidelity", Decimal("0.25"))),
+}
 PERIOD_WEIGHTS = {
     "psychology": (Decimal("0.35"), Decimal("0.25"), Decimal("0.20"), Decimal("0.20")),
     "risk": (Decimal("0.35"), Decimal("0.25"), Decimal("0.25"), Decimal("0.15")),
-    "system": (Decimal("0.20"), Decimal("0.20"), Decimal("0.15"), Decimal("0.20"), Decimal("0.25")),
+    "system": (Decimal("0.25"), Decimal("0.20"), Decimal("0.25"), Decimal("0.30")),
 }
 CRITICAL_VIOLATIONS = {
     "psychology": frozenset({"revenge", "emotional_sizing", "post_loss_reset", "oversized_revenge"}),
@@ -48,15 +55,15 @@ CRITICAL_VIOLATIONS = {
     "system": frozenset({"mandatory_setup_absent"}),
 }
 COMPONENT_CODES = {
-    "rule_adherence": "Rule adherence", "impulse_control": "Impulse control", "emotional_control": "Emotional control", "post_loss_discipline": "Post-loss discipline",
+    "edge_execution": "Edge execution", "risk_acceptance": "Risk acceptance", "probability_mindset": "Probability mindset", "outcome_independence": "Outcome independence and reset",
     "policy_adherence": "Policy adherence", "stop_discipline": "Stop discipline", "limit_compliance": "Limit compliance", "exposure_control": "Exposure control",
-    "setup_validity": "Setup validity", "execution_fidelity": "Execution fidelity", "context_alignment": "Context alignment", "evidence_quality": "Evidence quality", "edge_evidence": "Edge evidence",
+    "setup_validity": "Setup validity", "execution_fidelity": "Execution fidelity", "context_alignment": "Context alignment", "edge_evidence": "Edge evidence",
 }
 
 ROADMAP_ITEMS: dict[str, dict[int, tuple[tuple[str, str], ...]]] = {
     "psychology": {
-        1: (("triggers", "Document triggers and stop conditions"), ("behaviour_rules", "Document no-revenge and no-chase rules")),
-        2: (("practice", "Record structured practice and recurring patterns"),),
+        1: (("probability_beliefs", "Document the probability mindset and mental stop conditions"), ("risk_acceptance_routine", "Document the pre-trade risk-acceptance routine")),
+        2: (("consistency_sample", "Record fixed-sample execution practice and outcome-attachment patterns"),),
         3: (("execution", "20 full reviews, score at least 70, no active hard failure"),),
         4: (("measure", "30 full reviews, current period review, score at least 80"),),
         5: (("hypothesis", "Record one behavioural hypothesis, baseline, result, and keep/reject decision"),),
@@ -78,9 +85,14 @@ ROADMAP_ITEMS: dict[str, dict[int, tuple[tuple[str, str], ...]]] = {
 }
 
 ROADMAP_LEVEL_NAMES: dict[int, str] = {1: "Define", 2: "Test", 3: "Execute", 4: "Measure", 5: "Optimize"}
+LEGACY_PSYCHOLOGY_ROADMAP_ITEMS = {
+    "triggers": "Document triggers and stop conditions",
+    "behaviour_rules": "Document no-revenge and no-chase rules",
+    "practice": "Record structured practice and recurring patterns",
+}
 
 # Items with no equivalent structured data anywhere in the app; the trader must self-certify these.
-_MANUAL_ROADMAP_ITEM_KEYS = frozenset({"triggers", "behaviour_rules", "practice", "test"})
+_MANUAL_ROADMAP_ITEM_KEYS = frozenset({"probability_beliefs", "risk_acceptance_routine", "consistency_sample", "test"})
 
 
 def _decimal_text(value: Decimal) -> str:
@@ -196,6 +208,7 @@ class TradeProcessScore:
     # manually-reviewed trade, so later edits to a strategy's backtest fields
     # never retroactively change an already-reviewed trade's Monitor score.
     mapped_strategy: "StrategyProfileView | StrategyEvidenceSnapshot | None"
+    rubric_version: str | None = None
     setup_snapshot: str | None = None
     session_snapshot: str | None = None
     regime_snapshot: str | None = None
@@ -217,6 +230,7 @@ class PillarScore:
     component_scores: tuple[tuple[str, str | None], ...]
     detail: str
     scope: str
+    legacy_reviewed_total: int = 0
 
 
 @dataclass(frozen=True)
@@ -246,6 +260,7 @@ class MonitorAnalysisPoint:
     direction: str
     outcome: str
     review_kind: str
+    rubric_version: str | None
     overall_score: str | None
     psychology_score: str | None
     risk_score: str | None
@@ -398,13 +413,21 @@ class FrameworkService:
             return self._pillar_score_cache[cache_key]
         all_account_scores, historical_events = self._account_trade_scores(account_id)
         account_scores = self._scores_through(all_account_scores, as_of)
-        scores = (
+        scores = self._pillar_scores_from_sample(account_scores, historical_events, window)
+        self._pillar_score_cache[cache_key] = scores
+        return scores
+
+    def _pillar_scores_from_sample(
+        self,
+        account_scores: tuple[TradeProcessScore, ...],
+        historical_events: dict[int, dict[str, object]],
+        window: int,
+    ) -> tuple[PillarScore, ...]:
+        return (
             self._period_pillar_score("psychology", account_scores, window, "Selected account"),
             self._period_pillar_score("risk", account_scores, window, "Selected account", historical_events),
             self._period_pillar_score("system", account_scores, window, "Selected account"),
         )
-        self._pillar_score_cache[cache_key] = scores
-        return scores
 
     def readiness(self, account_id: int, *, window: int = 20, as_of: date | None = None) -> ReadinessAssessment:
         scores = self.pillar_scores(account_id, window=window, as_of=as_of)
@@ -453,13 +476,19 @@ class FrameworkService:
         # are sitting unreviewed," using the same REVIEWED_KINDS the rest of the app already
         # uses for review-status (Review-tab badge, coaching recommendations, etc.).
         in_period = [item for item in self.trade_process_scores(account_id) if start <= self._trade_date(item.exit_time, item.server_utc_offset_minutes) <= end]
-        reviewed = [item for item in in_period if item.review_kind in REVIEWED_KINDS]
+        reviewed = [
+            item
+            for item in in_period
+            if item.review_kind in REVIEWED_KINDS and item.rubric_version == CURRENT_RUBRIC_VERSION
+        ]
         existing = self._repository.list_framework_period_reviews(account_id, cadence)
         disposition = next(
             (
                 item.status
                 for item in existing
-                if item.period_start == start.isoformat() and item.period_end == end.isoformat()
+                if item.rubric_version == CURRENT_RUBRIC_VERSION
+                and item.period_start == start.isoformat()
+                and item.period_end == end.isoformat()
             ),
             "unreviewed",
         )
@@ -485,7 +514,11 @@ class FrameworkService:
             raise ValueError("Period review cadence must be weekly or monthly")
         current = self._current_report_date(now or datetime.now(timezone.utc), account_id)
         scores = self.trade_process_scores(account_id)
-        saved_reviews = self._repository.list_framework_period_reviews(account_id, cadence)
+        saved_reviews = [
+            item
+            for item in self._repository.list_framework_period_reviews(account_id, cadence)
+            if item.rubric_version == CURRENT_RUBRIC_VERSION
+        ]
         saved_periods = {
             (item.period_start, item.period_end)
             for item in saved_reviews
@@ -504,7 +537,11 @@ class FrameworkService:
             period_key = (start.isoformat(), end.isoformat())
             if period_key in saved_periods:
                 continue
-            reviewed = [item for item in in_period if item.review_kind in REVIEWED_KINDS]
+            reviewed = [
+                item
+                for item in in_period
+                if item.review_kind in REVIEWED_KINDS and item.rubric_version == CURRENT_RUBRIC_VERSION
+            ]
             backlog.append(
                 PeriodReviewStatus(
                     cadence,
@@ -554,7 +591,11 @@ class FrameworkService:
             for item in self.trade_process_scores(account_id)
             if start <= self._trade_date(item.exit_time, item.server_utc_offset_minutes) <= end
         ]
-        reviewed = [item for item in in_period if item.review_kind in REVIEWED_KINDS]
+        reviewed = [
+            item
+            for item in in_period
+            if item.review_kind in REVIEWED_KINDS and item.rubric_version == CURRENT_RUBRIC_VERSION
+        ]
         return OngoingPeriodStatus(
             cadence,
             start.isoformat(),
@@ -638,12 +679,20 @@ class FrameworkService:
         )
 
     def recurring_issues(self, account_id: int, *, window: int = 20, as_of: date | None = None) -> tuple[tuple[str, int], ...]:
-        scored = [item for item in self._scores_through(self.trade_process_scores(account_id), as_of) if item.review_kind in REVIEWED_KINDS][-window:]
+        scored = [
+            item
+            for item in self._scores_through(self.trade_process_scores(account_id), as_of)
+            if item.review_kind in REVIEWED_KINDS and item.rubric_version == CURRENT_RUBRIC_VERSION
+        ][-window:]
         return self._ranked_issue_counts(scored)
 
     @staticmethod
     def _recurring_issues_from_scores(scores: tuple[TradeProcessScore, ...], *, window: int) -> tuple[tuple[str, int], ...]:
-        reviewed = [item for item in scores if item.review_kind in REVIEWED_KINDS][-window:]
+        reviewed = [
+            item
+            for item in scores
+            if item.review_kind in REVIEWED_KINDS and item.rubric_version == CURRENT_RUBRIC_VERSION
+        ][-window:]
         return FrameworkService._ranked_issue_counts(reviewed)
 
     @staticmethod
@@ -665,15 +714,37 @@ class FrameworkService:
             sorted(counter.items(), key=lambda item: (-item[1], violation_sort_key(item[0])))
         )
 
-    def rolling_score_trend(self, account_id: int, *, window: int = 20) -> tuple[tuple[str, str | None, str | None, str | None], ...]:
-        """Historical card-equivalent scores, retaining documented pillar scopes."""
-        reviewed = [item for item in self.trade_process_scores(account_id) if item.review_kind in REVIEWED_KINDS]
-        points: list[tuple[str, str | None, str | None, str | None]] = []
-        for trade in reviewed:
-            as_of = self._trade_date(trade.exit_time, trade.server_utc_offset_minutes)
-            values_by_pillar = {item.pillar: item.score for item in self.pillar_scores(account_id, window=window, as_of=as_of)}
+    def rolling_score_trend(
+        self, account_id: int, *, window: int = 20
+    ) -> tuple[tuple[str, str | None, str | None, str | None, str], ...]:
+        """Historical v2 rolling scores plus labeled legacy per-trade score evidence."""
+        account_scores, historical_events = self._account_trade_scores(account_id)
+        points: list[tuple[str, str | None, str | None, str | None, str]] = []
+        for index, trade in enumerate(account_scores):
+            if trade.review_kind not in REVIEWED_KINDS:
+                continue
             closed = reporting_datetime(trade.exit_time, trade.server_utc_offset_minutes, self._reporting_time_basis()).isoformat()
-            points.append((closed, values_by_pillar["psychology"], values_by_pillar["risk"], values_by_pillar["system"]))
+            if trade.rubric_version == CURRENT_RUBRIC_VERSION:
+                values_by_pillar = {
+                    item.pillar: item.score
+                    for item in self._pillar_scores_from_sample(
+                        account_scores[:index + 1], historical_events, window
+                    )
+                }
+                psychology = values_by_pillar["psychology"]
+                risk = values_by_pillar["risk"]
+                system = values_by_pillar["system"]
+            else:
+                psychology = trade.psychology_score
+                risk = trade.risk_score
+                system = trade.system_score
+            points.append((
+                closed,
+                psychology,
+                risk,
+                system,
+                trade.rubric_version or CURRENT_RUBRIC_VERSION,
+            ))
         return tuple(points)
 
     def risk_evidence_coverage(self, account_id: int, *, window: int = 20) -> RiskEvidenceCoverage:
@@ -735,6 +806,7 @@ class FrameworkService:
                 direction=item.direction,
                 outcome="profit" if Decimal(item.net_pnl) > 0 else "loss" if Decimal(item.net_pnl) < 0 else "breakeven",
                 review_kind=item.review_kind,
+                rubric_version=item.rubric_version,
                 overall_score=item.overall_score,
                 psychology_score=item.psychology_score,
                 risk_score=item.risk_score,
@@ -751,7 +823,11 @@ class FrameworkService:
             )
             for item in scores
         )
-        reviewed = tuple(item for item in points if item.review_kind in REVIEWED_KINDS)
+        reviewed = tuple(
+            item
+            for item in points
+            if item.review_kind in REVIEWED_KINDS and item.rubric_version == CURRENT_RUBRIC_VERSION
+        )
 
         def counts(values: list[str], order: tuple[str, ...] = ()) -> tuple[MonitorBreakdown, ...]:
             counter = Counter(values)
@@ -812,7 +888,11 @@ class FrameworkService:
         focus = self._repository.get_active_framework_focus(account_id)
         if focus is None:
             return None, None
-        reviewed = [item for item in self.trade_process_scores(account_id) if item.review_kind in REVIEWED_KINDS]
+        reviewed = [
+            item
+            for item in self.trade_process_scores(account_id)
+            if item.review_kind in REVIEWED_KINDS and item.rubric_version == CURRENT_RUBRIC_VERSION
+        ]
         completed = max(0, len(reviewed) - focus.starting_manual_reviews)
         sample = reviewed[focus.starting_manual_reviews:focus.starting_manual_reviews + focus.target_reviews]
         current: str | None = None
@@ -838,7 +918,11 @@ class FrameworkService:
         scores = self.pillar_scores(account_id, window=20)
         reviewed = min(item.reviewed_total for item in scores)
         for pillar in PILLAR_NAMES:
-            recent = [item for item in self.trade_process_scores(account_id) if item.review_kind in REVIEWED_KINDS][-20:]
+            recent = [
+                item
+                for item in self.trade_process_scores(account_id)
+                if item.review_kind in REVIEWED_KINDS and item.rubric_version == CURRENT_RUBRIC_VERSION
+            ][-20:]
             latest_code = next((code for item in reversed(recent) for code in item.hard_rule_codes if code in CRITICAL_VIOLATIONS[pillar]), None)
             if latest_code:
                 return replace(self._coaching_recommendation(
@@ -946,14 +1030,17 @@ class FrameworkService:
         actions = {
             "revenge": "After any loss, pause before the next order and re-check the written setup.",
             "stop_widened": "Keep the original invalidation level; do not widen the stop after entry.",
-            "rule_adherence": "Before entry, state the rule that authorizes the trade; skip it if you cannot.",
-            "impulse_control": "Wait for the documented trigger, then take one breath before placing the order.",
+            "edge_execution": "When the documented edge appears and risk is accepted, execute it without hesitation, chasing, or improvisation.",
+            "risk_acceptance": "State the predefined loss before entry and stand aside if you cannot accept that outcome without interference.",
+            "probability_mindset": "Before entry, name the edge and acknowledge that this trade's outcome remains uncertain.",
+            "outcome_independence": "Grade the completed trade by process, then reset before the next decision regardless of P&L.",
+            "certainty_seeking": "Name the edge, accept that the next outcome is unknowable, and execute only the written setup.",
+            "risk_not_accepted": "Write the predefined loss before entry and skip the trade if you are unwilling to take it as planned.",
+            "outcome_attachment": "After the trade, record process quality separately from P&L and complete a reset before considering another order.",
             "policy_adherence": "Calculate the planned risk before entry and reduce size when it exceeds policy.",
             "setup_validity": "Name the documented setup and its invalidation before entering; otherwise stand aside.",
-            "post_loss_discipline": "After a loss, pause and confirm the next setup meets the written plan before re-entering.",
             "limit_compliance": "Check the daily and weekly loss limits before taking additional risk.",
-            "execution_fidelity": "Use the documented entry, invalidation, and exit sequence without improvising.",
-            "evidence_quality": "Record the setup evidence and review it before changing the system.",
+            "execution_fidelity": "Use the documented entry, management, and exit sequence without improvising.",
             "edge_evidence": "Keep the system unchanged while you collect enough representative reviewed evidence.",
         }
         action = actions.get(metric_code, f"Before the next trade, verify {label} against the written plan and stand aside if it is not met.")
@@ -1051,6 +1138,14 @@ class FrameworkService:
             statuses.append(PillarRoadmapStatus(pillar, completed_count, total, current_level, tuple(items)))
         return tuple(statuses)
 
+    def legacy_psychology_roadmap_evidence(self, account_id: int) -> tuple[PillarRoadmapEvidenceView, ...]:
+        """Retain superseded Psychology roadmap notes as visible audit evidence."""
+        return tuple(
+            item
+            for item in self._repository.list_pillar_roadmap_evidence(account_id)
+            if item.pillar == "psychology" and item.item_key in LEGACY_PSYCHOLOGY_ROADMAP_ITEMS
+        )
+
     def save_pillar_roadmap_evidence(
         self,
         *,
@@ -1078,6 +1173,7 @@ class FrameworkService:
             status = self.period_review_status(account_id, cadence, now=now)
             if any(
                 review.status == "reviewed"
+                and review.rubric_version == CURRENT_RUBRIC_VERSION
                 and review.period_start == status.period_start
                 and review.period_end == status.period_end
                 for review in self._repository.list_framework_period_reviews(account_id, cadence)
@@ -1205,12 +1301,20 @@ class FrameworkService:
         # A reviewed trade is either a one-click approval of normalized MT5
         # evidence or a full Manual Review. Both use persisted criterion grades
         # and have equal weight in framework scoring and maturity gates.
-        reviewed = [item for item in scores if item.review_kind in REVIEWED_KINDS]
+        all_reviewed = [item for item in scores if item.review_kind in REVIEWED_KINDS]
+        reviewed = [item for item in all_reviewed if item.rubric_version == CURRENT_RUBRIC_VERSION]
+        legacy_reviewed = sum(item.rubric_version == LEGACY_RUBRIC_VERSION for item in all_reviewed)
         sample = reviewed[-window:]
         automatic = sum(item.review_kind in {"auto_review", "approved_auto_review"} for item in scores)
         unreviewed = sum(item.review_kind not in REVIEWED_KINDS for item in scores)
         if not sample:
-            return PillarScore(pillar, None, None, "incomplete", 0, 0, unreviewed, automatic, False, 0, (), "No complete post-trade review evidence yet.", scope)
+            detail = "No Zone-aligned post-trade review evidence yet."
+            if legacy_reviewed:
+                detail += f" {legacy_reviewed} legacy review(s) remain in history and are excluded from this v2 sample."
+            return PillarScore(
+                pillar, None, None, "incomplete", 0, 0, unreviewed, automatic,
+                False, 0, (), detail, scope, legacy_reviewed,
+            )
         pnl_by_trade = {item.trade_id: Decimal(item.net_pnl) for item in scores}
         components = self._period_components(pillar, sample, historical_events, pnl_by_trade)
         values = [value for _, value in components]
@@ -1231,6 +1335,8 @@ class FrameworkService:
         status = "fail" if hard_block else "caution" if capped else "incomplete" if len(sample) < window else "ready"
         formatted = tuple((name, None if value is None else _decimal_text(Decimal(value))) for name, value in components)
         detail = f"{len(sample)} of {window} complete review(s) in this rolling sample."
+        if legacy_reviewed:
+            detail += f" {legacy_reviewed} legacy review(s) remain in history and are excluded from this v2 sample."
         if hard_block:
             detail += " A hard-rule failure overrides the numeric score."
         elif capped:
@@ -1239,7 +1345,11 @@ class FrameworkService:
                 if last_critical_date is not None
                 else " Repeated critical violations cap this pillar at 59 until a period review is saved."
             )
-        return PillarScore(pillar, None if score is None else _decimal_text(score), None if raw is None else _decimal_text(raw), status, len(reviewed), len(sample), unreviewed, automatic, hard_block, critical, formatted, detail, scope)
+        return PillarScore(
+            pillar, None if score is None else _decimal_text(score), None if raw is None else _decimal_text(raw),
+            status, len(reviewed), len(sample), unreviewed, automatic, hard_block, critical,
+            formatted, detail, scope, legacy_reviewed,
+        )
 
     def _period_components(
         self,
@@ -1250,11 +1360,16 @@ class FrameworkService:
     ) -> tuple[tuple[str, Decimal | None], ...]:
         grades = {item.trade_id: item.criterion_grades for item in sample if item.criterion_grades is not None}
         if pillar == "psychology":
-            rules = self._average_grade((grades[item.trade_id] for item in sample), "rule_adherence")
-            impulse = self._average_grade((grades[item.trade_id] for item in sample), "impulse_control")
-            emotion = self._average_grade((grades[item.trade_id] for item in sample), "emotional_control")
-            after_loss = self._post_loss_discipline(sample, grades, pnl_by_trade)
-            return (("Rule adherence", rules), ("Impulse control", impulse), ("Emotional control", emotion), ("Post-loss discipline", after_loss))
+            edge = self._average_grade((grades[item.trade_id] for item in sample), "edge_execution")
+            accepted_risk = self._average_grade((grades[item.trade_id] for item in sample), "risk_acceptance")
+            probability = self._average_grade((grades[item.trade_id] for item in sample), "probability_mindset")
+            reset = self._average_grade((grades[item.trade_id] for item in sample), "outcome_independence")
+            return (
+                ("Edge execution", edge),
+                ("Risk acceptance", accepted_risk),
+                ("Probability mindset", probability),
+                ("Outcome independence and reset", reset),
+            )
         if pillar == "risk":
             policy = self._average_grade((grades[item.trade_id] for item in sample), "policy_adherence")
             stop = self._average_grade((grades[item.trade_id] for item in sample), "stop_discipline")
@@ -1264,32 +1379,18 @@ class FrameworkService:
         setup = self._average_grade((grades[item.trade_id] for item in sample), "setup_validity")
         execution_values = []
         for item in sample:
-            execution_values.extend(GRADE_VALUES[grades[item.trade_id][key]] for key in ("entry_fidelity", "invalidation_fidelity", "management_exit_fidelity"))
+            execution_values.extend(
+                GRADE_VALUES[grades[item.trade_id][key]]
+                for key in ("entry_fidelity", "management_exit_fidelity")
+            )
         execution = sum(execution_values, Decimal("0")) / len(execution_values) if execution_values else None
         context = self._average_grade((grades[item.trade_id] for item in sample), "context_alignment")
-        evidence_quality = self._strategy_evidence_component(sample)
-        edge = evidence_quality
-        return (("Setup validity", setup), ("Execution fidelity", execution), ("Context alignment", context), ("Evidence quality", evidence_quality), ("Edge evidence", edge))
+        edge = self._strategy_evidence_component(sample)
+        return (("Setup validity", setup), ("Context alignment", context), ("Execution fidelity", execution), ("Edge evidence", edge))
 
     @staticmethod
     def _average_grade(assessment_iter, criterion: str) -> Decimal | None:  # type: ignore[no-untyped-def]
         values = [GRADE_VALUES[assessment[criterion]] for assessment in assessment_iter]
-        return sum(values, Decimal("0")) / len(values) if values else Decimal("100")
-
-    @staticmethod
-    def _post_loss_discipline(
-        sample: list[TradeProcessScore], assessments: dict[int, dict[str, str]], pnl_by_trade: dict[int, Decimal]
-    ) -> Decimal | None:
-        values = []
-        ordered = sorted(sample, key=lambda item: (item.exit_time, item.trade_id))
-        for previous, current in zip(ordered, ordered[1:], strict=False):
-            if pnl_by_trade.get(previous.trade_id, Decimal("0")) >= 0:
-                continue
-            if "post_loss_reset" in current.violation_codes:
-                values.append(Decimal("0"))
-                continue
-            grade = assessments[current.trade_id]["impulse_control"]
-            values.append(GRADE_VALUES[grade])
         return sum(values, Decimal("0")) / len(values) if values else Decimal("100")
 
     @staticmethod
@@ -1319,7 +1420,9 @@ class FrameworkService:
         last_critical = last_critical_item.exit_time
         last_critical_date = self._trade_date(last_critical, last_critical_item.server_utc_offset_minutes).isoformat()
         reviewed_after = any(
-            review.status == "reviewed" and review.created_at > last_critical
+            review.status == "reviewed"
+            and review.rubric_version == CURRENT_RUBRIC_VERSION
+            and review.created_at > last_critical
             for review in self._repository.list_framework_period_reviews(sample[-1].account_id)
         )
         return reviewed_after, last_critical_date
@@ -1358,9 +1461,10 @@ class FrameworkService:
             else:
                 state, kind, grades = "not_scored", "needs_approval", None
             if grades is not None:
-                psychology = self._pillar_score_from_grades(grades, "psychology")
-                risk = self._pillar_score_from_grades(grades, "risk")
-                system = self._pillar_score_from_grades(grades, "system")
+                rubric_version = assessment.rubric_version if assessment is not None else CURRENT_RUBRIC_VERSION
+                psychology = self._pillar_score_from_grades(grades, "psychology", rubric_version)
+                risk = self._pillar_score_from_grades(grades, "risk", rubric_version)
+                system = self._pillar_score_from_grades(grades, "system", rubric_version)
                 overall = (psychology + risk + system) / Decimal("3")
                 quality = self._quality_status(overall, "PASS")
                 classification = self._classification(Decimal(trade.net_pnl), quality)
@@ -1396,9 +1500,10 @@ class FrameworkService:
                 risk_policy_state,
                 risk_evidence_source,
                 mapped,
-                None,
-                None,
-                None,
+                rubric_version=None if assessment is None else assessment.rubric_version,
+                setup_snapshot=None,
+                session_snapshot=None,
+                regime_snapshot=None,
                 direction=trade.direction,
             )
         psychology = self._trade_pillar_score(assessment, "psychology")
@@ -1432,9 +1537,10 @@ class FrameworkService:
             risk_policy_state,
             risk_evidence_source,
             assessment.strategy_snapshot,
-            assessment.setup_snapshot,
-            assessment.session_snapshot,
-            assessment.regime_snapshot,
+            rubric_version=assessment.rubric_version,
+            setup_snapshot=assessment.setup_snapshot,
+            session_snapshot=assessment.session_snapshot,
+            regime_snapshot=assessment.regime_snapshot,
             direction=trade.direction,
         )
 
@@ -1449,11 +1555,15 @@ class FrameworkService:
 
     @staticmethod
     def _trade_pillar_score(assessment: PostTradeAssessmentView, pillar: str) -> Decimal:
-        return sum((GRADE_VALUES[assessment.criterion_grades[key]] * weight for key, weight in TRADE_WEIGHTS[pillar]), Decimal("0"))
+        weights = LEGACY_TRADE_WEIGHTS if assessment.rubric_version == LEGACY_RUBRIC_VERSION else TRADE_WEIGHTS
+        return sum((GRADE_VALUES[assessment.criterion_grades[key]] * weight for key, weight in weights[pillar]), Decimal("0"))
 
     @staticmethod
-    def _pillar_score_from_grades(grades: dict[str, str], pillar: str) -> Decimal:
-        return sum((GRADE_VALUES[grades[key]] * weight for key, weight in TRADE_WEIGHTS[pillar]), Decimal("0"))
+    def _pillar_score_from_grades(
+        grades: dict[str, str], pillar: str, rubric_version: str = CURRENT_RUBRIC_VERSION
+    ) -> Decimal:
+        weights = LEGACY_TRADE_WEIGHTS if rubric_version == LEGACY_RUBRIC_VERSION else TRADE_WEIGHTS
+        return sum((GRADE_VALUES[grades[key]] * weight for key, weight in weights[pillar]), Decimal("0"))
 
     @staticmethod
     def _quality_status(overall: Decimal, hard_rule_status: str) -> str:

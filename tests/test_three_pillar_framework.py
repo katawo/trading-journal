@@ -2,18 +2,30 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
+import json
 import sqlite3
 
 import pytest
 
 import streamlit as st
 
-from trading_journal.application.framework import FrameworkService, ROADMAP_ITEMS, ReadinessAssessment, RiskSnapshot
+from trading_journal.application.framework import (
+    FrameworkService,
+    LEGACY_TRADE_WEIGHTS,
+    PERIOD_WEIGHTS,
+    ROADMAP_ITEMS,
+    TRADE_WEIGHTS,
+    ReadinessAssessment,
+    RiskSnapshot,
+)
 from trading_journal.application.dashboard import DashboardService
 from trading_journal.domain.models import MT5PositionExport
 from trading_journal.infrastructure.sqlite_repository import (
     ASSESSMENT_CRITERIA,
+    CURRENT_RUBRIC_VERSION,
     JournalDatabaseResetRequiredError,
+    LEGACY_ASSESSMENT_CRITERIA,
+    LEGACY_RUBRIC_VERSION,
     ReviewContextSelection,
     SQLiteJournalRepository,
 )
@@ -36,6 +48,13 @@ from trading_journal.presentation.trade_tags import direction_tag, outcome_tag
 
 
 ALL_PASS = {criterion: "pass" for criterion in ASSESSMENT_CRITERIA}
+
+
+def test_every_trade_and_monitor_rubric_weight_set_totals_one_hundred_percent() -> None:
+    for weights in (*LEGACY_TRADE_WEIGHTS.values(), *TRADE_WEIGHTS.values()):
+        assert sum(weight for _, weight in weights) == Decimal("1")
+    for weights in PERIOD_WEIGHTS.values():
+        assert sum(weights) == Decimal("1")
 
 
 def test_monitor_metrics_use_semantic_colors_without_treating_status_as_a_trend() -> None:
@@ -72,19 +91,19 @@ def test_trade_tags_keep_direction_and_realized_outcome_separate() -> None:
 
 
 def test_marking_a_pillar_as_pass_changes_only_its_criteria() -> None:
-    state = {"assessment-42-rule_adherence": "Fail", "assessment-42-policy_adherence": "Partial"}
+    state = {"assessment-42-edge_execution": "Fail", "assessment-42-policy_adherence": "Partial"}
 
-    _set_pillar_grades_to_pass(42, ("rule_adherence", "impulse_control"), state)
+    _set_pillar_grades_to_pass(42, ("edge_execution", "risk_acceptance"), state)
 
     assert state == {
-        "assessment-42-rule_adherence": "Pass",
-        "assessment-42-impulse_control": "Pass",
+        "assessment-42-edge_execution": "Pass",
+        "assessment-42-risk_acceptance": "Pass",
         "assessment-42-policy_adherence": "Partial",
     }
 
 
 def test_marking_all_criteria_as_pass_sets_every_criterion() -> None:
-    state = {"assessment-42-rule_adherence": "Fail", "assessment-42-policy_adherence": "Partial"}
+    state = {"assessment-42-edge_execution": "Fail", "assessment-42-policy_adherence": "Partial"}
 
     _set_pillar_grades_to_pass(42, ASSESSMENT_CRITERIA, state)
 
@@ -282,7 +301,19 @@ def test_full_assessment_requires_every_explicit_grade(tmp_path) -> None:
     trade_id = _import_position(repository, account_id)
 
     with pytest.raises(ValueError, match="Every three-pillar criterion"):
-        _review(repository, account_id, trade_id, policy, strategy, grades={"rule_adherence": "pass"})
+        _review(repository, account_id, trade_id, policy, strategy, grades={"edge_execution": "pass"})
+
+
+def test_new_assessments_use_the_zone_aligned_twelve_criterion_rubric(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    trade_id = _import_position(repository, account_id)
+
+    assessment = _review(repository, account_id, trade_id, policy, strategy)
+
+    assert assessment.rubric_version == CURRENT_RUBRIC_VERSION
+    assert len(assessment.criterion_grades) == 12
+    assert set(assessment.criterion_grades) == set(ASSESSMENT_CRITERIA)
 
 
 def test_failed_criterion_requires_reason_and_corrective_action(tmp_path) -> None:
@@ -384,7 +415,7 @@ def test_trade_score_uses_documented_weights_and_keeps_raw_scores(tmp_path) -> N
     repository, account_id = _repository(tmp_path)
     policy, strategy = _policy(repository, account_id), _strategy(repository)
     trade_id = _import_position(repository, account_id)
-    grades = {**ALL_PASS, "rule_adherence": "partial"}
+    grades = {**ALL_PASS, "edge_execution": "partial"}
     _review(repository, account_id, trade_id, policy, strategy, grades=grades, tags=("fomo_or_chase",), action="Use the written rules.")
 
     score = FrameworkService(repository).trade_process_scores(account_id)[0]
@@ -519,6 +550,61 @@ def test_within_policy_automatic_risk_is_reviewed_evidence_after_approval(tmp_pa
     assert after_approval.period_review_status(
         account_id, "weekly", now=datetime(2026, 8, 17, tzinfo=timezone.utc)
     ).reviewed_trades == 1
+
+
+def test_zone_score_trend_uses_the_selected_rolling_window(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    first = _import_position(
+        repository, account_id, position_id="trend-first", exit_time="2026-08-10T09:00:00+00:00"
+    )
+    _review(
+        repository,
+        account_id,
+        first,
+        policy,
+        strategy,
+        grades={**ALL_PASS, "edge_execution": "fail"},
+        tags=("fear_hesitation",),
+        action="Execute the accepted edge without hesitation.",
+    )
+    second = _import_position(
+        repository, account_id, position_id="trend-second", exit_time="2026-08-11T09:00:00+00:00"
+    )
+    _review(repository, account_id, second, policy, strategy)
+
+    one_trade_window = FrameworkService(repository).rolling_score_trend(account_id, window=1)
+    two_trade_window = FrameworkService(repository).rolling_score_trend(account_id, window=2)
+
+    assert one_trade_window[-1][1] == "100"
+    assert two_trade_window[-1][1] == "82.5"
+    assert all(point[-1] == CURRENT_RUBRIC_VERSION for point in two_trade_window)
+
+
+def test_zone_score_trend_does_not_look_ahead_to_later_same_day_reviews(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    first = _import_position(
+        repository, account_id, position_id="trend-same-day-first", exit_time="2026-08-10T09:00:00+00:00"
+    )
+    _review(
+        repository,
+        account_id,
+        first,
+        policy,
+        strategy,
+        grades={**ALL_PASS, "edge_execution": "fail"},
+        tags=("fear_hesitation",),
+        action="Execute the accepted edge without hesitation.",
+    )
+    second = _import_position(
+        repository, account_id, position_id="trend-same-day-second", exit_time="2026-08-10T10:00:00+00:00"
+    )
+    _review(repository, account_id, second, policy, strategy)
+
+    trend = FrameworkService(repository).rolling_score_trend(account_id, window=20)
+
+    assert [point[1] for point in trend] == ["65", "82.5"]
 
 
 def test_risk_snapshot_clears_an_expired_daily_limit_breach(tmp_path) -> None:
@@ -1991,7 +2077,7 @@ def test_period_scores_use_the_documented_components(tmp_path) -> None:
     scores = {item.pillar: item for item in FrameworkService(repository).pillar_scores(account_id)}
 
     assert all(item.score == "100" for item in scores.values())
-    assert scores["psychology"].component_scores[-1] == ("Post-loss discipline", "100")
+    assert scores["psychology"].component_scores[-1] == ("Outcome independence and reset", "100")
     assert scores["system"].component_scores[-1] == ("Edge evidence", "100")
 
 
@@ -2404,7 +2490,7 @@ def test_period_review_snapshots_the_completed_period_not_later_trades(tmp_path)
         trade_id = _import_position(repository, account_id, position_id=f"period-{day}", exit_time=f"2026-08-{day:02d}T09:00:00+00:00")
         _review(repository, account_id, trade_id, policy, strategy)
     later_trade = _import_position(repository, account_id, position_id="later", exit_time="2026-08-10T09:00:00+00:00")
-    grades = {**ALL_PASS, "rule_adherence": "partial"}
+    grades = {**ALL_PASS, "edge_execution": "partial"}
     _review(repository, account_id, later_trade, policy, strategy, grades=grades, tags=("fomo_or_chase",), action="Wait for the written setup.")
 
     FrameworkService(repository).save_period_review(
@@ -2441,7 +2527,7 @@ def test_roadmap_execution_gate_rounds_a_non_terminating_score_for_display(tmp_p
     policy, strategy = _policy(repository, account_id), _strategy(repository)
     for index in range(7):
         trade_id = _import_position(repository, account_id, position_id=f"seven-{index}", exit_time=f"2026-08-{index + 1:02d}T09:00:00+00:00")
-        grades = {**ALL_PASS, "impulse_control": "fail"} if index == 0 else ALL_PASS
+        grades = {**ALL_PASS, "risk_acceptance": "fail"} if index == 0 else ALL_PASS
         tags = ("fomo_or_chase",) if index == 0 else ()
         action = "Wait for the written setup." if index == 0 else None
         _review(repository, account_id, trade_id, policy, strategy, grades=grades, tags=tags, action=action)
@@ -2524,10 +2610,10 @@ def test_roadmap_measure_gate_uses_the_full_thirty_review_sample(tmp_path) -> No
                 strategy,
                 grades={
                     **ALL_PASS,
-                    "rule_adherence": "fail",
-                    "impulse_control": "fail",
-                    "emotional_control": "fail",
-                    "patience_discipline": "fail",
+                    "edge_execution": "fail",
+                    "risk_acceptance": "fail",
+                    "probability_mindset": "fail",
+                    "outcome_independence": "fail",
                 },
                 tags=("fomo_or_chase",),
                 action="Follow the written rules before entering.",
@@ -2755,13 +2841,13 @@ def test_corrections_archive_complete_prior_assessment(tmp_path) -> None:
     policy, strategy = _policy(repository, account_id), _strategy(repository)
     trade_id = _import_position(repository, account_id)
     first = _review(repository, account_id, trade_id, policy, strategy)
-    grades = {**ALL_PASS, "impulse_control": "partial"}
+    grades = {**ALL_PASS, "edge_execution": "partial"}
     corrected = _review(repository, account_id, trade_id, policy, strategy, grades=grades, tags=("fomo_or_chase",), action="Wait for the setup.")
     history = repository.list_post_trade_assessment_revisions(trade_id)
 
     assert first.version == 1
     assert corrected.version == 2
-    assert history[0].criterion_grades["impulse_control"] == "pass"
+    assert history[0].criterion_grades["edge_execution"] == "pass"
 
 
 def test_corrections_archive_the_prior_context_snapshot(tmp_path) -> None:
@@ -2783,7 +2869,7 @@ def test_corrections_archive_the_prior_context_snapshot(tmp_path) -> None:
     other_setup = repository.save_strategy_setup(strategy_profile_id=strategy.id, name="NY reversal")
     repository.save_post_trade_assessment(
         account_id=account_id, trade_id=trade_id, risk_policy_id=policy.id, strategy_profile_id=strategy.id,
-        criterion_grades={**ALL_PASS, "impulse_control": "partial"}, violation_codes=("fomo_or_chase",), hard_rule_codes=(),
+        criterion_grades={**ALL_PASS, "edge_execution": "partial"}, violation_codes=("fomo_or_chase",), hard_rule_codes=(),
         declared_actual_risk_amount="10", post_review_note="Corrected.", corrective_action="Wait for the setup.",
         review_context=ReviewContextSelection(other_setup.id, session.id, regime.id),
     )
@@ -2800,7 +2886,7 @@ def test_auto_migration_adds_missing_revision_context_columns_without_a_reset(tm
     policy, strategy = _policy(repository, account_id), _strategy(repository)
     trade_id = _import_position(repository, account_id)
     _review(repository, account_id, trade_id, policy, strategy)
-    _review(repository, account_id, trade_id, policy, strategy, grades={**ALL_PASS, "impulse_control": "partial"}, tags=("fomo_or_chase",), action="Wait for the setup.")
+    _review(repository, account_id, trade_id, policy, strategy, grades={**ALL_PASS, "edge_execution": "partial"}, tags=("fomo_or_chase",), action="Wait for the setup.")
     database = repository.database_path
     repository.close()
 
@@ -2816,6 +2902,203 @@ def test_auto_migration_adds_missing_revision_context_columns_without_a_reset(tm
     # The pre-existing revision row survives with NULLs for the newly-added columns.
     history = reopened.list_post_trade_assessment_revisions(trade_id)
     assert history[0].setup_snapshot is None
+
+
+def test_rubric_migration_preserves_legacy_scores_but_excludes_them_from_current_monitoring(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    trade_id = _import_position(repository, account_id)
+    _review(repository, account_id, trade_id, policy, strategy)
+    database = repository.database_path
+    repository.close()
+
+    legacy_grades = {criterion: "pass" for criterion in LEGACY_ASSESSMENT_CRITERIA}
+    legacy_grades["rule_adherence"] = "partial"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE post_trade_assessments SET criterion_grades = ? WHERE logical_trade_id = ?",
+            (json.dumps(legacy_grades), trade_id),
+        )
+        connection.execute("ALTER TABLE post_trade_assessments DROP COLUMN rubric_version")
+
+    reopened = SQLiteJournalRepository(database)
+    reopened.initialize()
+    assessment = reopened.get_post_trade_assessment_for_trade(trade_id)
+    trade_score = FrameworkService(reopened).trade_process_scores(account_id)[0]
+    pillars = {item.pillar: item for item in FrameworkService(reopened).pillar_scores(account_id)}
+
+    assert assessment is not None
+    assert assessment.rubric_version == LEGACY_RUBRIC_VERSION
+    assert trade_score.rubric_version == LEGACY_RUBRIC_VERSION
+    assert trade_score.psychology_score == "82.5"
+    assert FrameworkService(reopened).rolling_score_trend(account_id)[0][1:] == (
+        "82.5", "100", "100", LEGACY_RUBRIC_VERSION,
+    )
+    assert pillars["psychology"].score is None
+    assert pillars["psychology"].reviewed_total == 0
+    assert pillars["psychology"].legacy_reviewed_total == 1
+
+    corrected = _review(reopened, account_id, trade_id, policy, strategy)
+    revisions = reopened.list_post_trade_assessment_revisions(trade_id)
+    assert corrected.rubric_version == CURRENT_RUBRIC_VERSION
+    assert revisions[0].rubric_version == LEGACY_RUBRIC_VERSION
+    assert set(revisions[0].criterion_grades) == set(LEGACY_ASSESSMENT_CRITERIA)
+
+
+def test_rubric_migration_archives_an_active_legacy_coaching_focus(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    focus = repository.save_framework_focus(
+        account_id=account_id,
+        pillar="psychology",
+        metric_kind="manual_evidence",
+        metric_code=None,
+        hypothesis="Collect consistent evidence.",
+        action_text="Review the next five trades.",
+        baseline_value="0",
+        target_value="5",
+        target_reviews=5,
+        starting_manual_reviews=0,
+    )
+    database = repository.database_path
+    repository.close()
+
+    with sqlite3.connect(database) as connection:
+        connection.execute("ALTER TABLE framework_focuses DROP COLUMN rubric_version")
+
+    reopened = SQLiteJournalRepository(database)
+    reopened.initialize()
+    history = reopened.list_framework_focuses(account_id)
+
+    assert reopened.get_active_framework_focus(account_id) is None
+    assert history[0].id == focus.id
+    assert history[0].status == "abandoned"
+    assert history[0].rubric_version == LEGACY_RUBRIC_VERSION
+    assert "Zone-aligned rubric upgrade" in (history[0].resolution_note or "")
+
+
+def test_period_review_upgrade_requires_v2_reviews_and_preserves_the_legacy_reflection(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    trade_id = _import_position(
+        repository, account_id, position_id="legacy-period", exit_time="2026-08-10T09:00:00+00:00"
+    )
+    _review(repository, account_id, trade_id, policy, strategy)
+    repository.save_framework_period_review(
+        account_id=account_id,
+        cadence="weekly",
+        period_start="2026-08-10",
+        period_end="2026-08-16",
+        psychology_score="82.5",
+        risk_score="100",
+        system_score="100",
+        readiness_score=None,
+        alert_codes=(),
+        recurring_issues=(),
+        review_note="Legacy weekly reflection.",
+        priority_action="Keep following the plan.",
+    )
+    database = repository.database_path
+    repository.close()
+
+    legacy_grades = {criterion: "pass" for criterion in LEGACY_ASSESSMENT_CRITERIA}
+    legacy_grades["rule_adherence"] = "partial"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE post_trade_assessments SET rubric_version = ?, criterion_grades = ? WHERE logical_trade_id = ?",
+            (LEGACY_RUBRIC_VERSION, json.dumps(legacy_grades), trade_id),
+        )
+        connection.execute(
+            "UPDATE framework_period_reviews SET rubric_version = ?",
+            (LEGACY_RUBRIC_VERSION,),
+        )
+        connection.execute("ALTER TABLE framework_period_reviews RENAME TO framework_period_reviews_new_schema")
+        connection.execute(
+            """CREATE TABLE framework_period_reviews (
+                id INTEGER NOT NULL PRIMARY KEY,
+                mt5_account_id INTEGER NOT NULL,
+                cadence VARCHAR(12) NOT NULL,
+                period_start VARCHAR(10) NOT NULL,
+                period_end VARCHAR(10) NOT NULL,
+                status VARCHAR(12) NOT NULL,
+                rubric_version VARCHAR(24) NOT NULL,
+                psychology_score VARCHAR,
+                risk_score VARCHAR,
+                system_score VARCHAR,
+                readiness_score VARCHAR,
+                alert_codes TEXT NOT NULL,
+                recurring_issues TEXT NOT NULL,
+                review_note TEXT NOT NULL,
+                priority_action TEXT NOT NULL,
+                created_at VARCHAR(64) NOT NULL,
+                CONSTRAINT uq_framework_period UNIQUE (
+                    mt5_account_id, cadence, period_start, period_end
+                ),
+                FOREIGN KEY(mt5_account_id) REFERENCES mt5_accounts(id)
+            )"""
+        )
+        columns = (
+            "id, mt5_account_id, cadence, period_start, period_end, status, rubric_version, "
+            "psychology_score, risk_score, system_score, readiness_score, alert_codes, "
+            "recurring_issues, review_note, priority_action, created_at"
+        )
+        connection.execute(
+            f"INSERT INTO framework_period_reviews ({columns}) "
+            f"SELECT {columns} FROM framework_period_reviews_new_schema"
+        )
+        connection.execute("DROP TABLE framework_period_reviews_new_schema")
+
+    reopened = SQLiteJournalRepository(database)
+    reopened.initialize()
+    reopened.initialize()  # the period uniqueness migration is idempotent across application starts
+    now = datetime(2026, 8, 18, tzinfo=timezone.utc)
+    before = FrameworkService(reopened).period_review_status(account_id, "weekly", now=now)
+
+    assert (before.reviewed_trades, before.closed_trades, before.disposition, before.due) == (
+        0, 1, "unreviewed", False,
+    )
+
+    _review(reopened, account_id, trade_id, policy, strategy)
+    after_correction = FrameworkService(reopened).period_review_status(account_id, "weekly", now=now)
+    assert after_correction.due
+    FrameworkService(reopened).save_period_review(
+        account_id=account_id,
+        cadence="weekly",
+        review_note="Zone-aligned weekly reflection.",
+        priority_action="Continue the v2 process.",
+        now=now,
+    )
+
+    reviews = reopened.list_framework_period_reviews(account_id, "weekly")
+    assert {review.rubric_version for review in reviews} == {
+        LEGACY_RUBRIC_VERSION, CURRENT_RUBRIC_VERSION,
+    }
+    with sqlite3.connect(database) as connection:
+        unique_indexes = [row for row in connection.execute("PRAGMA index_list(framework_period_reviews)") if row[2]]
+        unique_columns = {
+            tuple(column[2] for column in connection.execute(f"PRAGMA index_info('{index[1]}')"))
+            for index in unique_indexes
+        }
+    assert ("mt5_account_id", "cadence", "period_start", "period_end", "rubric_version") in unique_columns
+
+
+def test_legacy_psychology_roadmap_evidence_remains_visible_but_does_not_complete_v2(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    repository.save_pillar_roadmap_evidence(
+        account_id=account_id,
+        pillar="psychology",
+        level=1,
+        item_key="triggers",
+        completed=True,
+        evidence_note="Legacy trigger and stop-condition notes.",
+    )
+    service = FrameworkService(repository)
+
+    current = next(item for item in service.roadmap_status(account_id) if item.pillar == "psychology")
+    legacy = service.legacy_psychology_roadmap_evidence(account_id)
+
+    assert current.completed_items == 0
+    assert [item.item_key for item in legacy] == ["triggers"]
+    assert legacy[0].evidence_note == "Legacy trigger and stop-condition notes."
 
 
 def test_greenfield_database_rejects_legacy_framework_schema(tmp_path) -> None:
@@ -2859,7 +3142,7 @@ def test_all_three_pillars_are_account_scoped(tmp_path) -> None:
     assert scores["system"].scope == "Selected account"
 
 
-def test_post_loss_discipline_scores_zero_for_a_tagged_reset_even_with_a_passing_grade(tmp_path) -> None:
+def test_outcome_independence_component_averages_the_reviewed_grades(tmp_path) -> None:
     repository, account_id = _repository(tmp_path)
     policy, strategy = _policy(repository, account_id), _strategy(repository)
     loss_trade_id = _import_position(
@@ -2884,14 +3167,14 @@ def test_post_loss_discipline_scores_zero_for_a_tagged_reset_even_with_a_passing
         next_trade_id,
         policy,
         strategy,
-        grades=ALL_PASS,
+        grades={**ALL_PASS, "outcome_independence": "fail"},
         tags=("post_loss_reset",),
         action="Pause after a loss before the next entry.",
     )
 
     psychology = {item.pillar: item for item in FrameworkService(repository).pillar_scores(account_id)}["psychology"]
 
-    assert psychology.component_scores[-1] == ("Post-loss discipline", "0")
+    assert psychology.component_scores[-1] == ("Outcome independence and reset", "50")
 
 
 def test_deep_review_persists_controlled_context_and_reports_it(tmp_path) -> None:
@@ -3156,12 +3439,12 @@ def test_coach_keeps_the_actual_weak_component_and_excludes_pre_focus_reviews(tm
     tags = ("fomo_or_chase", "revenge", "emotional_sizing", "post_loss_reset", "daily_limit")
     for index, tag in enumerate(tags):
         trade_id = _import_position(repository, account_id, position_id=f"weak-{index}")
-        _review(repository, account_id, trade_id, policy, strategy, grades={**ALL_PASS, "rule_adherence": "fail"}, tags=(tag,), action="Use the written rule.")
+        _review(repository, account_id, trade_id, policy, strategy, grades={**ALL_PASS, "edge_execution": "fail"}, tags=(tag,), action="Use the written rule.")
 
     recommendation = FrameworkService(repository).coaching_recommendation(account_id)
     focus = FrameworkService(repository).ensure_coaching_focus(account_id)
     _current, progress = FrameworkService(repository).focus_progress(account_id)
 
-    assert recommendation is not None and recommendation.metric_kind == "component" and recommendation.metric_code == "rule_adherence"
+    assert recommendation is not None and recommendation.metric_kind == "component" and recommendation.metric_code == "edge_execution"
     assert focus is not None and focus.baseline_value == "0"
     assert progress is not None and progress.reviews_completed == 0 and progress.current_value is None

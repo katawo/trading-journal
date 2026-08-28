@@ -95,7 +95,7 @@ Risk policies are versioned. A completed assessment retains the policy and strat
 | Requires review | Automatic risk evidence is over policy or unavailable, and has not been approved yet. | No | Quick review to approve it in one click, or complete a full post-trade assessment. |
 | Auto-reviewed | Automatic risk evidence is within policy and still awaiting your approval. | No | Approve it in one click, or complete a Deep Review instead. |
 | Quick Risk Check | Automatic evidence you approved (tagged **Auto**). | Yes | Its normalized criterion grades enter the same rolling score as a Manual Review. |
-| Deep Review | A full 13-criterion manual assessment (tagged **Manual**). | Yes | It adds detailed tags, corrective action, and optional setup/session/regime context. |
+| Deep Review | A full Zone-aligned 12-criterion manual assessment (tagged **Manual**). | Yes | It adds detailed tags, corrective action, and optional setup/session/regime context. |
 
 Automatic risk evidence enters the Psychology, Risk management, and Trading system rolling scores only after you approve it in one click as a **Quick Risk Check**. Approved Auto and Manual reviews have equal scoring weight, readiness, roadmap, and coaching status. A full **Deep Review** remains the only way to record behavioural/system notes, violations, hard-rule events, corrective actions, and optional context; it replaces an earlier Quick Risk Check for the same logical trade.
 
@@ -117,7 +117,9 @@ For a later logical trade whose earliest entry is after an earlier logical trade
 
 ## 3. Complete one post-trade assessment
 
-Open **Bearings → Review** and choose a logical trade from **Requires review**, **Auto-reviewed**, or **Reviewed**. Any automatic risk evidence can be accepted in one click, or you can rate all 13 criteria in a full assessment. A grouped logical trade contributes one review to the rolling sample, not one review per member position.
+Open **Bearings → Review** and choose a logical trade from **Requires review**, **Auto-reviewed**, or **Reviewed**. Any automatic risk evidence can be accepted in one click, or you can rate all 12 current criteria in a full assessment. A grouped logical trade contributes one review to the rolling sample, not one review per member position.
+
+The current rubric is identified as `zone_v2`. Existing 13-criterion reviews remain `legacy_v1`: their original scores stay visible in trade history and trends, but they do not enter the current Monitor, readiness, coaching, or roadmap sample. Correcting a legacy review archives the original and creates a new `zone_v2` review.
 
 | Rating | Numeric value | Use it when |
 |---|---:|---|
@@ -131,10 +133,10 @@ The review must include a short post-trade note. Add at least one reason tag whe
 
 | Criterion | Weight | Review question |
 |---|---:|---|
-| Rule adherence | 35% | Did I follow the documented behavioural and execution rules? |
-| Impulse control | 25% | Did I avoid chasing, boredom entries, and revenge behaviour? |
-| Emotional control | 20% | Did fear, greed, frustration, or FOMO change the decision? |
-| Patience and discipline | 20% | Did I wait for the valid opportunity and execute it without improvising? |
+| Edge execution | 35% | Did I take and manage only the edge defined before the trade? |
+| Risk acceptance | 25% | Before entry, did I fully accept the planned loss without needing the trade to win? |
+| Probability mindset | 20% | Did I treat this trade as one event in a series rather than demand certainty from it? |
+| Outcome independence and reset | 20% | Did I avoid changing the process because of the result and reset before the next decision? |
 
 ### Risk management criteria — 35% / 20% / 25% / 20%
 
@@ -147,15 +149,16 @@ The review must include a short post-trade note. Add at least one reason tag whe
 
 Open-risk and correlation controls are self-assessed because the closed-trade MT5 bridge cannot prove them automatically.
 
-### Trading system criteria — 30% / 20% / 20% / 15% / 15%
+### Trading system criteria — 30% / 25% / 20% / 25%
 
 | Criterion | Weight | Review question |
 |---|---:|---|
 | Setup validity | 30% | Was the chosen strategy setup actually present? |
-| Context alignment | 20% | Did market, session, timeframe, and regime meet the strategy rules? |
+| Context alignment | 25% | Did market, session, timeframe, and regime meet the strategy rules? |
 | Entry fidelity | 20% | Did entry follow the documented trigger? |
-| Invalidation fidelity | 15% | Was the invalidation/stop logic applied as documented? |
-| Management and exit fidelity | 15% | Was trade management and exit consistent with the strategy? |
+| Management and exit fidelity | 25% | Was trade management and exit consistent with the strategy? |
+
+Invalidation is assessed once under Risk management **Stop discipline**, avoiding duplicate penalties across pillars.
 
 ## 4. How a single trade is scored
 
@@ -178,7 +181,7 @@ This prevents a very low raw score from being presented as a Good trade merely b
 
 ### Worked example: a good trade with one behavioural deviation
 
-Assume every criterion is **Pass** except Psychology **Rule adherence**, which is **Partial**.
+Assume every criterion is **Pass** except Psychology **Edge execution**, which is **Partial**.
 
 ```text
 Psychology = (50 × 35%) + (100 × 25%) + (100 × 20%) + (100 × 20%)
@@ -228,7 +231,9 @@ Reason tags also make recurring patterns visible. Psychology critical tags inclu
 
 ## 6. How rolling monitoring is calculated
 
-In **Bearings → Monitor**, choose a rolling window from 10 to 100 trades (slider, step 5; the Dashboard's compact widget always shows a fixed 20-trade snapshot). Pillar scores, readiness, recurring issues, and coaching use the latest approved Auto and Manual reviews. Quick Risk Checks remain visible separately as selected-account risk-evidence coverage over the latest closed logical trades. A smaller reviewed window reaches the repeated-critical-violation Caution threshold sooner than a larger one, since that threshold is a fixed count, not a percentage of the window.
+In **Bearings → Monitor**, choose a rolling window from 10 to 100 trades (slider, step 5; the Dashboard's compact widget always shows a fixed 20-trade snapshot). Pillar scores, readiness, recurring issues, coaching, and roadmap gates use only the latest approved `zone_v2` Auto and Manual reviews. Legacy reviews remain visible in history and trends and are reported as excluded from the current sample. Quick Risk Checks remain visible separately as selected-account risk-evidence coverage over the latest closed logical trades. A smaller reviewed window reaches the repeated-critical-violation Caution threshold sooner than a larger one, since that threshold is a fixed count, not a percentage of the window.
+
+The score trend keeps the current-rubric series aligned with the selected rolling window. Legacy series remain separately labeled and show each legacy trade's original pillar scores, so unlike monitoring formulas are never blended. Weekly and monthly completion counts also require v2 trade reviews; when a legacy reflection already exists for a period, it remains in history and a separate v2 reflection can be saved after every trade in that period has a current review.
 
 The Monitor also has an **Analysis period** (this month, last 90 days, all time, or custom). It changes descriptive charts only; it never changes a rolling score, readiness, or roadmap gate. Its Overview highlights the next evidence-led actions, while the Process & outcomes, Risk, and System & context views separate process quality from outcome, review coverage from policy evidence, and strategy/context observations from causal claims. Outcome comparisons use the same standard 1R convention as the Performance dashboard. Trades without a usable standard 1R are excluded from R charts and reported as missing evidence.
 
@@ -238,10 +243,10 @@ The Monitor computes a second set of period components from the reviewed window.
 
 | Component | Weight | How it is measured |
 |---|---:|---|
-| Rule adherence | 35% | Average reviewed Rule adherence grade. |
-| Impulse control | 25% | Average reviewed Impulse control grade. |
-| Emotional control | 20% | Average reviewed Emotional control grade. |
-| Post-loss discipline | 20% | The next reviewed trade after a loss on this account: its Impulse control grade, or 0 when tagged `post_loss_reset`. It is 100 when the sample has no eligible post-loss sequence. |
+| Edge execution | 35% | Average reviewed Edge execution grade. |
+| Risk acceptance | 25% | Average reviewed Risk acceptance grade. |
+| Probability mindset | 20% | Average reviewed Probability mindset grade. |
+| Outcome independence and reset | 20% | Average reviewed Outcome independence and reset grade. |
 
 ### Risk management monitoring score
 
@@ -256,11 +261,10 @@ The Monitor computes a second set of period components from the reviewed window.
 
 | Component | Weight | How it is measured |
 |---|---:|---|
-| Setup validity | 20% | Average reviewed Setup validity grade. |
-| Execution fidelity | 20% | Average of Entry, Invalidation, and Management/exit grades. |
-| Context alignment | 15% | Average reviewed Context alignment grade. |
-| Evidence quality | 20% | 100 when the attached strategy's backtest is marked verified; otherwise 0. |
-| Edge evidence | 25% | 100 when the attached strategy's backtest is marked verified; otherwise 0. |
+| Setup validity | 25% | Average reviewed Setup validity grade. |
+| Context alignment | 20% | Average reviewed Context alignment grade. |
+| Execution fidelity | 25% | Average of Entry and Management/exit grades. |
+| Edge evidence | 30% | 100 when the attached strategy's backtest is marked verified; otherwise 0. |
 
 ### Status, completeness, and readiness
 
@@ -315,6 +319,8 @@ The three pillars progress in parallel:
 | Optimize | A hypothesis, baseline, result, and keep/reject decision are recorded. |
 
 The readiness roadmap progresses in parallel across the three pillars. **Psychology** evidence is behaviour-focused; **Risk management** evidence is account-specific policy and sizing evidence; **Trading system** evidence is strategy rules, examples, and backtest evidence.
+
+Superseded Psychology roadmap notes from before v2 remain visible under **Legacy Psychology roadmap evidence**. They are audit history only and do not satisfy the new probability-mindset, risk-acceptance, or fixed-sample evidence requirements.
 
 Most roadmap items are detected automatically from data already saved elsewhere in the journal, and never need a manual click:
 

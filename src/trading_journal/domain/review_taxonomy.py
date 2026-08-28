@@ -12,6 +12,9 @@ REVIEW_MISTAKES_BY_PILLAR = {
         "fear_hesitation",
         "forced_trade",
         "post_loss_reset",
+        "certainty_seeking",
+        "risk_not_accepted",
+        "outcome_attachment",
     ),
     "risk": (
         "position_size_too_large",
