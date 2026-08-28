@@ -1636,14 +1636,46 @@ def test_reopening_review_after_upgrading_an_auto_review_does_not_crash(monkeypa
     next(item for item in app.button if item.label == "Review").click().run()
     assert not app.exception
     markdown_values = [item.value for item in app.markdown]
+    assert [
+        value for value in markdown_values if value.startswith("###### :") and " · 0/4" in value
+    ] == [
+        "###### :blue[Psychology] · 0/4",
+        "###### :orange[Risk management] · 0/4",
+        "###### :violet[Trading system] · 0/4",
+    ]
+    criterion_labels = {
+        "Edge execution *",
+        "Risk acceptance *",
+        "Probability mindset *",
+        "Outcome independence and reset *",
+        "Risk-policy adherence *",
+        "Position-size accuracy *",
+        "Stop discipline *",
+        "Exposure & limit compliance *",
+        "Setup validity *",
+        "Context alignment *",
+        "Entry fidelity *",
+        "Management / exit fidelity *",
+    }
+    assert {item.label for item in app.segmented_control if item.label in criterion_labels} == criterion_labels
+    assert {
+        item.label
+        for item in app.button
+        if item.label.startswith("Mark ") and item.label.endswith(" as Pass")
+    } >= {
+        "Mark all criteria as Pass",
+        "Mark Psychology as Pass",
+        "Mark Risk management as Pass",
+        "Mark Trading system as Pass",
+    }
     lower_section_headings = {
         "##### Mistakes and rule breaches",
         "##### Reflection and action",
         "##### Risk evidence",
     }
     assert [value for value in markdown_values if value in lower_section_headings][-3:] == [
-        "##### Mistakes and rule breaches",
         "##### Reflection and action",
+        "##### Mistakes and rule breaches",
         "##### Risk evidence",
     ]
     assert [

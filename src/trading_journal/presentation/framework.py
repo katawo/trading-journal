@@ -46,7 +46,6 @@ from trading_journal.presentation.trade_tags import direction_tag, outcome_tag
 GRADE_OPTIONS = ("Pass", "Partial", "Fail")
 RESET_PERIOD_LABELS = {"Daily": "daily", "Weekly": "weekly", "Monthly": "monthly", "All time": "all_time"}
 REVIEW_PAGE_SIZE = 25
-CRITERIA_GRID_COLUMNS = 4
 PILLAR_ACCENT_COLORS = {"Psychology": "blue", "Risk management": "orange", "Trading system": "violet"}
 CRITERION_LABELS = {
     "edge_execution": "Edge execution",
@@ -807,7 +806,7 @@ def _grade_control(label: str, *, existing: str | None, key: str, help_text: str
         default=default,
         key=key,
         help=None if help_text is None else tr(help_text),
-        width="content",
+        width="stretch",
     )
     return None if choice is None else choice.casefold()
 
@@ -958,40 +957,56 @@ def _render_post_trade_review_dialog(repo: SQLiteJournalRepository, account: Acc
             "Mark all criteria as Pass",
             key=f"assessment-{trade.id}-pass-all",
             icon=":material/done_all:",
-            type="primary",
+            type="secondary",
             on_click=_set_pillar_grades_to_pass,
             args=(trade.id, ASSESSMENT_CRITERIA),
         )
         grades: dict[str, str | None] = {}
-        for (title, criteria), (done, _) in zip(pillars, summaries, strict=True):
-            pillar_section = st.container(border=True)
-            pillar_section.markdown(f"###### :{PILLAR_ACCENT_COLORS[title]}[{tr(title)}] · {done}/{len(criteria)}")
-            pillar_section.form_submit_button(
+        pillar_columns = st.columns(3, gap="small", border=True)
+        for pillar_column, (title, criteria), (done, _) in zip(
+            pillar_columns, pillars, summaries, strict=True
+        ):
+            pillar_column.markdown(f"###### :{PILLAR_ACCENT_COLORS[title]}[{tr(title)}] · {done}/{len(criteria)}")
+            pillar_column.form_submit_button(
                 tr("Mark {pillar} as Pass", pillar=tr(title)),
                 key=f"assessment-{trade.id}-{title}-pass-all",
                 icon=":material/done_all:",
-                type="primary",
+                type="secondary",
+                width="stretch",
                 on_click=_set_pillar_grades_to_pass,
                 args=(trade.id, criteria),
             )
-            for row_start in range(0, len(criteria), CRITERIA_GRID_COLUMNS):
-                row_criteria = criteria[row_start : row_start + CRITERIA_GRID_COLUMNS]
-                for criterion_column, criterion in zip(pillar_section.columns(CRITERIA_GRID_COLUMNS), row_criteria, strict=False):
-                    criterion_existing = existing_manual.criterion_grades.get(criterion) if existing_manual else None
-                    if criterion_existing is None and criterion == "policy_adherence":
-                        criterion_existing = _default_policy_adherence_grade(score.risk_policy_state)
-                    with criterion_column:
-                        grades[criterion] = _grade_control(
-                            f"{tr(CRITERION_LABELS[criterion])} *",
-                            existing=criterion_existing,
-                            key=f"assessment-{trade.id}-{criterion}",
-                            help_text=CRITERION_HELP.get(criterion),
-                        )
+            for criterion in criteria:
+                criterion_existing = existing_manual.criterion_grades.get(criterion) if existing_manual else None
+                if criterion_existing is None and criterion == "policy_adherence":
+                    criterion_existing = _default_policy_adherence_grade(score.risk_policy_state)
+                with pillar_column:
+                    grades[criterion] = _grade_control(
+                        f"{tr(CRITERION_LABELS[criterion])} *",
+                        existing=criterion_existing,
+                        key=f"assessment-{trade.id}-{criterion}",
+                        help_text=CRITERION_HELP.get(criterion),
+                    )
         legacy_mistakes = tuple(
             code for code in (existing_manual.violation_codes if existing_manual else ()) if code not in REVIEW_MISTAKE_CODES
         )
         mistake_options = REVIEW_MISTAKE_CODES + legacy_mistakes
-        with st.container(border=True):
+        reflection_column, evidence_column = st.columns([2, 1], gap="small")
+        with reflection_column.container(border=True):
+            st.markdown(f"##### {tr('Reflection and action')}")
+            note = st.text_area(
+                f"{tr('What happened and what did you learn?')} *",
+                value=existing_manual.post_review_note if existing_manual else "",
+                placeholder=tr("Describe execution independently of P&L."),
+                height=160,
+            )
+            action = st.text_area(
+                tr("Corrective action"),
+                value=existing_manual.corrective_action if existing_manual and existing_manual.corrective_action else "",
+                placeholder=tr("Required when any criterion is Partial or Fail, or a hard rule is selected."),
+                height=160,
+            )
+        with evidence_column.container(border=True):
             st.markdown(f"##### {tr('Mistakes and rule breaches')}")
             violation_codes = st.multiselect(
                 tr("Trading mistakes"),
@@ -1010,19 +1025,7 @@ def _render_post_trade_review_dialog(repo: SQLiteJournalRepository, account: Acc
             )
             if not available_hard_rules:
                 st.caption(tr("No hard-rule events are enabled. Enable one in Settings → Review rules to record it on a new assessment."))
-        with st.container(border=True):
-            st.markdown(f"##### {tr('Reflection and action')}")
-            note = st.text_area(
-                f"{tr('What happened and what did you learn?')} *",
-                value=existing_manual.post_review_note if existing_manual else "",
-                placeholder=tr("Describe execution independently of P&L."),
-            )
-            action = st.text_area(
-                tr("Corrective action"),
-                value=existing_manual.corrective_action if existing_manual and existing_manual.corrective_action else "",
-                placeholder=tr("Required when any criterion is Partial or Fail, or a hard rule is selected."),
-            )
-        with st.container(border=True):
+        with evidence_column.container(border=True):
             st.markdown(f"##### {tr('Risk evidence')}")
             if policy is not None:
                 st.caption(
@@ -1041,12 +1044,13 @@ def _render_post_trade_review_dialog(repo: SQLiteJournalRepository, account: Acc
                 placeholder=tr("Enter a verified amount when automatic evidence is not sufficient"),
                 help=tr("Overrides automatic evidence for this logical trade's policy comparison. It does not rewrite imported MT5 member positions or logical-trade account-limit monitoring."),
             )
-        submitted = st.form_submit_button("Update assessment" if existing_manual else "Save assessment", type="primary")
-        submit_and_next = (
-            st.form_submit_button(tr("Save & review next ({count} left)", count=len(queue)), icon=":material/skip_next:")
-            if queue
-            else False
-        )
+        with st.container(horizontal=True, horizontal_alignment="right"):
+            submitted = st.form_submit_button("Update assessment" if existing_manual else "Save assessment", type="primary")
+            submit_and_next = (
+                st.form_submit_button(tr("Save & review next ({count} left)", count=len(queue)), icon=":material/skip_next:")
+                if queue
+                else False
+            )
     if not (submitted or submit_and_next):
         _render_review_history(repo, account.id, trade)
         return
