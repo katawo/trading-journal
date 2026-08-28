@@ -23,6 +23,11 @@ def test_connection_recovery_mounts_one_stable_localized_monitor(monkeypatch) ->
     assert data["retry_label"] == "Retry now"
     assert "lost its live session" in data["websocket_status"]
     assert data["recovered_title"] == "Connection restored"
+    assert "fresh session" in data["recovered_detail"]
+    assert "unsaved entries" in data["reload_required_status"]
+    assert "Waiting for the live session" in data["waiting_for_session_status"]
+    assert "reloading_status" not in data
+    assert "reload_limited_status" not in data
 
 
 def test_connection_recovery_supplies_vietnamese_browser_copy(monkeypatch) -> None:
@@ -39,7 +44,9 @@ def test_connection_recovery_supplies_vietnamese_browser_copy(monkeypatch) -> No
     assert data["title"] == "Mất kết nối"
     assert data["retry_label"] == "Thử lại ngay"
     assert "mất phiên kết nối trực tiếp" in data["websocket_status"]
-    assert data["reloading_status"] == "Đang tải lại trang…"
+    assert "phiên mới" in data["recovered_detail"]
+    assert "nội dung chưa lưu" in data["reload_required_status"]
+    assert "Đang chờ phiên trực tiếp" in data["waiting_for_session_status"]
     assert "có thể chưa được lưu" in data["detail"]
 
 

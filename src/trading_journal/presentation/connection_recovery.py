@@ -126,65 +126,53 @@ _CONNECTION_RECOVERY_JS = """
       const appWasInert = Boolean(appRoot?.inert)
       const state = {
         stopped: false, checking: false, attempts: 0, visible: false,
-        recovering: false, timer: null, disconnectTimer: null, reloadTimer: null,
+        disconnectObserved: false, reloadRequired: false, timer: null, disconnectTimer: null,
       }
       const retryIntervalMs = Number(data.retry_interval_ms ?? 2000)
       const maxRetryIntervalMs = Number(data.max_retry_interval_ms ?? 30000)
       const requestTimeoutMs = Number(data.request_timeout_ms ?? 2500)
       const disconnectGraceMs = Number(data.disconnect_grace_ms ?? 1500)
-      const reloadCooldownMs = Number(data.reload_cooldown_ms ?? 30000)
-      const reloadDelayMs = Number(data.reload_delay_ms ?? 650)
-      const reloadStorageKey = 'trade-compass:connection-recovery:last-reload'
       const connectedStates = new Set(['CONNECTED', 'STATIC_CONNECTED'])
       const healthUrl = new URL(data.health_url, window.location.origin).toString()
 
       const retryText = () => data.retrying_status.replace('{attempt}', String(state.attempts))
       const setStatus = (message) => { status.textContent = message }
-      const lastReloadAt = () => {
-        try { return Number(window.sessionStorage.getItem(reloadStorageKey) || '0') } catch { return 0 }
-      }
-      const rememberReload = () => {
-        try { window.sessionStorage.setItem(reloadStorageKey, String(Date.now())) } catch { /* best effort */ }
+      const reveal = (focusTarget) => {
+        if (!state.visible) {
+          state.visible = true
+          overlay.hidden = false
+          if (appRoot) appRoot.inert = true
+        }
+        window.setTimeout(() => focusTarget.focus(), 0)
       }
       const schedule = () => {
-        if (state.stopped || !state.visible || state.recovering) return
+        if (state.stopped || !state.visible || state.reloadRequired) return
         const delay = Math.min(retryIntervalMs * (2 ** Math.max(0, state.attempts - 1)), maxRetryIntervalMs)
         window.clearTimeout(state.timer)
         state.timer = window.setTimeout(check, delay)
       }
       const showDisconnected = (message) => {
-        if (!state.visible) {
-          state.visible = true
-          overlay.hidden = false
-          if (appRoot) appRoot.inert = true
-          window.setTimeout(() => retryButton.focus(), 0)
-        }
+        state.reloadRequired = false
+        reveal(retryButton)
         title.textContent = data.title
         detail.textContent = data.detail
         retryButton.hidden = false
         setStatus(message)
       }
-      const recover = () => {
-        if (state.recovering) return
-        state.recovering = true
+      const showReloadRequired = () => {
+        state.disconnectObserved = false
+        state.reloadRequired = true
         window.clearTimeout(state.timer)
+        window.clearTimeout(state.disconnectTimer)
+        state.disconnectTimer = null
+        reveal(reloadButton)
         title.textContent = data.recovered_title
         detail.textContent = data.recovered_detail
         retryButton.hidden = true
-        const lastReload = lastReloadAt()
-        if (Date.now() - lastReload < reloadCooldownMs) {
-          setStatus(data.reload_limited_status)
-          reloadButton.focus()
-          state.recovering = false
-          return
-        }
-        setStatus(data.reloading_status)
-        rememberReload()
-        window.dispatchEvent(new CustomEvent('trade-compass:connection-recovery-reloading'))
-        state.reloadTimer = window.setTimeout(() => window.location.reload(), reloadDelayMs)
+        setStatus(data.reload_required_status)
       }
       async function check() {
-        if (state.stopped || state.checking || state.recovering || !state.visible) return
+        if (state.stopped || state.checking || state.reloadRequired || !state.visible) return
         state.checking = true
         if (state.visible) {
           state.attempts += 1
@@ -197,16 +185,26 @@ _CONNECTION_RECOVERY_JS = """
             cache: 'no-store', credentials: 'same-origin', signal: controller.signal,
           })
           if (!response.ok) throw new Error(`Health check returned ${response.status}`)
-          recover()
+          if (connectedStates.has(connectionState())) {
+            showReloadRequired()
+          } else {
+            setStatus(data.waiting_for_session_status)
+            schedule()
+          }
         } catch {
-          showDisconnected(navigator.onLine ? retryText() : data.offline_status)
-          schedule()
+          if (connectedStates.has(connectionState())) {
+            showReloadRequired()
+          } else {
+            showDisconnected(navigator.onLine ? retryText() : data.offline_status)
+            schedule()
+          }
         } finally {
           window.clearTimeout(timeout)
           state.checking = false
         }
       }
       const onOffline = () => {
+        state.disconnectObserved = true
         state.attempts = Math.max(1, state.attempts)
         showDisconnected(data.offline_status)
         schedule()
@@ -223,9 +221,11 @@ _CONNECTION_RECOVERY_JS = """
         if (connectedStates.has(connectionState())) {
           window.clearTimeout(state.disconnectTimer)
           state.disconnectTimer = null
-          if (state.visible) recover()
+          if (state.disconnectObserved) showReloadRequired()
           return
         }
+        state.disconnectObserved = true
+        state.reloadRequired = false
         if (state.disconnectTimer !== null) return
         state.disconnectTimer = window.setTimeout(() => {
           state.disconnectTimer = null
@@ -240,7 +240,7 @@ _CONNECTION_RECOVERY_JS = """
         check()
       }
       const onReload = () => {
-        rememberReload()
+        window.dispatchEvent(new CustomEvent('trade-compass:connection-recovery-reloading'))
         window.location.reload()
       }
       const keepFocusInDialog = (event) => {
@@ -270,7 +270,6 @@ _CONNECTION_RECOVERY_JS = """
         state.stopped = true
         window.clearTimeout(state.timer)
         window.clearTimeout(state.disconnectTimer)
-        window.clearTimeout(state.reloadTimer)
         connectionObserver?.disconnect()
         window.removeEventListener('offline', onOffline)
         window.removeEventListener('online', onOnline)
@@ -323,11 +322,11 @@ def render_connection_recovery() -> None:
             "websocket_status": tr("Trade Compass lost its live session. Reconnecting automatically…"),
             "checking_status": tr("Checking the connection…"),
             "recovered_title": tr("Connection restored"),
-            "recovered_detail": tr("Trade Compass can reach the server again."),
-            "reloading_status": tr("Reloading the page…"),
-            "reload_limited_status": tr(
-                "The connection is available, but automatic reload was paused to avoid a loop. Reload the page to continue."
+            "recovered_detail": tr(
+                "Trade Compass is connected again. Reload the page before continuing so the controls use a fresh session."
             ),
+            "reload_required_status": tr("Review or copy any unsaved entries, then reload the page to continue."),
+            "waiting_for_session_status": tr("Server reachable. Waiting for the live session to reconnect…"),
         },
         "width": "content",
         "height": "content",
