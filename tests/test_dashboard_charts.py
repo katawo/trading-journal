@@ -3,9 +3,6 @@ from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
 from trading_journal.application.dashboard import ConcentrationItem, ConcentrationSide, PerformanceBreakdown
-from trading_journal.presentation import i18n
-
-
 _APP_PATH = Path(__file__).parents[1] / "app.py"
 _APP_SPEC = spec_from_file_location("trade_compass_dashboard_charts", _APP_PATH)
 assert _APP_SPEC is not None and _APP_SPEC.loader is not None
@@ -18,7 +15,7 @@ def breakdown(label: str, net_pnl: str, *, trade_count: int = 4, win_rate: str =
         label=label,
         trade_count=trade_count,
         win_count=2,
-        loss_count=2,
+        loss_count=max(0, trade_count - 2),
         breakeven_count=0,
         win_rate=win_rate,
         net_pnl=net_pnl,
@@ -27,23 +24,6 @@ def breakdown(label: str, net_pnl: str, *, trade_count: int = 4, win_rate: str =
         expectancy_r=None,
         profit_factor="1",
     )
-
-
-def test_outcome_mix_chart_preserves_counts_percentages_and_semantic_colours() -> None:
-    figure = journal_app._build_outcome_mix_figure(win_count=3, loss_count=2, breakeven_count=1)
-
-    assert [trace.name for trace in figure.data] == ["Wins", "Losses", "Breakevens"]
-    assert [trace.x[0] for trace in figure.data] == [50.0, 100 / 3, 100 / 6]
-    assert [trace.customdata[0][0] for trace in figure.data] == ["3", "2", "1"]
-    assert [trace.customdata[0][1] for trace in figure.data] == ["50.0%", "33.3%", "16.7%"]
-    assert [trace.text[0] for trace in figure.data] == ["50.0%", "33.3%", "16.7%"]
-    assert [trace.marker.color for trace in figure.data] == [
-        journal_app._CHART_POSITIVE,
-        journal_app._CHART_NEGATIVE,
-        journal_app._CHART_NEUTRAL,
-    ]
-    assert figure.layout.title.text is None
-    assert figure.layout.showlegend is False
 
 
 def test_performance_history_combines_level_drawdown_and_outcomes_on_one_axis() -> None:
@@ -102,41 +82,56 @@ def test_concentration_chart_keeps_profit_and_empty_loss_visible() -> None:
     assert figure.layout.yaxis3.showticklabels is False
 
 
-def test_breakdown_chart_limits_large_sets_and_keeps_the_largest_absolute_results() -> None:
-    rows = [
-        breakdown(f"Group {index:02d}", str(Decimal(index) * (-1 if index % 2 else 1)))
-        for index in range(1, 15)
-    ]
-
-    figure, truncated = journal_app._build_breakdown_pnl_figure(
-        [(row.label, row) for row in rows],
-        currency="USD",
-        dimension="Symbol",
-    )
-
-    trace = figure.data[0]
-    assert truncated is True
-    assert len(trace.y) == journal_app._STATISTICS_BREAKDOWN_CHART_LIMIT
-    assert set(trace.y) == {f"Group {index:02d}" for index in range(3, 15)}
-    assert list(trace.x) == sorted(trace.x, reverse=True)
-    assert trace.marker.color[0] == journal_app._CHART_POSITIVE
-    assert trace.marker.color[-1] == journal_app._CHART_NEGATIVE
-    assert figure.layout.title.text == "Net P&L by symbol"
-
-
-def test_breakdown_chart_uses_localized_direction_labels_and_title(monkeypatch) -> None:
-    monkeypatch.setattr(i18n, "language", lambda: "vi")
+def test_direction_statistics_format_a_populated_direction() -> None:
     row = breakdown("long", "5", trade_count=3, win_rate="66.666")
 
-    figure, truncated = journal_app._build_breakdown_pnl_figure(
-        [(journal_app.tr("Long"), row)],
-        currency="USD",
-        dimension=journal_app.tr("Direction"),
-    )
+    profile_items = journal_app._direction_profile_items(row)
+    edge_items = journal_app._direction_edge_items(row, "USD")
 
-    assert truncated is False
-    assert list(figure.data[0].y) == ["Mua"]
-    assert figure.layout.title.text == "P&L ròng theo hướng"
+    assert profile_items == [
+        ("Trades", "3", "info"),
+        ("Wins (rate)", "2 (66.7%)", "positive"),
+        ("Losses (rate)", "1 (33.3%)", "negative"),
+        ("Breakeven", "0", "neutral"),
+    ]
+    assert edge_items == [
+        ("Net P&L", "+$5.00", "positive"),
+        ("Total R", "Awaiting risk", "warning"),
+        ("Expectancy R", "Awaiting risk", "warning"),
+        ("Profit factor", "1.00", "neutral"),
+    ]
+
+
+def test_direction_statistics_keep_an_empty_direction_visible() -> None:
+    profile_items = journal_app._direction_profile_items(None)
+    edge_items = journal_app._direction_edge_items(None, "USD")
+
+    assert profile_items == [
+        ("Trades", "0", "neutral"),
+        ("Wins (rate)", "0 (—)", "neutral"),
+        ("Losses (rate)", "0 (—)", "neutral"),
+        ("Breakeven", "0", "neutral"),
+    ]
+    assert edge_items == [
+        ("Net P&L", "$0.00", "neutral"),
+        ("Total R", "—", "neutral"),
+        ("Expectancy R", "—", "neutral"),
+        ("Profit factor", "—", "neutral"),
+    ]
+
+
+def test_direction_matrices_stack_without_a_fixed_mobile_width(monkeypatch) -> None:
+    rendered: list[str] = []
+    monkeypatch.setattr(journal_app.st, "html", rendered.append)
+
+    journal_app.apply_application_style()
+
+    css = rendered[0]
+    mobile_css = css.split("@media (max-width: 760px)", maxsplit=1)[1]
+    assert ".dashboard-direction-matrices" in mobile_css
+    assert "grid-template-columns: minmax(0, 1fr);" in mobile_css
+    assert mobile_css.count("min-width: 0;") >= 2
+    assert "border-top: 1px solid" in mobile_css
 
 
 def test_dashboard_metric_tones_only_color_clear_performance_signals() -> None:
@@ -146,6 +141,11 @@ def test_dashboard_metric_tones_only_color_clear_performance_signals() -> None:
     assert journal_app._signed_metric_tone(None) == "neutral"
     assert journal_app._risk_metric_tone(None, 3) == "warning"
     assert journal_app._risk_metric_tone(None, 0) == "neutral"
+
+
+def test_drawdown_values_group_the_percentage_in_parentheses() -> None:
+    assert journal_app._format_drawdown_value("68.21", "5.2", "USD") == "−$68.21 (5.2%)"
+    assert journal_app._format_drawdown_value("84.37", "6.4", "USD") == "−$84.37 (6.4%)"
 
 
 def test_dashboard_metric_tones_distinguish_coverage_profitability_and_streaks() -> None:

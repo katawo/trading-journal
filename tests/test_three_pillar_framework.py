@@ -71,6 +71,25 @@ def test_monitor_metrics_use_semantic_colors_without_treating_status_as_a_trend(
     assert _drawdown_metric(clear.max_drawdown_percent) == ("2.7%", "Current monitoring-period maximum", "gray")
 
 
+def test_compact_help_popover_uses_one_question_mark(monkeypatch) -> None:
+    from contextlib import contextmanager
+    from trading_journal.presentation import framework as presentation_framework
+
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    @contextmanager
+    def popover(label: str, **kwargs):  # type: ignore[no-untyped-def]
+        calls.append((label, kwargs))
+        yield
+
+    monkeypatch.setattr(presentation_framework.st, "popover", popover)
+    monkeypatch.setattr(presentation_framework.st, "caption", lambda _text: None)
+
+    presentation_framework._render_help_popover("Explanation")
+
+    assert calls == [("?", {"width": "content"})]
+
+
 def test_monitor_metrics_distinguish_unavailable_values_and_breached_drawdown() -> None:
     assert _daily_r_metric(None) == (None, "Unavailable", "gray")
     assert _drawdown_metric(None) == (None, "Unavailable", "gray")

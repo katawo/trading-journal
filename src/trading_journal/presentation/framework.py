@@ -173,9 +173,9 @@ def _reset_period_label(value: str) -> str:
     return tr(label)
 
 
-def _render_help_popover(*captions: str, icon: str = ":material/help:") -> None:
+def _render_help_popover(*captions: str) -> None:
     """A compact on-demand help trigger, keeping page content focused."""
-    with st.popover("?", icon=icon, width="content"):
+    with st.popover("?", width="content"):
         for text in captions:
             st.caption(text)
 
@@ -449,7 +449,7 @@ def _render_pillar_radar(scores: tuple[PillarScore, ...]) -> None:
     with st.container(horizontal=True, vertical_alignment="center", gap="small", width="content"):
         st.caption(tr("Sample size: {sample_line}", sample_line=sample_line))
         if any(blocked) or any(capped) or any(score.score is None for score in scores):
-            with st.popover("?", icon=":material/help:", width="content"):
+            with st.popover("?", width="content"):
                 if any(blocked) and any(capped):
                     st.caption(tr("Pillars marked ✕ in red have an active hard-rule failure; pillars marked ◆ in amber are capped by repeated critical violations — neither score reflects readiness."))
                 elif any(blocked):
@@ -556,8 +556,14 @@ def render_framework_dashboard(repo: SQLiteJournalRepository, account: AccountLi
     drawdown_value, drawdown_delta, drawdown_color = _drawdown_metric(snapshot.max_drawdown_percent)
     tone_by_delta_color = {"green": "positive", "red": "negative", "orange": "warning", "gray": "neutral"}
     with st.container(border=True):
-        st.markdown(tr("#### Process & risk"))
-        st.caption(tr("Fixed 20-trade process window · outcome performance above does not determine readiness."))
+        with st.container(horizontal=True, vertical_alignment="center", gap="small", width="content"):
+            st.markdown(tr("#### Process & risk"))
+            _render_help_popover(
+                tr("Readiness uses the latest 20 completed reviews; incomplete evidence remains incomplete."),
+                tr("Psychology, Risk management, and Trading system are scored independently."),
+                tr("Outcome profitability does not increase readiness. Risk status follows the active account policy and its reset rules."),
+            )
+        st.caption(tr("Fixed 20-trade process window · outcome performance does not determine readiness."))
         _render_risk_configuration_notice(service, account.id)
         process_risk_columns = st.container(key="dashboard-process-risk-columns")
         stats, pillars = process_risk_columns.columns([1, 1.45], gap="large")

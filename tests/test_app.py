@@ -1962,24 +1962,51 @@ def test_dashboard_renders_graphics_for_imported_trades(monkeypatch, tmp_path):
     stat_markup = "\n".join(item.value for item in app.markdown)
     assert "Concentration" in stat_markup
     assert "Process & risk" in stat_markup
+    assert any(
+        "Readiness uses the latest 20 completed reviews" in item.value
+        for item in app.caption
+    )
     assert stat_markup.count("dashboard-stat-label") >= 10
     assert any(item.label == "Sync MT5 now" for item in app.button)
     concentration_control = next(item for item in app.segmented_control if item.label == "Concentration view")
     assert concentration_control.options == ["Trade", "Symbol"]
     assert concentration_control.value == "Trade"
     assert any("No losing logical trades" in item.value for item in app.caption)
-    assert len(app.get("plotly_chart")) == 4
-    statistics_breakdown = next(item for item in app.segmented_control if item.label == "Breakdown view")
-    assert statistics_breakdown.options == ["Direction", "Symbol"]
-    assert statistics_breakdown.value == "Direction"
-    statistics_breakdown.set_value("Symbol").run()
-    assert not app.exception
+    assert len(app.get("plotly_chart")) == 2
+    assert not any(item.label == "Breakdown view" for item in app.segmented_control)
+    assert 'class="dashboard-stat-section-head">Direction edge<' in stat_markup
+    assert 'class="dashboard-stat-column-head">Edge quality<' in stat_markup
+    assert '<th scope="col">Long</th>' in stat_markup
+    assert '<th scope="col">Short</th>' in stat_markup
+    assert 'class="dashboard-direction-matrix-title">Trade profile<' in stat_markup
+    assert 'class="dashboard-direction-matrix-title">Edge results<' in stat_markup
+    assert "Wins (rate)" in stat_markup
+    assert "Losses (rate)" in stat_markup
+    assert "R coverage · Long" in stat_markup
+    assert "Long − Short" not in stat_markup
+    assert "#### Account & risk snapshot" in stat_markup
+    assert 'class="dashboard-stat-column-head">Capital<' in stat_markup
+    assert 'class="dashboard-stat-column-head">Drawdown · Daily close<' in stat_markup
+    assert 'class="dashboard-stat-column-head">Quality<' in stat_markup
+    assert 'class="dashboard-stat-section-head">Consistency profile<' in stat_markup
+    assert 'class="dashboard-stat-column-head">Activity<' in stat_markup
+    section_order = [
+        "#### Account & risk snapshot",
+        "#### Trade outcomes",
+        "#### Performance history",
+        "#### Concentration",
+        "#### Process & risk",
+    ]
+    assert [stat_markup.index(section) for section in section_order] == sorted(
+        stat_markup.index(section) for section in section_order
+    )
     concentration_control = next(item for item in app.segmented_control if item.label == "Concentration view")
     concentration_control.set_value("Symbol").run()
     assert not app.exception
     stat_markup = "\n".join(item.value for item in app.markdown)
     assert all(
-        f">{label}<" in stat_markup for label in ("Account balance", "Account drawdown", "Profit factor", "Worst day")
+        f">{label}<" in stat_markup
+        for label in ("Account balance", "Funded capital", "Current drawdown", "Max drawdown", "Profit factor", "Worst day")
     )
 
 
@@ -2103,12 +2130,7 @@ def test_dashboard_switches_to_per_trade_view(monkeypatch, tmp_path):
     chart_view.set_value("Per trade").run()
 
     assert not app.exception
-    breakdown = next(item.value for item in app.dataframe if "Group" in item.value.columns)
-    assert breakdown["Win rate"].dtype.kind in "fi"
-    assert breakdown["Net P&L (USD)"].dtype.kind in "fi"
-    assert breakdown["Total R"].dtype.kind in "fi"
-    assert breakdown["Expectancy R"].dtype.kind in "fi"
-    assert breakdown["Profit factor"].dtype.kind in "fi"
+    assert not any("Group" in item.value.columns for item in app.dataframe)
     assert any("Logical trade" in item.value.columns for item in app.dataframe)
     section_headers = {item.value for item in app.markdown}
     assert {

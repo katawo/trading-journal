@@ -62,7 +62,6 @@ _ANALYTICS_CACHE_TTL_SECONDS = 15
 _CHART_POSITIVE = "#0e9163"
 _CHART_NEGATIVE = "#c73545"
 _CHART_NEUTRAL = "#7a828e"
-_STATISTICS_BREAKDOWN_CHART_LIMIT = 12
 
 _DashboardMetricTone = AccentMetricTone
 
@@ -83,6 +82,11 @@ def supported_mt5_schema_versions() -> str:
 def format_currency_caption(value: str | Decimal, currency: str, *, signed: bool = True) -> str:
     """Format currency safely for Streamlit text elements that parse Markdown."""
     return format_currency(value, currency, signed=signed).replace("$", r"\$")
+
+
+def _format_drawdown_value(amount: str, percent: str | None, currency: str) -> str:
+    value = format_currency(-Decimal(amount), currency)
+    return value if percent is None else f"{value} ({format_percent(percent)})"
 
 
 def format_account_label(account: AccountListItem) -> str:
@@ -309,49 +313,6 @@ def _build_concentration_figure(*, profit, loss, currency: str) -> go.Figure:
     return figure
 
 
-def _build_outcome_mix_figure(*, win_count: int, loss_count: int, breakeven_count: int) -> go.Figure:
-    outcomes = [
-        (tr("Wins"), win_count, _CHART_POSITIVE),
-        (tr("Losses"), loss_count, _CHART_NEGATIVE),
-        (tr("Breakevens"), breakeven_count, _CHART_NEUTRAL),
-    ]
-    total = sum(count for _, count, _ in outcomes)
-    figure = go.Figure()
-    for label, count, colour in outcomes:
-        share = Decimal(count * 100) / Decimal(total)
-        figure.add_trace(
-            go.Bar(
-                name=label,
-                x=[float(share)],
-                y=[tr("Closed logical trades")],
-                orientation="h",
-                marker_color=colour,
-                marker_line_width=0,
-                customdata=[[format_count(count), format_percent(share)]],
-                text=[format_percent(share) if count else ""],
-                textposition="inside",
-                insidetextanchor="middle",
-                hovertemplate="%{fullData.name}<br><b>%{customdata[0]}</b><br>%{customdata[1]}<extra></extra>",
-            )
-        )
-    figure.update_layout(
-        height=105,
-        margin=dict(l=4, r=4, t=4, b=24),
-        barmode="stack",
-        showlegend=False,
-        hovermode="closest",
-    )
-    figure.update_xaxes(
-        range=[0, 100],
-        tickvals=[0, 25, 50, 75, 100],
-        ticksuffix="%",
-        showgrid=False,
-        zeroline=False,
-    )
-    figure.update_yaxes(showgrid=False, zeroline=False, showticklabels=False, title=None)
-    return figure
-
-
 def _build_performance_history_figure(
     *,
     timeline_x,
@@ -436,56 +397,128 @@ def _build_performance_history_figure(
     return figure
 
 
-def _build_breakdown_pnl_figure(
-    items: list[tuple[str, PerformanceBreakdown]],
-    *,
-    currency: str,
-    dimension: str,
-) -> tuple[go.Figure, bool]:
-    truncated = len(items) > _STATISTICS_BREAKDOWN_CHART_LIMIT
-    selected = sorted(
-        items,
-        key=lambda item: (-abs(Decimal(item[1].net_pnl)), item[0].casefold()),
-    )[:_STATISTICS_BREAKDOWN_CHART_LIMIT]
-    selected.sort(key=lambda item: (-Decimal(item[1].net_pnl), item[0].casefold()))
-    labels = [label for label, _ in selected]
-    values = [Decimal(row.net_pnl) for _, row in selected]
-    colours = [_CHART_POSITIVE if value > 0 else _CHART_NEGATIVE if value < 0 else _CHART_NEUTRAL for value in values]
-    customdata = [
-        [format_currency(value, currency), format_count(row.trade_count), format_percent(row.win_rate)]
-        for (_, row), value in zip(selected, values, strict=True)
+def _direction_profile_items(
+    row: PerformanceBreakdown | None,
+) -> list[tuple[str, str, _DashboardMetricTone]]:
+    if row is None:
+        return [
+            (tr("Trades"), format_count(0), "neutral"),
+            (tr("Wins (rate)"), f'{format_count(0)} (—)', "neutral"),
+            (tr("Losses (rate)"), f'{format_count(0)} (—)', "neutral"),
+            (tr("Breakeven"), format_count(0), "neutral"),
+        ]
+    loss_rate = Decimal(row.loss_count * 100) / Decimal(row.trade_count)
+    return [
+        (tr("Trades"), format_count(row.trade_count), "info"),
+        (
+            tr("Wins (rate)"),
+            f"{format_count(row.win_count)} ({format_percent(row.win_rate)})",
+            _presence_metric_tone(row.win_count, "positive"),
+        ),
+        (
+            tr("Losses (rate)"),
+            f"{format_count(row.loss_count)} ({format_percent(loss_rate)})",
+            _presence_metric_tone(row.loss_count, "negative"),
+        ),
+        (tr("Breakeven"), format_count(row.breakeven_count), "neutral"),
     ]
-    figure = go.Figure(
-        go.Bar(
-            x=[float(value) for value in values],
-            y=labels,
-            orientation="h",
-            marker_color=colours,
-            marker_line_width=0,
-            customdata=customdata,
-            hovertemplate=(
-                "%{y}<br><b>%{customdata[0]}</b>"
-                f"<br>{tr('Trades')}: %{{customdata[1]}}"
-                f"<br>{tr('Win rate')}: %{{customdata[2]}}<extra></extra>"
-            ),
+
+
+def _direction_edge_items(
+    row: PerformanceBreakdown | None,
+    currency: str,
+) -> list[tuple[str, str, _DashboardMetricTone]]:
+    if row is None:
+        return [
+            (tr("Net P&L"), format_currency(0, currency), "neutral"),
+            (tr("Total R"), "—", "neutral"),
+            (tr("Expectancy R"), "—", "neutral"),
+            (tr("Profit factor"), "—", "neutral"),
+        ]
+    return [
+        (tr("Net P&L"), format_currency(row.net_pnl, currency), _signed_metric_tone(row.net_pnl)),
+        (
+            tr("Total R"),
+            tr("Awaiting risk") if row.total_r is None else format_r(row.total_r),
+            _risk_metric_tone(row.total_r, row.trade_count),
+        ),
+        (
+            tr("Expectancy R"),
+            tr("Awaiting risk") if row.expectancy_r is None else format_r(row.expectancy_r),
+            _risk_metric_tone(row.expectancy_r, row.trade_count),
+        ),
+        (
+            tr("Profit factor"),
+            tr("No losses") if row.profit_factor is None else format_number(row.profit_factor, 2),
+            _profit_factor_metric_tone(row.profit_factor),
+        ),
+    ]
+
+
+def _direction_table_html(
+    title: str,
+    long_items: list[tuple[str, str, _DashboardMetricTone]],
+    short_items: list[tuple[str, str, _DashboardMetricTone]],
+) -> str:
+    body = "".join(
+        (
+            "<tr>"
+            f'<th scope="row">{escape(label)}</th>'
+            f'<td class="dashboard-stat-tone-{long_tone}">{escape(long_value)}</td>'
+            f'<td class="dashboard-stat-tone-{short_tone}">{escape(short_value)}</td>'
+            "</tr>"
+        )
+        for (label, long_value, long_tone), (_, short_value, short_tone) in zip(
+            long_items,
+            short_items,
+            strict=True,
         )
     )
-    figure.update_layout(
-        title=dict(text=tr("Net P&L by {dimension}", dimension=dimension.lower()), x=0.02, y=0.97),
-        height=min(520, max(220, len(selected) * 34 + 115)),
-        margin=dict(l=12, r=12, t=52, b=12),
-        showlegend=False,
-        hovermode="closest",
+    return (
+        '<div class="dashboard-direction-matrix">'
+        f'<div class="dashboard-direction-matrix-title">{escape(title)}</div>'
+        '<table class="dashboard-direction-table">'
+        "<thead><tr>"
+        f'<th scope="col">{escape(tr("Metric"))}</th>'
+        f'<th scope="col">{escape(tr("Long"))}</th>'
+        f'<th scope="col">{escape(tr("Short"))}</th>'
+        "</tr></thead>"
+        f"<tbody>{body}</tbody>"
+        "</table></div>"
     )
-    figure.update_xaxes(
-        title=f"{tr('Net P&L')} ({currency})",
-        tickprefix=currency_prefix(currency),
-        tickformat=f",.{currency_decimal_places(currency)}f",
-        zeroline=True,
-        zerolinewidth=1,
+
+
+def _render_direction_matrix(report: DashboardReport, currency: str) -> None:
+    direction_rows = {item.label.casefold(): item for item in report.by_direction}
+    long_row = direction_rows.get("long")
+    short_row = direction_rows.get("short")
+
+    def coverage(row: PerformanceBreakdown | None) -> str:
+        if row is None or row.trade_count == 0:
+            return "—"
+        return format_percent(Decimal(row.r_trade_count * 100) / Decimal(row.trade_count))
+
+    st.markdown(
+        '<div class="dashboard-direction-table-wrap"><div class="dashboard-direction-matrices">'
+        + _direction_table_html(
+            tr("Trade profile"),
+            _direction_profile_items(long_row),
+            _direction_profile_items(short_row),
+        )
+        + _direction_table_html(
+            tr("Edge results"),
+            _direction_edge_items(long_row, currency),
+            _direction_edge_items(short_row, currency),
+        )
+        + "</div>"
+        + (
+            '<div class="dashboard-direction-coverage">'
+            f'{escape(tr("R coverage"))} · {escape(tr("Long"))} {escape(coverage(long_row))}'
+            f' · {escape(tr("Short"))} {escape(coverage(short_row))}'
+            "</div></div>"
+        ),
+        unsafe_allow_html=True,
     )
-    figure.update_yaxes(showgrid=False, zeroline=False, autorange="reversed")
-    return figure, truncated
 
 
 def _render_dashboard_statistics(report: DashboardReport, currency: str) -> None:
@@ -494,7 +527,7 @@ def _render_dashboard_statistics(report: DashboardReport, currency: str) -> None
         st.markdown(f"#### {tr('Trade outcomes')}")
         st.caption(tr("Outcome statistics use the all-time closed logical-trade record."))
         outcome_columns = st.container(key="dashboard-outcome-columns")
-        profit, loss, outcome = outcome_columns.columns([1, 1, 1.35], gap="medium")
+        profit, loss, outcome = outcome_columns.columns(3, gap="medium")
         with profit:
             st.markdown(f'<div class="dashboard-stat-column-head">{tr("Profit")}</div>', unsafe_allow_html=True)
             _render_stat_grid([
@@ -506,18 +539,13 @@ def _render_dashboard_statistics(report: DashboardReport, currency: str) -> None
                 ),
                 (
                     tr("Wins"),
-                    f"{format_count(report.win_count)} ({format_percent(Decimal(report.win_count * 100) / Decimal(report.trade_count))})",
+                    format_count(report.win_count),
                     _presence_metric_tone(report.win_count, "positive"),
                 ),
                 (
                     tr("Best day"),
                     "—" if report.best_day is None else format_currency(report.best_day, currency),
                     _signed_metric_tone(report.best_day),
-                ),
-                (
-                    tr("Longest win streak"),
-                    format_count(report.longest_win_streak),
-                    _presence_metric_tone(report.longest_win_streak, "positive"),
                 ),
             ], class_name="dashboard-stat-list")
         with loss:
@@ -531,7 +559,7 @@ def _render_dashboard_statistics(report: DashboardReport, currency: str) -> None
                 ),
                 (
                     tr("Losses"),
-                    f"{format_count(report.loss_count)} ({format_percent(Decimal(report.loss_count * 100) / Decimal(report.trade_count))})",
+                    format_count(report.loss_count),
                     _presence_metric_tone(report.loss_count, "negative"),
                 ),
                 (
@@ -539,52 +567,52 @@ def _render_dashboard_statistics(report: DashboardReport, currency: str) -> None
                     "—" if report.worst_day is None else format_currency(report.worst_day, currency),
                     _signed_metric_tone(report.worst_day),
                 ),
-                (
-                    tr("Longest loss streak"),
-                    format_count(report.longest_loss_streak),
-                    _presence_metric_tone(report.longest_loss_streak, "negative"),
-                ),
             ], class_name="dashboard-stat-list")
         with outcome:
-            st.markdown(f'<div class="dashboard-stat-column-head">{tr("Outcome mix")}</div>', unsafe_allow_html=True)
-            if report.trade_count:
-                st.plotly_chart(
-                    _build_outcome_mix_figure(
-                        win_count=report.win_count,
-                        loss_count=report.loss_count,
-                        breakeven_count=report.breakeven_count,
-                    ),
-                    width="stretch",
-                    config={"displayModeBar": False},
-                    key="dashboard-statistics-outcome-mix",
-                )
+            st.markdown(f'<div class="dashboard-stat-column-head">{tr("Edge quality")}</div>', unsafe_allow_html=True)
             _render_stat_grid([
                 (tr("Win rate"), format_percent(report.win_rate), "info"),
+                (tr("Payoff ratio"), "—" if report.payoff_ratio is None else format_number(report.payoff_ratio, 2), "info"),
                 (
                     tr("Expectancy R"),
                     tr("Awaiting risk") if report.expectancy_r is None else format_r(report.expectancy_r),
                     _risk_metric_tone(report.expectancy_r, report.trade_count),
                 ),
-                (tr("Payoff ratio"), "—" if report.payoff_ratio is None else format_number(report.payoff_ratio, 2), "info"),
+                (
+                    tr("Profit factor"),
+                    tr("No losses") if report.profit_factor is None else format_number(report.profit_factor, 2),
+                    _profit_factor_metric_tone(report.profit_factor),
+                ),
                 (
                     tr("R coverage"),
                     format_percent(Decimal(report.r_trade_count * 100) / Decimal(report.trade_count)),
                     _r_coverage_metric_tone(report.r_trade_count, report.trade_count),
                 ),
-            ], class_name="dashboard-outcome-stats")
+            ], class_name="dashboard-stat-list")
 
         current_streak = "—"
         if report.current_streak_outcome is not None:
             streak_outcome = {"win": "Win", "loss": "Loss", "breakeven": "Breakeven"}[report.current_streak_outcome]
             current_streak = f"{format_count(report.current_streak_count)} · {tr(streak_outcome)}"
-        _render_stat_grid(
-            [
+        st.markdown(
+            f'<div class="dashboard-stat-section-head">{tr("Consistency profile")}</div>',
+            unsafe_allow_html=True,
+        )
+        consistency_columns = st.container(key="dashboard-consistency-columns")
+        activity, day_performance, momentum = consistency_columns.columns(3, gap="medium")
+        with activity:
+            st.markdown(f'<div class="dashboard-stat-column-head">{tr("Activity")}</div>', unsafe_allow_html=True)
+            _render_stat_grid([
                 (tr("Active trading days"), format_count(report.active_day_count), "info"),
                 (
                     tr("Profitable days"),
-                    f"{format_count(report.profitable_day_count)}/{format_count(report.active_day_count)} ({format_percent(report.profitable_day_rate)})",
+                    f"{format_count(report.profitable_day_count)}/{format_count(report.active_day_count)}",
                     "info",
                 ),
+            ], class_name="dashboard-stat-list")
+        with day_performance:
+            st.markdown(f'<div class="dashboard-stat-column-head">{tr("Daily efficiency")}</div>', unsafe_allow_html=True)
+            _render_stat_grid([
                 (
                     tr("Average day"),
                     "—" if report.average_day is None else format_currency(report.average_day, currency),
@@ -595,92 +623,28 @@ def _render_dashboard_statistics(report: DashboardReport, currency: str) -> None
                     tr("No drawdown") if report.recovery_factor is None else format_number(report.recovery_factor, 2),
                     "info",
                 ),
+            ], class_name="dashboard-stat-list")
+        with momentum:
+            st.markdown(f'<div class="dashboard-stat-column-head">{tr("Streak risk")}</div>', unsafe_allow_html=True)
+            _render_stat_grid([
                 (tr("Current streak"), current_streak, _streak_metric_tone(report.current_streak_outcome)),
-            ],
-            class_name="dashboard-outcome-footer",
+                (
+                    tr("Longest win streak"),
+                    format_count(report.longest_win_streak),
+                    _presence_metric_tone(report.longest_win_streak, "positive"),
+                ),
+                (
+                    tr("Longest loss streak"),
+                    format_count(report.longest_loss_streak),
+                    _presence_metric_tone(report.longest_loss_streak, "negative"),
+                ),
+            ], class_name="dashboard-stat-list")
+
+        st.markdown(
+            f'<div class="dashboard-stat-section-head">{tr("Direction edge")}</div>',
+            unsafe_allow_html=True,
         )
-
-        st.markdown(f"**{tr('Breakdown view')}**")
-        breakdown_view = st.segmented_control(
-            tr("Breakdown view"),
-            [tr("Direction"), tr("Symbol")],
-            default=tr("Direction"),
-            required=True,
-            width="content",
-            key="dashboard-statistics-breakdown",
-            label_visibility="collapsed",
-        )
-        rows = report.by_symbol if breakdown_view == tr("Symbol") else report.by_direction
-        labels = [item.label for item in rows]
-        if breakdown_view == tr("Direction"):
-            labels = [tr(direction_tag(item.label).label) for item in rows]
-        breakdown_columns = st.container(key="dashboard-breakdown-columns")
-        breakdown_chart_column, breakdown_table_column = breakdown_columns.columns([1, 1], gap="medium")
-        with breakdown_chart_column:
-            if rows:
-                breakdown_figure, truncated = _build_breakdown_pnl_figure(
-                    list(zip(labels, rows, strict=True)),
-                    currency=currency,
-                    dimension=breakdown_view,
-                )
-                st.plotly_chart(
-                    breakdown_figure,
-                    width="stretch",
-                    config={"displayModeBar": False},
-                    key="dashboard-statistics-breakdown-pnl",
-                )
-                if truncated:
-                    st.caption(
-                        tr(
-                            "Chart shows the {count} groups with the largest absolute net P&L; the table includes every group.",
-                            count=format_count(_STATISTICS_BREAKDOWN_CHART_LIMIT),
-                        )
-                    )
-            else:
-                st.caption(tr("Complete logical trades will populate the breakdown chart."))
-        with breakdown_table_column:
-            breakdown_frame, breakdown_config = _dashboard_breakdown_frame(rows, labels, currency)
-            st.markdown(f"**{tr('Breakdown detail')}**")
-            st.dataframe(
-                breakdown_frame,
-                hide_index=True,
-                width="stretch",
-                height=min(250, 42 + max(1, len(breakdown_frame)) * 35),
-                column_config=breakdown_config,
-            )
-
-
-def _dashboard_breakdown_frame(rows, labels: list[str], currency: str) -> tuple[pd.DataFrame, dict[str, object]]:
-    group_column = tr("Group")
-    trades_column = tr("Trades")
-    win_rate_column = tr("Win rate")
-    pnl_column = f"{tr('Net P&L')} ({currency})"
-    total_r_column = tr("Total R")
-    expectancy_r_column = tr("Expectancy R")
-    profit_factor_column = tr("Profit factor")
-    frame = pd.DataFrame(
-        {
-            group_column: labels,
-            trades_column: pd.Series([item.trade_count for item in rows], dtype="int64"),
-            tr("W-L-B"): [f"{item.win_count}-{item.loss_count}-{item.breakeven_count}" for item in rows],
-            win_rate_column: pd.Series([float(item.win_rate) for item in rows], dtype="float64"),
-            pnl_column: pd.Series([float(item.net_pnl) for item in rows], dtype="float64"),
-            total_r_column: pd.Series([None if item.total_r is None else float(item.total_r) for item in rows], dtype="float64"),
-            expectancy_r_column: pd.Series([None if item.expectancy_r is None else float(item.expectancy_r) for item in rows], dtype="float64"),
-            profit_factor_column: pd.Series([None if item.profit_factor is None else float(item.profit_factor) for item in rows], dtype="float64"),
-            tr("R coverage"): [f"{item.r_trade_count}/{item.trade_count}" for item in rows],
-        }
-    )
-    config = {
-        group_column: st.column_config.TextColumn(pinned=True),
-        trades_column: st.column_config.NumberColumn(format="%d"),
-        win_rate_column: st.column_config.NumberColumn(format="%.1f%%"),
-        pnl_column: st.column_config.NumberColumn(format=f"%+.{currency_decimal_places(currency)}f"),
-        total_r_column: st.column_config.NumberColumn(format="%+.2fR"),
-        expectancy_r_column: st.column_config.NumberColumn(format="%+.2fR"),
-        profit_factor_column: st.column_config.NumberColumn(format="%.2f"),
-    }
-    return frame, config
+        _render_direction_matrix(report, currency)
 
 
 def apply_application_style() -> None:
@@ -750,32 +714,27 @@ def apply_application_style() -> None:
             display: block;
             padding-top: 0.35rem;
         }
-        .dashboard-stat-list .dashboard-stat,
-        .dashboard-outcome-stats .dashboard-stat {
+        .dashboard-stat-list .dashboard-stat {
             display: grid;
             grid-template-columns: minmax(0, 1fr) auto;
             align-items: baseline;
             gap: 0.75rem;
             min-height: 1.6rem;
         }
-        .dashboard-stat-list .dashboard-stat-value,
-        .dashboard-outcome-stats .dashboard-stat-value {
+        .dashboard-stat-list .dashboard-stat-value {
             margin-top: 0;
             text-align: right;
         }
-        .dashboard-outcome-stats {
-            grid-template-columns: repeat(2, minmax(7rem, 1fr));
-            gap: 0.35rem 1.35rem;
-            padding: 0.1rem 0 0;
-        }
-        .dashboard-outcome-footer {
-            grid-template-columns: repeat(5, minmax(7.5rem, 1fr));
+        .dashboard-stat-section-head {
             border-top: 1px solid var(--st-border-color, #c8d0c8);
-            margin-top: 0.35rem;
-            padding: 0.65rem 0 0;
+            font-size: 0.8rem;
+            font-weight: 700;
+            margin-top: 0.65rem;
+            padding-top: 0.65rem;
         }
+        div.st-key-dashboard-account-risk-columns [data-testid="stColumn"] + [data-testid="stColumn"],
         div.st-key-dashboard-outcome-columns [data-testid="stColumn"] + [data-testid="stColumn"],
-        div.st-key-dashboard-breakdown-columns [data-testid="stColumn"] + [data-testid="stColumn"],
+        div.st-key-dashboard-consistency-columns [data-testid="stColumn"] + [data-testid="stColumn"],
         div.st-key-dashboard-process-risk-columns [data-testid="stColumn"] + [data-testid="stColumn"] {
             border-left: 1px solid var(--st-border-color, #c8d0c8);
             padding-left: 1rem;
@@ -788,6 +747,67 @@ def apply_application_style() -> None:
             border-bottom: 1px solid var(--st-border-color, #c8d0c8);
             padding-bottom: 0.35rem;
             margin-bottom: 0.15rem;
+        }
+        .dashboard-direction-table-wrap {
+            overflow-x: auto;
+            padding-top: 0.25rem;
+        }
+        .dashboard-direction-matrices {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            min-width: 52rem;
+        }
+        .dashboard-direction-matrix:first-child {
+            padding-right: 1rem;
+        }
+        .dashboard-direction-matrix + .dashboard-direction-matrix {
+            border-left: 1px solid var(--st-border-color, #c8d0c8);
+            padding-left: 1rem;
+        }
+        .dashboard-direction-matrix-title {
+            font-size: 0.66rem;
+            font-weight: 700;
+            letter-spacing: 0.06em;
+            margin-bottom: 0.25rem;
+            text-transform: uppercase;
+        }
+        .dashboard-direction-table {
+            border-collapse: collapse;
+            width: 100%;
+            font-variant-numeric: tabular-nums;
+        }
+        .dashboard-direction-table th,
+        .dashboard-direction-table td {
+            border-bottom: 1px solid var(--st-border-color, #c8d0c8);
+            padding: 0.35rem 0.65rem;
+        }
+        .dashboard-direction-table th {
+            color: var(--st-gray-color, #667168);
+            font-size: 0.68rem;
+            font-weight: 600;
+            letter-spacing: 0.05em;
+            text-align: left;
+            text-transform: uppercase;
+        }
+        .dashboard-direction-table td {
+            font-size: 0.9rem;
+            font-weight: 600;
+            text-align: right;
+        }
+        .dashboard-direction-table th + th,
+        .dashboard-direction-table td + td {
+            border-left: 1px solid var(--st-border-color, #c8d0c8);
+        }
+        .dashboard-direction-table thead th:not(:first-child) {
+            color: inherit;
+            text-align: right;
+        }
+        .dashboard-direction-coverage {
+            color: var(--st-gray-color, #667168);
+            font-size: 0.68rem;
+            min-width: 52rem;
+            padding-top: 0.45rem;
+            text-align: right;
         }
         .dashboard-stat-note {
             color: var(--st-gray-color, #667168);
@@ -837,17 +857,29 @@ def apply_application_style() -> None:
             .dashboard-stat-list {
                 display: block;
             }
-            .dashboard-outcome-stats {
-                grid-template-columns: repeat(2, minmax(7.5rem, 1fr));
-            }
-            .dashboard-outcome-footer {
-                grid-template-columns: repeat(2, minmax(7.5rem, 1fr));
-            }
+            div.st-key-dashboard-account-risk-columns [data-testid="stColumn"] + [data-testid="stColumn"],
             div.st-key-dashboard-outcome-columns [data-testid="stColumn"] + [data-testid="stColumn"],
-            div.st-key-dashboard-breakdown-columns [data-testid="stColumn"] + [data-testid="stColumn"],
+            div.st-key-dashboard-consistency-columns [data-testid="stColumn"] + [data-testid="stColumn"],
             div.st-key-dashboard-process-risk-columns [data-testid="stColumn"] + [data-testid="stColumn"] {
                 border-left: 0;
                 padding-left: 0;
+            }
+            .dashboard-direction-matrices {
+                grid-template-columns: minmax(0, 1fr);
+                min-width: 0;
+            }
+            .dashboard-direction-matrix:first-child {
+                padding-right: 0;
+            }
+            .dashboard-direction-matrix + .dashboard-direction-matrix {
+                border-left: 0;
+                border-top: 1px solid var(--st-border-color, #c8d0c8);
+                margin-top: 0.75rem;
+                padding-left: 0;
+                padding-top: 0.75rem;
+            }
+            .dashboard-direction-coverage {
+                min-width: 0;
             }
             .dashboard-pillar-empty-row {
                 grid-template-columns: 1fr;
@@ -1979,62 +2011,82 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
 
     logical_label = f"{report.trade_count} closed logical trade{'s' if report.trade_count != 1 else ''}"
     st.markdown(f'<div class="dashboard-period">{tr("All time")} · {logical_label}</div>', unsafe_allow_html=True)
-    chart_view = st.session_state.get("dashboard_chart_view", "Daily")
-    if chart_view not in {"Daily", "Per trade"}:
-        chart_view = "Daily"
-    if chart_view == "Daily":
+    with st.container(border=True):
+        st.markdown(f"#### {tr('Account & risk snapshot')}")
         displayed_max_drawdown = report.end_of_day_max_drawdown
+        displayed_max_drawdown_percent = report.end_of_day_max_drawdown_percent
         displayed_current_drawdown = report.end_of_day_current_drawdown
         displayed_current_drawdown_percent = report.end_of_day_current_drawdown_percent
-    else:
-        displayed_max_drawdown = report.max_drawdown
-        displayed_current_drawdown = report.current_drawdown
-        displayed_current_drawdown_percent = report.current_drawdown_percent
-    with st.container(border=True):
-        _render_stat_grid([
-            (
-                "Account balance",
-                "—" if report.ending_balance is None else format_currency(report.ending_balance, currency, signed=False),
-                "info",
-            ),
-            (
-                "Account growth",
-                "—" if report.balance_growth_percent is None else format_percent(report.balance_growth_percent, signed=True),
-                _signed_metric_tone(report.balance_growth_percent),
-            ),
-            ("Realized P&L", format_currency(report.net_pnl, currency), _signed_metric_tone(report.net_pnl)),
-            (
-                "Account drawdown",
-                format_currency(-Decimal(displayed_max_drawdown), currency),
-                _signed_metric_tone(-Decimal(displayed_max_drawdown)),
-            ),
-            (
-                "Total R",
-                "Awaiting risk" if report.total_r is None else format_r(report.total_r),
-                _risk_metric_tone(report.total_r, report.trade_count),
-            ),
-            (
-                "Profit factor",
-                "No losses" if report.profit_factor is None else format_number(report.profit_factor, 2),
-                _profit_factor_metric_tone(report.profit_factor),
-            ),
-        ])
+
+        snapshot_columns = st.container(key="dashboard-account-risk-columns")
+        capital, performance, drawdown, quality = snapshot_columns.columns(4, gap="medium")
+        with capital:
+            st.markdown(f'<div class="dashboard-stat-column-head">{tr("Capital")}</div>', unsafe_allow_html=True)
+            _render_stat_grid([
+                (
+                    tr("Account balance"),
+                    "—" if report.ending_balance is None else format_currency(report.ending_balance, currency, signed=False),
+                    "info",
+                ),
+                (
+                    tr("Funded capital"),
+                    "—" if report.starting_balance is None else format_currency(report.starting_balance, currency, signed=False),
+                    "info" if report.starting_balance is not None else "neutral",
+                ),
+            ], class_name="dashboard-stat-list")
+        with performance:
+            st.markdown(f'<div class="dashboard-stat-column-head">{tr("Performance")}</div>', unsafe_allow_html=True)
+            _render_stat_grid([
+                (
+                    tr("Account growth"),
+                    "—" if report.balance_growth_percent is None else format_percent(report.balance_growth_percent, signed=True),
+                    _signed_metric_tone(report.balance_growth_percent),
+                ),
+                (tr("Realized P&L"), format_currency(report.net_pnl, currency), _signed_metric_tone(report.net_pnl)),
+            ], class_name="dashboard-stat-list")
+        with drawdown:
+            st.markdown(
+                f'<div class="dashboard-stat-column-head">{tr("Drawdown · Daily close")}</div>',
+                unsafe_allow_html=True,
+            )
+            _render_stat_grid([
+                (
+                    tr("Current drawdown"),
+                    _format_drawdown_value(displayed_current_drawdown, displayed_current_drawdown_percent, currency),
+                    _signed_metric_tone(-Decimal(displayed_current_drawdown)),
+                ),
+                (
+                    tr("Max drawdown"),
+                    _format_drawdown_value(displayed_max_drawdown, displayed_max_drawdown_percent, currency),
+                    _signed_metric_tone(-Decimal(displayed_max_drawdown)),
+                ),
+            ], class_name="dashboard-stat-list")
+        with quality:
+            st.markdown(f'<div class="dashboard-stat-column-head">{tr("Quality")}</div>', unsafe_allow_html=True)
+            _render_stat_grid([
+                (
+                    tr("Total R"),
+                    tr("Awaiting risk") if report.total_r is None else format_r(report.total_r),
+                    _risk_metric_tone(report.total_r, report.trade_count),
+                ),
+                (
+                    tr("Profit factor"),
+                    tr("No losses") if report.profit_factor is None else format_number(report.profit_factor, 2),
+                    _profit_factor_metric_tone(report.profit_factor),
+                ),
+            ], class_name="dashboard-stat-list")
         if report.r_trade_count < report.trade_count:
             st.caption(f"R is based on {report.r_trade_count:,} of {report.trade_count:,} logical trades with an effective planned risk.")
         else:
             st.caption(f"All {report.trade_count:,} logical trades have an effective risk value.")
         if report.starting_balance is None:
             st.caption("Set funded capital in Settings to enable the balance curve, balance growth, and drawdown percentage.")
-        else:
-            st.caption(
-                f"{tr('Drawdown follows the selected chart view.')} "
-                + f"{tr('Current drawdown')}: {format_currency_caption(-Decimal(displayed_current_drawdown), currency)}"
-                + (f" ({format_percent(displayed_current_drawdown_percent)})" if displayed_current_drawdown_percent is not None else "")
-                + f" · Funded capital: {format_currency_caption(report.starting_balance, currency, signed=False)}."
-            )
 
+    with st.container(border=True):
         _render_dashboard_statistics(report, currency)
 
+    if st.session_state.get("dashboard_chart_view", "Daily") not in {"Daily", "Per trade"}:
+        st.session_state["dashboard_chart_view"] = "Daily"
     history_surface = st.container(border=True)
     with history_surface:
         history_title, history_control = st.columns([4, 1], vertical_alignment="center")
@@ -2187,6 +2239,8 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
                 width="stretch",
                 height=min(300, 42 + max(1, len(trade_table)) * 35),
             )
+
+    render_framework_dashboard(repo, account)
 
     return account
 
