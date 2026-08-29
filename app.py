@@ -1291,6 +1291,7 @@ def _render_account_onboarding_dialog(repo: SQLiteJournalRepository, strategy_pr
             login = first.text_input("MT5 account ID", value=value("login"), key=f"{prefix}login", on_change=sync, args=("login",))
             broker = second.text_input("Broker server", value=value("broker"), key=f"{prefix}broker", on_change=sync, args=("broker",))
             funded_capital = st.text_input("Funded capital", value=value("funded-capital"), placeholder="e.g. 10000", key=f"{prefix}funded-capital", on_change=sync, args=("funded-capital",))
+            st.warning(tr("Funded capital is a permanent account baseline. It cannot be changed after this account is created."), icon=":material/lock:")
             st.caption("This required baseline anchors account growth, drawdown, and the risk policy. It does not replace MT5 balance history.")
             with st.expander("Advanced: custom export location"):
                 if common_files_location.path is not None:
@@ -1352,10 +1353,14 @@ def _render_account_onboarding_dialog(repo: SQLiteJournalRepository, strategy_pr
             st.markdown("###### Confirm account setup")
             system_label = profile_by_id[value("strategy-id")].name if value("mode") == "Use saved system" else value("strategy-name")
             st.caption(f"**System:** {system_label} · **MT5:** {value('login')} · {value('broker')} · **Capital:** {value('funded-capital')} {str(value('currency')).upper()}")
+            capital_confirmed = st.checkbox(
+                tr("I confirm the funded capital is correct and understand it cannot be changed later"),
+                key=f"{prefix}capital-confirmed",
+            )
             back, create = st.columns(2)
             if back.button("Back", icon=":material/arrow_back:"):
                 previous()
-            if create.button("Create and activate account", type="primary", icon=":material/check_circle:"):
+            if create.button("Create and activate account", type="primary", icon=":material/check_circle:", disabled=not capital_confirmed):
                 try:
                     resolved_export_path = str(value("export-path")).strip() or default_mt5_export_path(str(value("login")))
                     account = repo.create_configured_mt5_account(
@@ -1384,7 +1389,7 @@ def _render_account_onboarding_dialog(repo: SQLiteJournalRepository, strategy_pr
 
 def render_mt5_account_settings(repo: SQLiteJournalRepository) -> AccountListItem | None:
     st.markdown("#### Approved MT5 accounts")
-    st.caption("Each account has one trading system. Its broker server confirms the export source. Funded capital can be updated later; it recalculates historical growth, drawdown, and Risk limits without changing MT5 trades. Dashboard and Framework always show the single active account below.")
+    st.caption("Each account has one trading system. Its broker server confirms the export source. Funded capital is fixed at creation. Dashboard and Framework always show the single active account below.")
     common_files_location = find_mt5_common_files()
     accounts = repo.list_mt5_accounts()
     disabled_accounts = repo.list_disabled_mt5_accounts()
@@ -1491,7 +1496,6 @@ def render_mt5_account_settings(repo: SQLiteJournalRepository) -> AccountListIte
     defaults = {
         "display-name": selected.display_name,
         "currency": selected.account_currency,
-        "funded-capital": selected.funded_capital or "",
         "login": selected.login,
         "broker-server": selected.broker_server,
         "export-path": "" if selected.export_file_path == default_mt5_export_path(selected.login) else selected.export_file_path,
@@ -1499,6 +1503,8 @@ def render_mt5_account_settings(repo: SQLiteJournalRepository) -> AccountListIte
     }
     for name, value in defaults.items():
         st.session_state.setdefault(field_key(name), value)
+    if selected.funded_capital is None:
+        st.session_state.setdefault(field_key("funded-capital"), "")
 
     has_imported_trades = repo.account_has_imported_trades(selected.id)
     identity_locked = has_imported_trades
@@ -1510,7 +1516,6 @@ def render_mt5_account_settings(repo: SQLiteJournalRepository) -> AccountListIte
     def save_account() -> bool:
         display_name = st.session_state[field_key("display-name")].strip()
         account_currency = st.session_state[field_key("currency")].upper()
-        funded_capital = st.session_state[field_key("funded-capital")]
         login = st.session_state[field_key("login")]
         broker_server = st.session_state[field_key("broker-server")].strip()
         export_file_path = st.session_state[field_key("export-path")]
@@ -1518,13 +1523,13 @@ def render_mt5_account_settings(repo: SQLiteJournalRepository) -> AccountListIte
         if not display_name or not login.isdecimal() or not broker_server:
             st.session_state["mt5-account-save-error"] = "An account name, a numeric MT5 login, and broker server are required."
             return False
-        try:
-            if Decimal(funded_capital) <= 0:
-                raise ValueError
-        except Exception:
-            st.session_state["mt5-account-save-error"] = "Enter a positive funded-capital amount."
-            return False
-
+        if selected.funded_capital is None:
+            try:
+                if Decimal(st.session_state[field_key("funded-capital")]) <= 0:
+                    raise ValueError
+            except Exception:
+                st.session_state["mt5-account-save-error"] = "Enter a positive funded-capital amount."
+                return False
         resolved_export_path = export_file_path.strip() or default_mt5_export_path(login)
         try:
             with st.spinner(tr("Saving…")):
@@ -1535,8 +1540,12 @@ def render_mt5_account_settings(repo: SQLiteJournalRepository) -> AccountListIte
                     broker_server=broker_server,
                     account_currency=account_currency,
                     export_file_path=resolved_export_path,
-                    opening_balance=funded_capital or None,
                     strategy_profile_id=None if identity_locked else strategy_profile_id,
+                    initial_funded_capital=(
+                        st.session_state[field_key("funded-capital")]
+                        if selected.funded_capital is None
+                        else None
+                    ),
                 )
         except ValueError as error:
             st.session_state["mt5-account-save-error"] = str(error)
@@ -1564,7 +1573,7 @@ def render_mt5_account_settings(repo: SQLiteJournalRepository) -> AccountListIte
                 queue_toast(st.session_state["mt5-account-notice"], icon=":material/toggle_on:")
                 st.rerun()
         if identity_locked:
-            account_editor.caption("MT5 account ID, broker server, and currency are locked because this account already has imported trades. Its name, funded capital, and export location remain editable.")
+            account_editor.caption("MT5 account ID, broker server, and currency are locked because this account already has imported trades. Funded capital is always locked after account creation.")
         with account_editor.form("mt5-account-editor-form", border=False):
             identity, currency, baseline = st.columns([3, 1, 2])
             display_name = identity.text_input(
@@ -1573,12 +1582,21 @@ def render_mt5_account_settings(repo: SQLiteJournalRepository) -> AccountListIte
                 key=field_key("display-name"),
             )
             account_currency = currency.text_input("Currency", max_chars=3, key=field_key("currency"), disabled=identity_locked).upper()
-            funded_capital = baseline.text_input(
-                "Funded capital",
-                placeholder="e.g. 10000",
-                help="The fixed basis for balance growth, drawdown, and Risk limits; it does not replace the latest live MT5 balance.",
-                key=field_key("funded-capital"),
-            )
+            if selected.funded_capital is None:
+                baseline.text_input(
+                    "Funded capital",
+                    placeholder="e.g. 10000",
+                    help="Legacy account repair: this value locks permanently after the first save.",
+                    key=field_key("funded-capital"),
+                )
+            else:
+                baseline.text_input(
+                    tr("Funded capital · locked"),
+                    value=format_currency(selected.funded_capital, selected.account_currency, signed=False),
+                    help="The immutable basis for growth, drawdown, and Risk limits.",
+                    disabled=True,
+                    key=field_key("funded-capital-locked"),
+                )
             account_id, broker = st.columns(2)
             login = account_id.text_input("MT5 account ID", key=field_key("login"), disabled=identity_locked)
             broker_server = broker.text_input("Broker server", key=field_key("broker-server"), disabled=identity_locked)
@@ -1683,7 +1701,10 @@ def render_settings(repo: SQLiteJournalRepository) -> None:
         st.divider()
         render_review_context_settings(repo)
     with rules_tab:
-        _render_framework_rules(repo)
+        if account is None:
+            st.info(tr("Save an MT5 account before configuring review rules."))
+        else:
+            _render_framework_rules(repo, account)
     if is_desktop_mode():
         st.divider()
         with st.container(border=True):

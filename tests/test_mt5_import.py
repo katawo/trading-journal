@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -298,8 +299,65 @@ def test_account_identity_cannot_change_after_mt5_trades_are_imported(repository
             broker_server="DemoBroker-Changed",
             account_currency=account.account_currency,
             export_file_path=account.export_file_path,
-            opening_balance=account.funded_capital,
         )
+
+
+def test_funded_capital_can_be_initialized_once_and_is_then_immutable(repository: SQLiteJournalRepository) -> None:
+    account = repository.list_mt5_accounts()[0]
+    repository.register_mt5_account(
+        display_name=account.display_name,
+        login=account.login,
+        broker_server=account.broker_server,
+        account_currency=account.account_currency,
+        export_file_path=account.export_file_path,
+        opening_balance="1000",
+    )
+
+    with pytest.raises(ValueError, match="immutable"):
+        repository.register_mt5_account(
+            display_name=account.display_name,
+            login=account.login,
+            broker_server=account.broker_server,
+            account_currency=account.account_currency,
+            export_file_path=account.export_file_path,
+            opening_balance="2000",
+        )
+
+    with sqlite3.connect(repository.database_path) as connection, pytest.raises(
+        sqlite3.IntegrityError, match="Funded capital is immutable"
+    ):
+        connection.execute("UPDATE mt5_accounts SET opening_balance = '2000' WHERE id = ?", (account.id,))
+
+
+def test_account_update_and_legacy_funded_capital_repair_are_atomic(repository: SQLiteJournalRepository) -> None:
+    account = repository.list_mt5_accounts()[0]
+    repository.update_mt5_account(
+        account_id=account.id,
+        display_name="Repaired account",
+        login=account.login,
+        broker_server=account.broker_server,
+        account_currency=account.account_currency,
+        export_file_path=account.export_file_path,
+        initial_funded_capital="1000.00",
+    )
+    repaired = repository.list_mt5_accounts()[0]
+    assert repaired.display_name == "Repaired account"
+    assert repaired.funded_capital == "1000.00"
+
+    with pytest.raises(ValueError, match="immutable"):
+        repository.update_mt5_account(
+            account_id=account.id,
+            display_name="Must roll back",
+            login=account.login,
+            broker_server=account.broker_server,
+            account_currency=account.account_currency,
+            export_file_path=account.export_file_path,
+            initial_funded_capital="2000",
+        )
+
+    unchanged = repository.list_mt5_accounts()[0]
+    assert unchanged.display_name == "Repaired account"
+    assert unchanged.funded_capital == "1000.00"
 
 
 def test_deleting_an_account_does_not_leak_roadmap_or_period_review_evidence_to_a_reused_id(repository: SQLiteJournalRepository) -> None:

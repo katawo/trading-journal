@@ -149,7 +149,7 @@ def test_update_mt5_account_can_change_the_bound_strategy_before_trades_import(t
 
     repository.update_mt5_account(
         account_id=account.id, display_name=account.display_name, login=account.login, broker_server=account.broker_server,
-        account_currency=account.account_currency, export_file_path=account.export_file_path, opening_balance=None,
+        account_currency=account.account_currency, export_file_path=account.export_file_path,
         strategy_profile_id=second.id,
     )
 
@@ -199,7 +199,7 @@ def test_update_mt5_account_locks_the_bound_strategy_once_trades_are_imported(tm
     with pytest.raises(ValueError, match="locked once trades are imported"):
         repository.update_mt5_account(
             account_id=account.id, display_name=account.display_name, login=account.login, broker_server=account.broker_server,
-            account_currency=account.account_currency, export_file_path=account.export_file_path, opening_balance=None,
+            account_currency=account.account_currency, export_file_path=account.export_file_path,
             strategy_profile_id=second.id,
         )
 

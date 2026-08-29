@@ -5,9 +5,10 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 import json
 from pathlib import Path
+import sqlite3
 from typing import Mapping
 
-from sqlalchemy import Boolean, ForeignKey, Index, Integer, String, Text, UniqueConstraint, create_engine, delete, event, select, text
+from sqlalchemy import Boolean, CheckConstraint, ForeignKey, ForeignKeyConstraint, Index, Integer, String, Text, UniqueConstraint, create_engine, delete, event, func, select, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
 
 from trading_journal.application.reporting_time import REPORTING_TIME_BASES, normalize_server_timestamp
@@ -18,15 +19,11 @@ from trading_journal.domain.review_taxonomy import HARD_RULE_CODES, VIOLATION_CO
 _UNSET = object()
 ASSESSMENT_GRADES = frozenset({"pass", "partial", "fail"})
 MONITORING_RESET_PERIODS = frozenset({"daily", "weekly", "monthly", "all_time"})
-LEGACY_RUBRIC_VERSION = "legacy_v1"
 CURRENT_RUBRIC_VERSION = "zone_v2"
-RUBRIC_VERSIONS = frozenset({LEGACY_RUBRIC_VERSION, CURRENT_RUBRIC_VERSION})
-LEGACY_PSYCHOLOGY_CRITERIA = (
-    "rule_adherence",
-    "impulse_control",
-    "emotional_control",
-    "patience_discipline",
-)
+RUBRIC_VERSIONS = frozenset({CURRENT_RUBRIC_VERSION})
+CURRENT_SCHEMA_VERSION = 3
+_REMOVED_RUBRIC_VERSION = "legacy_v1"
+_REMOVED_PSYCHOLOGY_ROADMAP_ITEM_KEYS = ("triggers", "behaviour_rules", "practice")
 PSYCHOLOGY_CRITERIA = (
     "edge_execution",
     "risk_acceptance",
@@ -39,13 +36,6 @@ RISK_CRITERIA = (
     "stop_discipline",
     "exposure_limit_compliance",
 )
-LEGACY_SYSTEM_CRITERIA = (
-    "setup_validity",
-    "context_alignment",
-    "entry_fidelity",
-    "invalidation_fidelity",
-    "management_exit_fidelity",
-)
 SYSTEM_CRITERIA = (
     "setup_validity",
     "context_alignment",
@@ -53,11 +43,7 @@ SYSTEM_CRITERIA = (
     "management_exit_fidelity",
 )
 ASSESSMENT_CRITERIA = PSYCHOLOGY_CRITERIA + RISK_CRITERIA + SYSTEM_CRITERIA
-LEGACY_ASSESSMENT_CRITERIA = LEGACY_PSYCHOLOGY_CRITERIA + RISK_CRITERIA + LEGACY_SYSTEM_CRITERIA
-RUBRIC_CRITERIA = {
-    LEGACY_RUBRIC_VERSION: LEGACY_ASSESSMENT_CRITERIA,
-    CURRENT_RUBRIC_VERSION: ASSESSMENT_CRITERIA,
-}
+RUBRIC_CRITERIA = {CURRENT_RUBRIC_VERSION: ASSESSMENT_CRITERIA}
 
 
 def _decimal_string(value: Decimal | str) -> str:
@@ -83,6 +69,7 @@ class JournalDatabaseResetRequiredError(RuntimeError):
 
 class JournalSettings(Base):
     __tablename__ = "journal_settings"
+    __table_args__ = (CheckConstraint("id = 1", name="ck_journal_settings_singleton"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     reporting_time_basis: Mapped[str] = mapped_column(String(16), nullable=False, default="server")
@@ -157,6 +144,10 @@ class LogicalTrade(Base):
     """A journal trade: one imported position or a user-defined group of positions."""
 
     __tablename__ = "logical_trades"
+    __table_args__ = (
+        UniqueConstraint("id", "mt5_account_id", name="uq_logical_trade_account"),
+        Index("ix_logical_trades_account_id", "mt5_account_id", "id"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     mt5_account_id: Mapped[int] = mapped_column(ForeignKey("mt5_accounts.id"), nullable=False)
@@ -168,13 +159,20 @@ class Trade(Base):
     __tablename__ = "trades"
     __table_args__ = (
         UniqueConstraint("mt5_account_id", "mt5_position_id", name="uq_mt5_position"),
+        ForeignKeyConstraint(
+            ("logical_trade_id", "mt5_account_id"),
+            ("logical_trades.id", "logical_trades.mt5_account_id"),
+            name="fk_trade_logical_trade_account",
+        ),
         Index("ix_trades_account_exit", "mt5_account_id", "exit_time", "id"),
         Index("ix_trades_logical_trade", "logical_trade_id"),
+        CheckConstraint("source = 'mt5'", name="ck_trade_source"),
+        CheckConstraint("direction IN ('long', 'short')", name="ck_trade_direction"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     source: Mapped[str] = mapped_column(String(10), nullable=False)
-    mt5_account_id: Mapped[int | None] = mapped_column(ForeignKey("mt5_accounts.id"), nullable=True)
+    mt5_account_id: Mapped[int] = mapped_column(ForeignKey("mt5_accounts.id"), nullable=False)
     logical_trade_id: Mapped[int] = mapped_column(ForeignKey("logical_trades.id"), nullable=False)
     mt5_position_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     source_updated_at: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -274,7 +272,26 @@ class MT5ImportRun(Base):
 
 class AccountRiskPolicy(Base):
     __tablename__ = "account_risk_policies"
-    __table_args__ = (UniqueConstraint("mt5_account_id", "version", name="uq_account_risk_policy_version"),)
+    __table_args__ = (
+        UniqueConstraint("mt5_account_id", "version", name="uq_account_risk_policy_version"),
+        UniqueConstraint("id", "mt5_account_id", name="uq_risk_policy_account"),
+        Index(
+            "uq_active_account_risk_policy",
+            "mt5_account_id",
+            unique=True,
+            sqlite_where=text("active = 1"),
+        ),
+        CheckConstraint("version >= 1", name="ck_risk_policy_version"),
+        CheckConstraint("max_consecutive_losses >= 1", name="ck_risk_policy_loss_count"),
+        CheckConstraint(
+            "drawdown_reset_period IN ('daily', 'weekly', 'monthly', 'all_time')",
+            name="ck_risk_policy_drawdown_reset",
+        ),
+        CheckConstraint(
+            "loss_streak_reset_period IN ('daily', 'weekly', 'monthly', 'all_time')",
+            name="ck_risk_policy_streak_reset",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     mt5_account_id: Mapped[int] = mapped_column(ForeignKey("mt5_accounts.id"), nullable=False)
@@ -306,6 +323,16 @@ class PostTradeAssessment(Base):
 
     __tablename__ = "post_trade_assessments"
     __table_args__ = (
+        ForeignKeyConstraint(
+            ("logical_trade_id", "mt5_account_id"),
+            ("logical_trades.id", "logical_trades.mt5_account_id"),
+            name="fk_assessment_logical_trade_account",
+        ),
+        ForeignKeyConstraint(
+            ("risk_policy_id", "mt5_account_id"),
+            ("account_risk_policies.id", "account_risk_policies.mt5_account_id"),
+            name="fk_assessment_risk_policy_account",
+        ),
         Index(
             "uq_active_post_trade_assessment_logical_trade",
             "logical_trade_id",
@@ -313,6 +340,15 @@ class PostTradeAssessment(Base):
             sqlite_where=text("superseded_at IS NULL"),
         ),
         Index("ix_active_assessments_account", "mt5_account_id", sqlite_where=text("superseded_at IS NULL")),
+        Index("ix_assessments_logical_history", "logical_trade_id", "superseded_at", "updated_at"),
+        Index("ix_assessments_account_history", "mt5_account_id", "superseded_at", "updated_at"),
+        CheckConstraint("method IN ('auto', 'manual')", name="ck_assessment_method"),
+        CheckConstraint("rubric_version = 'zone_v2'", name="ck_assessment_rubric"),
+        CheckConstraint("version >= 1", name="ck_assessment_version"),
+        CheckConstraint("json_valid(criterion_grades)", name="ck_assessment_grades_json"),
+        CheckConstraint("json_valid(violation_codes)", name="ck_assessment_violations_json"),
+        CheckConstraint("json_valid(hard_rule_codes)", name="ck_assessment_hard_rules_json"),
+        CheckConstraint("json_valid(assessed_position_ids)", name="ck_assessment_positions_json"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -347,7 +383,15 @@ class PostTradeAssessmentRevision(Base):
     """Immutable copy of a post-trade assessment before it was corrected, upgraded, or superseded."""
 
     __tablename__ = "post_trade_assessment_revisions"
-    __table_args__ = (UniqueConstraint("post_trade_assessment_id", "version", name="uq_post_trade_assessment_revision"),)
+    __table_args__ = (
+        UniqueConstraint("post_trade_assessment_id", "version", name="uq_post_trade_assessment_revision"),
+        CheckConstraint("method IN ('auto', 'manual')", name="ck_assessment_revision_method"),
+        CheckConstraint("rubric_version = 'zone_v2'", name="ck_assessment_revision_rubric"),
+        CheckConstraint("version >= 1", name="ck_assessment_revision_version"),
+        CheckConstraint("json_valid(criterion_grades)", name="ck_assessment_revision_grades_json"),
+        CheckConstraint("json_valid(violation_codes)", name="ck_assessment_revision_violations_json"),
+        CheckConstraint("json_valid(hard_rule_codes)", name="ck_assessment_revision_hard_rules_json"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     post_trade_assessment_id: Mapped[int] = mapped_column(ForeignKey("post_trade_assessments.id"), nullable=False)
@@ -374,16 +418,20 @@ class PostTradeAssessmentRevision(Base):
 
 
 class FrameworkRuleSettings(Base):
-    """Trader-wide hard-rule configuration. All flags are advisory in this app."""
+    """Account-scoped hard-rule configuration. All flags are advisory in this app."""
 
     __tablename__ = "framework_rule_settings"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    mt5_account_id: Mapped[int] = mapped_column(ForeignKey("mt5_accounts.id"), primary_key=True)
     oversized_revenge_hard: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     mandatory_setup_hard: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     stop_widened_hard: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     shutdown_breach_hard: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     repeated_critical_threshold: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
+
+    __table_args__ = (
+        CheckConstraint("repeated_critical_threshold >= 2", name="ck_framework_rule_threshold"),
+    )
 
 
 class FrameworkPeriodReview(Base):
@@ -396,9 +444,14 @@ class FrameworkPeriodReview(Base):
             "cadence",
             "period_start",
             "period_end",
-            "rubric_version",
             name="uq_framework_period",
         ),
+        CheckConstraint("cadence IN ('weekly', 'monthly')", name="ck_framework_period_cadence"),
+        CheckConstraint("status IN ('reviewed', 'skipped')", name="ck_framework_period_status"),
+        CheckConstraint("rubric_version = 'zone_v2'", name="ck_framework_period_rubric"),
+        CheckConstraint("json_valid(alert_codes)", name="ck_framework_period_alerts_json"),
+        CheckConstraint("json_valid(recurring_issues)", name="ck_framework_period_issues_json"),
+        Index("ix_framework_period_account_end", "mt5_account_id", "period_end", "id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -421,10 +474,14 @@ class FrameworkPeriodReview(Base):
 
 class PillarRoadmapEvidence(Base):
     __tablename__ = "pillar_roadmap_evidence"
-    __table_args__ = (UniqueConstraint("scope_key", "pillar", "level", "item_key", name="uq_pillar_roadmap_item"),)
+    __table_args__ = (
+        UniqueConstraint("mt5_account_id", "pillar", "level", "item_key", name="uq_pillar_roadmap_item"),
+        CheckConstraint("pillar IN ('psychology', 'risk', 'system')", name="ck_roadmap_pillar"),
+        CheckConstraint("level BETWEEN 1 AND 5", name="ck_roadmap_level"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    scope_key: Mapped[str] = mapped_column(String(80), nullable=False)
+    mt5_account_id: Mapped[int] = mapped_column(ForeignKey("mt5_accounts.id"), nullable=False)
     pillar: Mapped[str] = mapped_column(String(24), nullable=False)
     level: Mapped[int] = mapped_column(Integer, nullable=False)
     item_key: Mapped[str] = mapped_column(String(80), nullable=False)
@@ -437,11 +494,18 @@ class FrameworkFocus(Base):
     """One deliberate, measurable improvement focus per account."""
 
     __tablename__ = "framework_focuses"
-    __table_args__ = (Index("uq_active_framework_focus", "account_id", unique=True, sqlite_where=text("status = 'active'")),)
+    __table_args__ = (
+        Index("uq_active_framework_focus", "account_id", unique=True, sqlite_where=text("status = 'active'")),
+        Index("ix_framework_focus_account_history", "account_id", "created_at", "id"),
+        CheckConstraint("pillar IN ('psychology', 'risk', 'system')", name="ck_framework_focus_pillar"),
+        CheckConstraint("metric_kind IN ('manual_evidence', 'criterion', 'component', 'violation')", name="ck_framework_focus_metric"),
+        CheckConstraint("status IN ('active', 'completed', 'abandoned', 'superseded')", name="ck_framework_focus_status"),
+        CheckConstraint("rubric_version = 'zone_v2'", name="ck_framework_focus_rubric"),
+        CheckConstraint("source IN ('manual', 'coach')", name="ck_framework_focus_source"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    scope_key: Mapped[str] = mapped_column(String(32), nullable=False, default="trader")
-    account_id: Mapped[int | None] = mapped_column(ForeignKey("mt5_accounts.id"), nullable=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("mt5_accounts.id"), nullable=False)
     pillar: Mapped[str] = mapped_column(String(24), nullable=False)
     metric_kind: Mapped[str] = mapped_column(String(24), nullable=False)
     metric_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
@@ -805,7 +869,7 @@ class FrameworkPeriodReviewView:
 
 @dataclass(frozen=True)
 class PillarRoadmapEvidenceView:
-    scope_key: str
+    account_id: int
     pillar: str
     level: int
     item_key: str
@@ -817,7 +881,7 @@ class PillarRoadmapEvidenceView:
 @dataclass(frozen=True)
 class FrameworkFocusView:
     id: int
-    account_id: int | None
+    account_id: int
     pillar: str
     metric_kind: str
     metric_code: str | None
@@ -834,6 +898,15 @@ class FrameworkFocusView:
     resolution_note: str | None
     created_at: str
     resolved_at: str | None
+
+
+@dataclass(frozen=True)
+class RiskPolicyChangePreview:
+    expected_active_policy_id: int | None
+    expected_active_version: int | None
+    affected_logical_trades: int
+    preserved_assessments: int
+    preserved_period_reviews: int
 
 
 class SQLiteJournalRepository:
@@ -862,6 +935,12 @@ class SQLiteJournalRepository:
 
     def initialize(self) -> None:
         self._require_clean_framework_schema()
+        has_v1_data = self._has_v1_framework_data()
+        schema_upgrade = self._needs_schema_upgrade()
+        if has_v1_data:
+            self._backup_before_v2_migration()
+        elif schema_upgrade:
+            self._backup_before_schema_migration()
         Base.metadata.create_all(self._engine)
         with self._engine.begin() as connection:
             columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(journal_settings)")}
@@ -925,7 +1004,7 @@ class SQLiteJournalRepository:
                 connection.exec_driver_sql(
                     "ALTER TABLE framework_period_reviews ADD COLUMN rubric_version VARCHAR(24) NOT NULL DEFAULT 'legacy_v1'"
                 )
-            self._migrate_framework_period_review_unique_constraint(connection)
+            self._migrate_v1_framework_data(connection)
             risk_policy_columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(account_risk_policies)")}
             if risk_policy_columns and "drawdown_reset_period" not in risk_policy_columns:
                 connection.exec_driver_sql("ALTER TABLE account_risk_policies ADD COLUMN drawdown_reset_period VARCHAR(16) NOT NULL DEFAULT 'daily'")
@@ -941,12 +1020,21 @@ class SQLiteJournalRepository:
                     "WHERE mt5_accounts.id = account_risk_policies.mt5_account_id"
                     ") WHERE server_utc_offset_minutes IS NULL"
                 )
+            self._migrate_account_scoped_framework_schema(connection)
             # create_all does not add newly-declared indexes to an existing table.
             for statement in (
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_logical_trade_account ON logical_trades (id, mt5_account_id)",
+                "CREATE INDEX IF NOT EXISTS ix_logical_trades_account_id ON logical_trades (mt5_account_id, id)",
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_risk_policy_account ON account_risk_policies (id, mt5_account_id)",
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_active_account_risk_policy ON account_risk_policies (mt5_account_id) WHERE active = 1",
                 "CREATE INDEX IF NOT EXISTS ix_trades_account_exit ON trades (mt5_account_id, exit_time, id)",
                 "CREATE INDEX IF NOT EXISTS ix_trades_logical_trade ON trades (logical_trade_id)",
                 "CREATE INDEX IF NOT EXISTS ix_import_runs_account_path_status_id ON mt5_import_runs (mt5_account_id, source_file_path, status, id)",
                 "CREATE INDEX IF NOT EXISTS ix_active_assessments_account ON post_trade_assessments (mt5_account_id) WHERE superseded_at IS NULL",
+                "CREATE INDEX IF NOT EXISTS ix_assessments_logical_history ON post_trade_assessments (logical_trade_id, superseded_at, updated_at)",
+                "CREATE INDEX IF NOT EXISTS ix_assessments_account_history ON post_trade_assessments (mt5_account_id, superseded_at, updated_at)",
+                "CREATE INDEX IF NOT EXISTS ix_framework_focus_account_history ON framework_focuses (account_id, created_at, id)",
+                "CREATE INDEX IF NOT EXISTS ix_framework_period_account_end ON framework_period_reviews (mt5_account_id, period_end, id)",
             ):
                 connection.exec_driver_sql(statement)
             # uq_active_framework_focus used to target scope_key (one active focus in the
@@ -954,16 +1042,8 @@ class SQLiteJournalRepository:
             # existing index of that name blocks create_all from redefining it, so migrate it.
             connection.exec_driver_sql("DROP INDEX IF EXISTS uq_active_framework_focus")
             connection.exec_driver_sql("CREATE UNIQUE INDEX IF NOT EXISTS uq_active_framework_focus ON framework_focuses (account_id) WHERE status = 'active'")
-            if focus_columns:
-                archived_at = datetime.now(timezone.utc).isoformat()
-                connection.exec_driver_sql(
-                    "UPDATE framework_focuses "
-                    "SET status = 'abandoned', "
-                    "resolution_note = 'Archived during the Zone-aligned rubric upgrade; legacy evidence is not reused for v2 coaching.', "
-                    "resolved_at = ? "
-                    "WHERE status = 'active' AND rubric_version = 'legacy_v1'",
-                    (archived_at,),
-                )
+            self._create_integrity_triggers(connection)
+            connection.exec_driver_sql(f"PRAGMA user_version = {CURRENT_SCHEMA_VERSION}")
         with self._sessions.begin() as session:
             settings = session.get(JournalSettings, 1)
             if settings is None:
@@ -983,57 +1063,280 @@ class SQLiteJournalRepository:
                     session.flush()
                 settings.default_strategy_profile_id = default.id
                 settings.default_strategy_name = default.name
-            # One-time reconciliation for the removed "Psychology is trader-wide" scoping:
-            # legacy rows persisted with account_id=None / scope_key="trader" for psychology
-            # must be resolved to the active account, or the now account-scoped code paths
-            # would either crash on a None account_id or silently orphan prior evidence.
-            active_account_id = settings.active_mt5_account_id
-            if active_account_id is not None:
-                stale_focus_rows = session.scalars(
-                    select(FrameworkFocus).where(
-                        FrameworkFocus.pillar == "psychology", FrameworkFocus.account_id.is_(None), FrameworkFocus.status == "active"
-                    )
-                ).all()
-                for row in stale_focus_rows:
-                    row.status = "abandoned"
-                    row.resolution_note = "Superseded: Psychology coaching focuses are now scoped to one account instead of combined across all accounts."
-                    row.resolved_at = datetime.now(timezone.utc).isoformat()
-                stale_roadmap_rows = session.scalars(
-                    select(PillarRoadmapEvidence).where(
-                        PillarRoadmapEvidence.pillar == "psychology", PillarRoadmapEvidence.scope_key == "trader"
-                    )
-                ).all()
-                for row in stale_roadmap_rows:
-                    row.scope_key = f"account:{active_account_id}"
+
+    def _has_v1_framework_data(self) -> bool:
+        """Detect data that requires the one-time v2-only migration."""
+
+        if not self._database_path.exists():
+            return False
+        with sqlite3.connect(f"file:{self._database_path}?mode=ro", uri=True) as connection:
+            tables = {
+                row[0]
+                for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+            }
+            for table_name in (
+                "post_trade_assessments",
+                "post_trade_assessment_revisions",
+                "framework_focuses",
+                "framework_period_reviews",
+            ):
+                if table_name not in tables:
+                    continue
+                columns = {
+                    row[1] for row in connection.execute(f"PRAGMA table_info({table_name})")
+                }
+                if "rubric_version" not in columns:
+                    if connection.execute(f"SELECT 1 FROM {table_name} LIMIT 1").fetchone():
+                        return True
+                elif connection.execute(
+                    f"SELECT 1 FROM {table_name} WHERE rubric_version = ? LIMIT 1",
+                    (_REMOVED_RUBRIC_VERSION,),
+                ).fetchone():
+                    return True
+            if "pillar_roadmap_evidence" in tables:
+                placeholders = ", ".join("?" for _ in _REMOVED_PSYCHOLOGY_ROADMAP_ITEM_KEYS)
+                if connection.execute(
+                    "SELECT 1 FROM pillar_roadmap_evidence "
+                    f"WHERE pillar = 'psychology' AND item_key IN ({placeholders}) LIMIT 1",
+                    _REMOVED_PSYCHOLOGY_ROADMAP_ITEM_KEYS,
+                ).fetchone():
+                    return True
+        return False
+
+    def _backup_before_v2_migration(self) -> Path:
+        """Create a consistent SQLite backup before converting or removing v1 data."""
+
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        backup_path = self._database_path.with_name(
+            f"{self._database_path.stem}.pre-v2-only-{timestamp}{self._database_path.suffix}.bak"
+        )
+        with sqlite3.connect(self._database_path) as source, sqlite3.connect(backup_path) as destination:
+            source.backup(destination)
+        return backup_path
+
+    def _needs_schema_upgrade(self) -> bool:
+        if not self._database_path.exists():
+            return False
+        with sqlite3.connect(f"file:{self._database_path}?mode=ro", uri=True) as connection:
+            has_tables = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'journal_settings'"
+            ).fetchone()
+            return bool(has_tables) and connection.execute("PRAGMA user_version").fetchone()[0] < CURRENT_SCHEMA_VERSION
+
+    def _backup_before_schema_migration(self) -> Path:
+        """Create a consistent backup before structural account-scope changes."""
+
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        backup_path = self._database_path.with_name(
+            f"{self._database_path.stem}.pre-schema-v{CURRENT_SCHEMA_VERSION}-{timestamp}{self._database_path.suffix}.bak"
+        )
+        with sqlite3.connect(self._database_path) as source, sqlite3.connect(backup_path) as destination:
+            source.backup(destination)
+        return backup_path
 
     @staticmethod
-    def _migrate_framework_period_review_unique_constraint(connection) -> None:  # type: ignore[no-untyped-def]
-        """Allow one immutable period reflection per rubric without losing legacy history."""
-        indexes = connection.exec_driver_sql("PRAGMA index_list(framework_period_reviews)").all()
-        unique_column_sets: set[tuple[str, ...]] = set()
-        for index in indexes:
-            if not index[2]:
-                continue
-            index_name = str(index[1]).replace("'", "''")
-            columns = connection.exec_driver_sql(f"PRAGMA index_info('{index_name}')").all()
-            unique_column_sets.add(tuple(str(column[2]) for column in columns))
-        legacy_columns = ("mt5_account_id", "cadence", "period_start", "period_end")
-        current_columns = (*legacy_columns, "rubric_version")
-        if legacy_columns not in unique_column_sets or current_columns in unique_column_sets:
-            return
+    def _migrate_v1_framework_data(connection) -> None:  # type: ignore[no-untyped-def]
+        """Convert saved trade reviews to v2 and discard incompatible aggregates."""
 
-        archived_table = "framework_period_reviews_legacy_unique"
-        connection.exec_driver_sql(f"ALTER TABLE framework_period_reviews RENAME TO {archived_table}")
-        FrameworkPeriodReview.__table__.create(connection)
-        column_names = ", ".join(column.name for column in FrameworkPeriodReview.__table__.columns)
+        for table_name in ("post_trade_assessments", "post_trade_assessment_revisions"):
+            rows = connection.exec_driver_sql(
+                f"SELECT id, criterion_grades FROM {table_name} WHERE rubric_version = ?",
+                (_REMOVED_RUBRIC_VERSION,),
+            ).all()
+            for row_id, encoded_grades in rows:
+                old_grades = json.loads(encoded_grades)
+                migrated_grades = {
+                    criterion: (
+                        old_grades.get(criterion, "partial")
+                        if criterion in RISK_CRITERIA + SYSTEM_CRITERIA
+                        else "partial"
+                    )
+                    for criterion in ASSESSMENT_CRITERIA
+                }
+                migrated_grades = {
+                    criterion: grade if grade in ASSESSMENT_GRADES else "partial"
+                    for criterion, grade in migrated_grades.items()
+                }
+                connection.exec_driver_sql(
+                    f"UPDATE {table_name} SET rubric_version = ?, criterion_grades = ? WHERE id = ?",
+                    (CURRENT_RUBRIC_VERSION, json.dumps(migrated_grades, sort_keys=True), row_id),
+                )
         connection.exec_driver_sql(
-            f"INSERT INTO framework_period_reviews ({column_names}) "
-            f"SELECT {column_names} FROM {archived_table}"
+            "DELETE FROM framework_focuses WHERE rubric_version = ?",
+            (_REMOVED_RUBRIC_VERSION,),
         )
-        connection.exec_driver_sql(f"DROP TABLE {archived_table}")
+        connection.exec_driver_sql(
+            "DELETE FROM framework_period_reviews WHERE rubric_version = ?",
+            (_REMOVED_RUBRIC_VERSION,),
+        )
+        placeholders = ", ".join("?" for _ in _REMOVED_PSYCHOLOGY_ROADMAP_ITEM_KEYS)
+        connection.exec_driver_sql(
+            "DELETE FROM pillar_roadmap_evidence "
+            f"WHERE pillar = 'psychology' AND item_key IN ({placeholders})",
+            _REMOVED_PSYCHOLOGY_ROADMAP_ITEM_KEYS,
+        )
+
+    @staticmethod
+    def _migrate_account_scoped_framework_schema(connection) -> None:  # type: ignore[no-untyped-def]
+        """Remove obsolete trader scopes and make framework configuration account-owned."""
+
+        rule_columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(framework_rule_settings)")}
+        if rule_columns and "mt5_account_id" not in rule_columns:
+            connection.exec_driver_sql("ALTER TABLE framework_rule_settings RENAME TO framework_rule_settings_global")
+            FrameworkRuleSettings.__table__.create(connection)
+            old = connection.exec_driver_sql(
+                "SELECT oversized_revenge_hard, mandatory_setup_hard, stop_widened_hard, "
+                "shutdown_breach_hard, repeated_critical_threshold FROM framework_rule_settings_global WHERE id = 1"
+            ).first()
+            values = tuple(old) if old is not None else (1, 1, 1, 1, 2)
+            account_ids = connection.exec_driver_sql("SELECT id FROM mt5_accounts").scalars().all()
+            for account_id in account_ids:
+                connection.exec_driver_sql(
+                    "INSERT INTO framework_rule_settings "
+                    "(mt5_account_id, oversized_revenge_hard, mandatory_setup_hard, stop_widened_hard, "
+                    "shutdown_breach_hard, repeated_critical_threshold) VALUES (?, ?, ?, ?, ?, ?)",
+                    (account_id, *values),
+                )
+            connection.exec_driver_sql("DROP TABLE framework_rule_settings_global")
+
+        roadmap_columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(pillar_roadmap_evidence)")}
+        if roadmap_columns and "mt5_account_id" not in roadmap_columns:
+            rows = connection.exec_driver_sql(
+                "SELECT scope_key, pillar, level, item_key, completed, evidence_note, updated_at "
+                "FROM pillar_roadmap_evidence"
+            ).all()
+            connection.exec_driver_sql("ALTER TABLE pillar_roadmap_evidence RENAME TO pillar_roadmap_evidence_scoped")
+            PillarRoadmapEvidence.__table__.create(connection)
+            account_ids = set(connection.exec_driver_sql("SELECT id FROM mt5_accounts").scalars().all())
+            for scope_key, pillar, level, item_key, completed, evidence_note, updated_at in rows:
+                prefix, separator, encoded_id = str(scope_key).partition(":")
+                if prefix != "account" or not separator or not encoded_id.isdecimal():
+                    continue
+                account_id = int(encoded_id)
+                if account_id not in account_ids:
+                    continue
+                connection.exec_driver_sql(
+                    "INSERT INTO pillar_roadmap_evidence "
+                    "(mt5_account_id, pillar, level, item_key, completed, evidence_note, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (account_id, pillar, level, item_key, completed, evidence_note, updated_at),
+                )
+            connection.exec_driver_sql("DROP TABLE pillar_roadmap_evidence_scoped")
+
+        focus_columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(framework_focuses)")}
+        if "scope_key" in focus_columns or any(row[3] == 0 for row in connection.exec_driver_sql("PRAGMA table_info(framework_focuses)") if row[1] == "account_id"):
+            connection.exec_driver_sql("DROP INDEX IF EXISTS uq_active_framework_focus")
+            connection.exec_driver_sql("DROP INDEX IF EXISTS ix_framework_focus_account_history")
+            connection.exec_driver_sql("ALTER TABLE framework_focuses RENAME TO framework_focuses_scoped")
+            FrameworkFocus.__table__.create(connection)
+            columns = (
+                "id, account_id, pillar, metric_kind, metric_code, hypothesis, action_text, baseline_value, "
+                "target_value, target_reviews, starting_manual_reviews, status, rubric_version, source, "
+                "coach_reason, resolution_note, created_at, resolved_at"
+            )
+            connection.exec_driver_sql(
+                f"INSERT INTO framework_focuses ({columns}) SELECT {columns} FROM framework_focuses_scoped "
+                "WHERE account_id IS NOT NULL AND rubric_version = ?",
+                (CURRENT_RUBRIC_VERSION,),
+            )
+            connection.exec_driver_sql("DROP TABLE framework_focuses_scoped")
+
+        period_indexes = connection.exec_driver_sql("PRAGMA index_list(framework_period_reviews)").all()
+        unique_columns = {
+            tuple(column[2] for column in connection.exec_driver_sql(f"PRAGMA index_info('{str(index[1]).replace(chr(39), chr(39) * 2)}')"))
+            for index in period_indexes if index[2]
+        }
+        expected_unique = ("mt5_account_id", "cadence", "period_start", "period_end")
+        if unique_columns and expected_unique not in unique_columns:
+            connection.exec_driver_sql("DROP INDEX IF EXISTS ix_framework_period_account_end")
+            connection.exec_driver_sql("ALTER TABLE framework_period_reviews RENAME TO framework_period_reviews_versioned")
+            FrameworkPeriodReview.__table__.create(connection)
+            columns = ", ".join(column.name for column in FrameworkPeriodReview.__table__.columns)
+            connection.exec_driver_sql(
+                f"INSERT INTO framework_period_reviews ({columns}) SELECT {columns} "
+                "FROM framework_period_reviews_versioned WHERE rubric_version = ?",
+                (CURRENT_RUBRIC_VERSION,),
+            )
+            connection.exec_driver_sql("DROP TABLE framework_period_reviews_versioned")
+
+    @staticmethod
+    def _create_integrity_triggers(connection) -> None:  # type: ignore[no-untyped-def]
+        """Backfill constraints that SQLite cannot add to existing tables in place."""
+
+        statements = (
+            "DROP TRIGGER IF EXISTS prevent_funded_capital_change",
+            "CREATE TRIGGER prevent_funded_capital_change BEFORE UPDATE OF opening_balance ON mt5_accounts "
+            "WHEN OLD.opening_balance IS NOT NULL AND OLD.opening_balance IS NOT NEW.opening_balance "
+            "BEGIN SELECT RAISE(ABORT, 'Funded capital is immutable'); END",
+            "DROP TRIGGER IF EXISTS enforce_trade_account_insert",
+            "CREATE TRIGGER enforce_trade_account_insert BEFORE INSERT ON trades "
+            "WHEN NEW.mt5_account_id IS NULL OR NOT EXISTS (SELECT 1 FROM logical_trades l WHERE l.id = NEW.logical_trade_id AND l.mt5_account_id = NEW.mt5_account_id) "
+            "OR (NEW.auto_risk_policy_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM account_risk_policies p WHERE p.id = NEW.auto_risk_policy_id AND p.mt5_account_id = NEW.mt5_account_id)) "
+            "BEGIN SELECT RAISE(ABORT, 'Cross-account trade reference'); END",
+            "DROP TRIGGER IF EXISTS prevent_logical_trade_account_reassignment",
+            "CREATE TRIGGER prevent_logical_trade_account_reassignment BEFORE UPDATE OF mt5_account_id ON logical_trades "
+            "WHEN EXISTS (SELECT 1 FROM trades t WHERE t.logical_trade_id = OLD.id) "
+            "OR EXISTS (SELECT 1 FROM post_trade_assessments a WHERE a.logical_trade_id = OLD.id) "
+            "BEGIN SELECT RAISE(ABORT, 'Logical trade account is immutable once referenced'); END",
+            "DROP TRIGGER IF EXISTS prevent_risk_policy_account_reassignment",
+            "CREATE TRIGGER prevent_risk_policy_account_reassignment BEFORE UPDATE OF mt5_account_id ON account_risk_policies "
+            "WHEN EXISTS (SELECT 1 FROM trades t WHERE t.auto_risk_policy_id = OLD.id) "
+            "OR EXISTS (SELECT 1 FROM post_trade_assessments a WHERE a.risk_policy_id = OLD.id) "
+            "BEGIN SELECT RAISE(ABORT, 'Risk policy account is immutable once referenced'); END",
+            "DROP TRIGGER IF EXISTS enforce_trade_account_update",
+            "CREATE TRIGGER enforce_trade_account_update BEFORE UPDATE OF mt5_account_id, logical_trade_id, auto_risk_policy_id ON trades "
+            "WHEN NEW.mt5_account_id IS NULL OR NOT EXISTS (SELECT 1 FROM logical_trades l WHERE l.id = NEW.logical_trade_id AND l.mt5_account_id = NEW.mt5_account_id) "
+            "OR (NEW.auto_risk_policy_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM account_risk_policies p WHERE p.id = NEW.auto_risk_policy_id AND p.mt5_account_id = NEW.mt5_account_id)) "
+            "BEGIN SELECT RAISE(ABORT, 'Cross-account trade reference'); END",
+            "DROP TRIGGER IF EXISTS enforce_assessment_account_insert",
+            "CREATE TRIGGER enforce_assessment_account_insert BEFORE INSERT ON post_trade_assessments "
+            "WHEN NOT EXISTS (SELECT 1 FROM logical_trades l WHERE l.id = NEW.logical_trade_id AND l.mt5_account_id = NEW.mt5_account_id) "
+            "OR (NEW.risk_policy_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM account_risk_policies p WHERE p.id = NEW.risk_policy_id AND p.mt5_account_id = NEW.mt5_account_id)) "
+            "BEGIN SELECT RAISE(ABORT, 'Cross-account assessment reference'); END",
+            "DROP TRIGGER IF EXISTS enforce_assessment_account_update",
+            "CREATE TRIGGER enforce_assessment_account_update BEFORE UPDATE OF mt5_account_id, logical_trade_id, risk_policy_id ON post_trade_assessments "
+            "WHEN NOT EXISTS (SELECT 1 FROM logical_trades l WHERE l.id = NEW.logical_trade_id AND l.mt5_account_id = NEW.mt5_account_id) "
+            "OR (NEW.risk_policy_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM account_risk_policies p WHERE p.id = NEW.risk_policy_id AND p.mt5_account_id = NEW.mt5_account_id)) "
+            "BEGIN SELECT RAISE(ABORT, 'Cross-account assessment reference'); END",
+            "DROP TRIGGER IF EXISTS enforce_zone_v2_assessment_insert",
+            "CREATE TRIGGER enforce_zone_v2_assessment_insert BEFORE INSERT ON post_trade_assessments "
+            "WHEN NEW.rubric_version != 'zone_v2' OR NOT json_valid(NEW.criterion_grades) OR NOT json_valid(NEW.violation_codes) OR NOT json_valid(NEW.hard_rule_codes) OR NOT json_valid(NEW.assessed_position_ids) "
+            "BEGIN SELECT RAISE(ABORT, 'Only valid zone_v2 assessments are supported'); END",
+            "DROP TRIGGER IF EXISTS enforce_zone_v2_assessment_update",
+            "CREATE TRIGGER enforce_zone_v2_assessment_update BEFORE UPDATE OF rubric_version, criterion_grades, violation_codes, hard_rule_codes, assessed_position_ids ON post_trade_assessments "
+            "WHEN NEW.rubric_version != 'zone_v2' OR NOT json_valid(NEW.criterion_grades) OR NOT json_valid(NEW.violation_codes) OR NOT json_valid(NEW.hard_rule_codes) OR NOT json_valid(NEW.assessed_position_ids) "
+            "BEGIN SELECT RAISE(ABORT, 'Only valid zone_v2 assessments are supported'); END",
+            "DROP TRIGGER IF EXISTS enforce_zone_v2_revision_insert",
+            "CREATE TRIGGER enforce_zone_v2_revision_insert BEFORE INSERT ON post_trade_assessment_revisions "
+            "WHEN NEW.rubric_version != 'zone_v2' OR NOT json_valid(NEW.criterion_grades) OR NOT json_valid(NEW.violation_codes) OR NOT json_valid(NEW.hard_rule_codes) "
+            "BEGIN SELECT RAISE(ABORT, 'Only valid zone_v2 assessment revisions are supported'); END",
+            "DROP TRIGGER IF EXISTS enforce_zone_v2_revision_update",
+            "CREATE TRIGGER enforce_zone_v2_revision_update BEFORE UPDATE OF rubric_version, criterion_grades, violation_codes, hard_rule_codes ON post_trade_assessment_revisions "
+            "WHEN NEW.rubric_version != 'zone_v2' OR NOT json_valid(NEW.criterion_grades) OR NOT json_valid(NEW.violation_codes) OR NOT json_valid(NEW.hard_rule_codes) "
+            "BEGIN SELECT RAISE(ABORT, 'Only valid zone_v2 assessment revisions are supported'); END",
+            "DROP TRIGGER IF EXISTS enforce_zone_v2_period_insert",
+            "CREATE TRIGGER enforce_zone_v2_period_insert BEFORE INSERT ON framework_period_reviews "
+            "WHEN NEW.rubric_version != 'zone_v2' OR NOT json_valid(NEW.alert_codes) OR NOT json_valid(NEW.recurring_issues) "
+            "BEGIN SELECT RAISE(ABORT, 'Only valid zone_v2 period reviews are supported'); END",
+            "DROP TRIGGER IF EXISTS enforce_zone_v2_period_update",
+            "CREATE TRIGGER enforce_zone_v2_period_update BEFORE UPDATE OF rubric_version, alert_codes, recurring_issues ON framework_period_reviews "
+            "WHEN NEW.rubric_version != 'zone_v2' OR NOT json_valid(NEW.alert_codes) OR NOT json_valid(NEW.recurring_issues) "
+            "BEGIN SELECT RAISE(ABORT, 'Only valid zone_v2 period reviews are supported'); END",
+            "DROP TRIGGER IF EXISTS enforce_zone_v2_focus_insert",
+            "CREATE TRIGGER enforce_zone_v2_focus_insert BEFORE INSERT ON framework_focuses "
+            "WHEN NEW.rubric_version != 'zone_v2' BEGIN SELECT RAISE(ABORT, 'Only zone_v2 focuses are supported'); END",
+            "DROP TRIGGER IF EXISTS enforce_zone_v2_focus_update",
+            "CREATE TRIGGER enforce_zone_v2_focus_update BEFORE UPDATE OF rubric_version ON framework_focuses "
+            "WHEN NEW.rubric_version != 'zone_v2' BEGIN SELECT RAISE(ABORT, 'Only zone_v2 focuses are supported'); END",
+            "DROP TRIGGER IF EXISTS enforce_journal_settings_singleton",
+            "CREATE TRIGGER enforce_journal_settings_singleton BEFORE INSERT ON journal_settings "
+            "WHEN NEW.id != 1 BEGIN SELECT RAISE(ABORT, 'Journal settings is a singleton'); END",
+        )
+        for statement in statements:
+            connection.exec_driver_sql(statement)
 
     def _require_clean_framework_schema(self) -> None:
-        """Greenfield-only persistence: an old database must be reset, never migrated."""
+        """Reject unsupported pre-framework layouts; supported v1 data migrates later."""
         if not self._database_path.exists():
             return
         expected_columns = {
@@ -1060,7 +1363,7 @@ class SQLiteJournalRepository:
             "strategy_setups": {"strategy_profile_id", "name"},
             "review_context_tags": {"kind", "name"},
             "framework_focuses": {"account_id", "status"},
-            "pillar_roadmap_evidence": {"scope_key", "pillar", "level", "item_key"},
+            "pillar_roadmap_evidence": {"pillar", "level", "item_key"},
             "framework_period_reviews": {"mt5_account_id", "cadence", "period_start", "period_end"},
         }
         with self._engine.connect() as connection:
@@ -1189,8 +1492,10 @@ class SQLiteJournalRepository:
                 existing.export_file_path = export_file_path
                 if existing.strategy_profile_id != strategy.id:
                     raise ValueError("An MT5 account stays with its original strategy")
-                if baseline is not None:
+                if existing.opening_balance is None and baseline is not None:
                     existing.opening_balance = baseline
+                elif baseline is not None and baseline != existing.opening_balance:
+                    raise ValueError("Funded capital is immutable after account creation")
                 existing.active = True
 
     def create_configured_mt5_account(
@@ -1316,12 +1621,12 @@ class SQLiteJournalRepository:
         broker_server: str,
         account_currency: str,
         export_file_path: str,
-        opening_balance: str | None,
         strategy_profile_id: int | None = None,
+        initial_funded_capital: str | None = None,
     ) -> None:
-        """Update one approved account without rewriting its imported MT5 history."""
-        baseline = None if opening_balance is None or not opening_balance.strip() else _decimal_string(
-            self._required_decimal(opening_balance, "Funded capital", minimum=Decimal("0.01"))
+        """Update one approved account and atomically repair a missing funded baseline."""
+        capital = None if initial_funded_capital is None else _decimal_string(
+            self._required_decimal(initial_funded_capital, "Funded capital", minimum=Decimal("0.01"))
         )
         with self._sessions.begin() as session:
             account = session.get(MT5Account, account_id)
@@ -1354,13 +1659,31 @@ class SQLiteJournalRepository:
                     raise ValueError("Select a saved trading system")
                 account.strategy_profile_id = strategy.id
 
+            if capital is not None:
+                if account.opening_balance is None:
+                    account.opening_balance = capital
+                elif account.opening_balance != capital:
+                    raise ValueError("Funded capital is immutable after it is initialized")
+
             account.display_name = display_name
             account.login = login
             account.broker_server = broker_server
             account.account_currency = account_currency.upper()
             account.export_file_path = export_file_path
-            account.opening_balance = baseline
             account.active = True
+
+    def initialize_account_funded_capital(self, account_id: int, funded_capital: str) -> None:
+        """Repair a legacy NULL baseline exactly once; the database trigger locks it afterwards."""
+        capital = _decimal_string(
+            self._required_decimal(funded_capital, "Funded capital", minimum=Decimal("0.01"))
+        )
+        with self._sessions.begin() as session:
+            account = session.get(MT5Account, account_id)
+            if account is None:
+                raise ValueError("The selected MT5 account no longer exists")
+            if account.opening_balance is not None:
+                raise ValueError("Funded capital is immutable after it is initialized")
+            account.opening_balance = capital
 
     def deactivate_mt5_account(self, account_id: int) -> None:
         """Hide an obsolete account from imports and reports while retaining its history."""
@@ -1396,11 +1719,12 @@ class SQLiteJournalRepository:
             session.execute(delete(LivePosition).where(LivePosition.mt5_account_id == account_id))
             session.execute(delete(LivePositionSnapshot).where(LivePositionSnapshot.mt5_account_id == account_id))
             session.execute(delete(AccountRiskPolicy).where(AccountRiskPolicy.mt5_account_id == account_id))
+            session.execute(delete(FrameworkRuleSettings).where(FrameworkRuleSettings.mt5_account_id == account_id))
             session.execute(delete(FrameworkFocus).where(FrameworkFocus.account_id == account_id))
             session.execute(delete(FrameworkPeriodReview).where(FrameworkPeriodReview.mt5_account_id == account_id))
             # SQLite reuses this integer id for the next account created, so a deleted
             # account's roadmap progress must not be left behind to be inherited by it.
-            session.execute(delete(PillarRoadmapEvidence).where(PillarRoadmapEvidence.scope_key == self._roadmap_scope_key(account_id)))
+            session.execute(delete(PillarRoadmapEvidence).where(PillarRoadmapEvidence.mt5_account_id == account_id))
             settings = session.get(JournalSettings, 1)
             if settings is not None and settings.active_mt5_account_id == account_id:
                 settings.active_mt5_account_id = None
@@ -1684,6 +2008,8 @@ class SQLiteJournalRepository:
         starting_balance: str | None = None,
         drawdown_reset_period: str = "daily",
         loss_streak_reset_period: str = "daily",
+        expected_active_policy_id: int | None = None,
+        confirm_recalculation: bool = False,
     ) -> AccountRiskPolicyView:
         risk_inputs = self._validated_risk_policy_inputs(
             standard_risk_per_trade_percent=standard_risk_per_trade_percent,
@@ -1712,6 +2038,21 @@ class SQLiteJournalRepository:
                 .where(AccountRiskPolicy.mt5_account_id == account_id, AccountRiskPolicy.active.is_(True))
                 .order_by(AccountRiskPolicy.version.desc())
             )
+            normalized_correlation = self._optional_text(correlation_policy)
+            if active is not None:
+                if self._risk_policy_matches_inputs(
+                    active,
+                    risk_inputs,
+                    max_consecutive_losses,
+                    normalized_correlation,
+                    pretrade_balance_auto_evidence_enabled,
+                    account.latest_server_utc_offset_minutes,
+                ):
+                    return self._to_risk_policy_view(active)
+                if not confirm_recalculation:
+                    raise ValueError("Confirm recalculation before replacing the active risk policy")
+                if expected_active_policy_id != active.id:
+                    raise ValueError("The active risk policy changed. Review the latest policy and confirm again")
             if active is not None:
                 active.active = False
             version = 1 if active is None else active.version + 1
@@ -1729,7 +2070,7 @@ class SQLiteJournalRepository:
                 max_consecutive_losses=max_consecutive_losses,
                 loss_streak_reset_period=risk_inputs["loss_streak_reset_period"],
                 minimum_rr=risk_inputs["minimum_rr"],
-                correlation_policy=self._optional_text(correlation_policy),
+                correlation_policy=normalized_correlation,
                 pretrade_balance_auto_evidence_enabled=pretrade_balance_auto_evidence_enabled,
                 server_utc_offset_minutes=account.latest_server_utc_offset_minutes,
                 created_at=datetime.now(timezone.utc).isoformat(),
@@ -1737,6 +2078,103 @@ class SQLiteJournalRepository:
             session.add(policy)
             session.flush()
             return self._to_risk_policy_view(policy)
+
+    def risk_policy_change_required(
+        self,
+        *,
+        account_id: int,
+        standard_risk_per_trade_percent: str,
+        maximum_risk_per_trade_percent: str,
+        daily_loss_limit_r: str,
+        weekly_loss_limit_r: str,
+        max_drawdown_percent: str,
+        max_open_risk_r: str,
+        max_consecutive_losses: int,
+        minimum_rr: str,
+        correlation_policy: str | None,
+        pretrade_balance_auto_evidence_enabled: bool = False,
+        drawdown_reset_period: str = "daily",
+        loss_streak_reset_period: str = "daily",
+    ) -> bool:
+        """Return whether submitted values differ from the active policy."""
+        risk_inputs = self._validated_risk_policy_inputs(
+            standard_risk_per_trade_percent=standard_risk_per_trade_percent,
+            maximum_risk_per_trade_percent=maximum_risk_per_trade_percent,
+            daily_loss_limit_r=daily_loss_limit_r,
+            weekly_loss_limit_r=weekly_loss_limit_r,
+            max_drawdown_percent=max_drawdown_percent,
+            max_open_risk_r=max_open_risk_r,
+            max_consecutive_losses=max_consecutive_losses,
+            minimum_rr=minimum_rr,
+            drawdown_reset_period=drawdown_reset_period,
+            loss_streak_reset_period=loss_streak_reset_period,
+        )
+        with self._sessions() as session:
+            account = session.get(MT5Account, account_id)
+            if account is None:
+                raise ValueError("The selected MT5 account no longer exists")
+            active = session.scalar(
+                select(AccountRiskPolicy)
+                .where(AccountRiskPolicy.mt5_account_id == account_id, AccountRiskPolicy.active.is_(True))
+                .order_by(AccountRiskPolicy.version.desc())
+            )
+            return active is None or not self._risk_policy_matches_inputs(
+                active,
+                risk_inputs,
+                max_consecutive_losses,
+                self._optional_text(correlation_policy),
+                pretrade_balance_auto_evidence_enabled,
+                account.latest_server_utc_offset_minutes,
+            )
+
+    @staticmethod
+    def _risk_policy_matches_inputs(
+        policy: AccountRiskPolicy,
+        risk_inputs: Mapping[str, str],
+        max_consecutive_losses: int,
+        correlation_policy: str | None,
+        pretrade_balance_auto_evidence_enabled: bool,
+        server_utc_offset_minutes: int | None,
+    ) -> bool:
+        return (
+            Decimal(policy.risk_per_trade_percent) == Decimal(risk_inputs["standard"])
+            and Decimal(policy.maximum_risk_per_trade_percent) == Decimal(risk_inputs["maximum"])
+            and Decimal(policy.daily_loss_limit_r) == Decimal(risk_inputs["daily"])
+            and Decimal(policy.weekly_loss_limit_r) == Decimal(risk_inputs["weekly"])
+            and Decimal(policy.max_drawdown_percent) == Decimal(risk_inputs["drawdown"])
+            and Decimal(policy.max_open_risk_r) == Decimal(risk_inputs["open_risk"])
+            and policy.max_consecutive_losses == max_consecutive_losses
+            and Decimal(policy.minimum_rr) == Decimal(risk_inputs["minimum_rr"])
+            and policy.correlation_policy == correlation_policy
+            and policy.pretrade_balance_auto_evidence_enabled == pretrade_balance_auto_evidence_enabled
+            and policy.drawdown_reset_period == risk_inputs["drawdown_reset_period"]
+            and policy.loss_streak_reset_period == risk_inputs["loss_streak_reset_period"]
+            and policy.server_utc_offset_minutes == server_utc_offset_minutes
+        )
+
+    def preview_risk_policy_change(self, account_id: int) -> RiskPolicyChangePreview:
+        """Describe the account-scoped recalculation without mutating evidence."""
+        with self._sessions() as session:
+            if session.get(MT5Account, account_id) is None:
+                raise ValueError("The selected MT5 account no longer exists")
+            active = session.scalar(
+                select(AccountRiskPolicy)
+                .where(AccountRiskPolicy.mt5_account_id == account_id, AccountRiskPolicy.active.is_(True))
+                .order_by(AccountRiskPolicy.version.desc())
+            )
+            return RiskPolicyChangePreview(
+                expected_active_policy_id=None if active is None else active.id,
+                expected_active_version=None if active is None else active.version,
+                affected_logical_trades=session.scalar(
+                    select(func.count(LogicalTrade.id)).where(LogicalTrade.mt5_account_id == account_id)
+                ) or 0,
+                preserved_assessments=session.scalar(
+                    select(func.count(PostTradeAssessment.id)).where(PostTradeAssessment.mt5_account_id == account_id)
+                ) or 0,
+                preserved_period_reviews=session.scalar(
+                    select(func.count(FrameworkPeriodReview.id)).where(FrameworkPeriodReview.mt5_account_id == account_id)
+                ) or 0,
+            )
 
     def _validated_risk_policy_inputs(
         self,
@@ -2300,9 +2738,9 @@ class SQLiteJournalRepository:
                     PostTradeAssessment.superseded_at.is_(None),
                 )
             )
-            settings = session.get(FrameworkRuleSettings, 1)
+            settings = session.get(FrameworkRuleSettings, account_id)
             if settings is None:
-                settings = FrameworkRuleSettings(id=1)
+                settings = FrameworkRuleSettings(mt5_account_id=account_id)
                 session.add(settings)
                 session.flush()
             enabled_hard_rules = self._enabled_hard_rule_codes(settings)
@@ -2439,11 +2877,13 @@ class SQLiteJournalRepository:
         }
         return {code for code, active in enabled.items() if active}
 
-    def get_framework_rule_settings(self) -> FrameworkRuleSettingsView:
+    def get_framework_rule_settings(self, account_id: int) -> FrameworkRuleSettingsView:
         with self._sessions.begin() as session:
-            row = session.get(FrameworkRuleSettings, 1)
+            if session.get(MT5Account, account_id) is None:
+                raise ValueError("The selected MT5 account no longer exists")
+            row = session.get(FrameworkRuleSettings, account_id)
             if row is None:
-                row = FrameworkRuleSettings(id=1)
+                row = FrameworkRuleSettings(mt5_account_id=account_id)
                 session.add(row)
                 session.flush()
             return self._to_framework_rule_settings_view(row)
@@ -2451,6 +2891,7 @@ class SQLiteJournalRepository:
     def save_framework_rule_settings(
         self,
         *,
+        account_id: int,
         oversized_revenge_hard: bool,
         mandatory_setup_hard: bool,
         stop_widened_hard: bool,
@@ -2460,9 +2901,11 @@ class SQLiteJournalRepository:
         if repeated_critical_threshold < 2:
             raise ValueError("Repeated critical violation threshold must be at least two")
         with self._sessions.begin() as session:
-            row = session.get(FrameworkRuleSettings, 1)
+            if session.get(MT5Account, account_id) is None:
+                raise ValueError("The selected MT5 account no longer exists")
+            row = session.get(FrameworkRuleSettings, account_id)
             if row is None:
-                row = FrameworkRuleSettings(id=1)
+                row = FrameworkRuleSettings(mt5_account_id=account_id)
                 session.add(row)
             row.oversized_revenge_hard = oversized_revenge_hard
             row.mandatory_setup_hard = mandatory_setup_hard
@@ -2596,13 +3039,12 @@ class SQLiteJournalRepository:
 
     def list_pillar_roadmap_evidence(self, account_id: int) -> list[PillarRoadmapEvidenceView]:
         with self._sessions() as session:
-            account_scope = self._roadmap_scope_key(account_id)
             rows = session.scalars(
                 select(PillarRoadmapEvidence)
-                .where(PillarRoadmapEvidence.scope_key == account_scope)
+                .where(PillarRoadmapEvidence.mt5_account_id == account_id)
                 .order_by(PillarRoadmapEvidence.pillar, PillarRoadmapEvidence.level, PillarRoadmapEvidence.item_key)
             ).all()
-            return [PillarRoadmapEvidenceView(row.scope_key, row.pillar, row.level, row.item_key, row.completed, row.evidence_note, row.updated_at) for row in rows]
+            return [PillarRoadmapEvidenceView(row.mt5_account_id, row.pillar, row.level, row.item_key, row.completed, row.evidence_note, row.updated_at) for row in rows]
 
     def get_active_framework_focus(self, account_id: int) -> FrameworkFocusView | None:
         with self._sessions() as session:
@@ -2647,7 +3089,7 @@ class SQLiteJournalRepository:
             if session.scalar(select(FrameworkFocus).where(FrameworkFocus.account_id == account_id, FrameworkFocus.status == "active")) is not None:
                 raise ValueError("Resolve the active framework focus before starting another")
             row = FrameworkFocus(
-                scope_key="trader", account_id=account_id, pillar=pillar,
+                account_id=account_id, pillar=pillar,
                 metric_kind=metric_kind, metric_code=metric_code, hypothesis=self._required_text(hypothesis, "Focus hypothesis"),
                 action_text=self._required_text(action_text, "Focus action"), baseline_value=baseline_value,
                 target_value=target_value, target_reviews=target_reviews, starting_manual_reviews=starting_manual_reviews,
@@ -2697,29 +3139,24 @@ class SQLiteJournalRepository:
             raise ValueError("An evidence note is required before completing a roadmap item")
         if account_id is None:
             raise ValueError("An account is required for roadmap evidence")
-        scope_key = self._roadmap_scope_key(account_id)
         with self._sessions.begin() as session:
             row = session.scalar(
                 select(PillarRoadmapEvidence).where(
-                    PillarRoadmapEvidence.scope_key == scope_key,
+                    PillarRoadmapEvidence.mt5_account_id == account_id,
                     PillarRoadmapEvidence.pillar == pillar,
                     PillarRoadmapEvidence.level == level,
                     PillarRoadmapEvidence.item_key == item_key,
                 )
             )
             if row is None:
-                row = PillarRoadmapEvidence(scope_key=scope_key, pillar=pillar, level=level, item_key=item_key, completed=completed, evidence_note=self._optional_text(evidence_note), updated_at=datetime.now(timezone.utc).isoformat())
+                row = PillarRoadmapEvidence(mt5_account_id=account_id, pillar=pillar, level=level, item_key=item_key, completed=completed, evidence_note=self._optional_text(evidence_note), updated_at=datetime.now(timezone.utc).isoformat())
                 session.add(row)
             else:
                 row.completed = completed
                 row.evidence_note = self._optional_text(evidence_note)
                 row.updated_at = datetime.now(timezone.utc).isoformat()
             session.flush()
-            return PillarRoadmapEvidenceView(row.scope_key, row.pillar, row.level, row.item_key, row.completed, row.evidence_note, row.updated_at)
-
-    @staticmethod
-    def _roadmap_scope_key(account_id: int) -> str:
-        return f"account:{account_id}"
+            return PillarRoadmapEvidenceView(row.mt5_account_id, row.pillar, row.level, row.item_key, row.completed, row.evidence_note, row.updated_at)
 
     def latest_mt5_import_hash(self, *, login: str, broker_server: str, source_file_path: str) -> str | None:
         with self._sessions() as session:
@@ -3329,7 +3766,7 @@ class SQLiteJournalRepository:
     ) -> tuple[str | None, str]:
         if trade.mt5_account_id is None:
             return None, "Awaiting account risk policy"
-        policy = policies_by_id.get(trade.auto_risk_policy_id) or active_policies_by_account.get(trade.mt5_account_id)
+        policy = active_policies_by_account.get(trade.mt5_account_id)
         funded_capital = funded_capital_by_account.get(trade.mt5_account_id)
         if policy is None or funded_capital is None:
             return None, "Awaiting account risk policy"
@@ -3350,7 +3787,7 @@ class SQLiteJournalRepository:
             performance: list[TradePerformanceItem] = []
             for trade in trades:
                 trade_account_id = trade.members[0].account_id
-                policy = policies_by_id.get(trade.auto_risk_policy_id) or active_policies_by_account.get(trade_account_id)
+                policy = active_policies_by_account.get(trade_account_id)
                 funded = funded_capital_by_account.get(trade_account_id)
                 effective_risk = None
                 if policy is not None and funded is not None:

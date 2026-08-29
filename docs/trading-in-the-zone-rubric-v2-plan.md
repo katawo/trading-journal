@@ -46,35 +46,34 @@ Remove System's `invalidation_fidelity`; Risk Management already measures that b
 - Keep `DashboardService` and `DashboardReport` untouched. P&L, expectancy, drawdown, concentration, and breakdown analytics remain outcome evidence and must not be blended with rubric-v2 process scores.
 - Retain the current page order: fixed collapsed coaching focus, Performance dashboard, then the compact Three-pillar monitor. Do not reintroduce metric cards or Statistics tabs into the outcome-analytics sections.
 - Update the existing fixed coaching-focus panel in place with the new Psychology actions and v2-only progress. Preserve its responsive desktop/mobile positioning and dialog-based edit/resolve interactions.
-- Keep the Dashboard's Three-pillar monitor on its fixed 20-review window and Bearings → Monitor on its adjustable window. Add a concise v2 sample line showing current-rubric reviews collected and legacy reviews excluded; retain the pillar score cards, radar, hard-block/caution markers, and scope explanations.
-- Update review-table score help and history badges to say whether a trade uses the legacy 13-criterion rubric or the Zone-aligned 12-criterion rubric instead of retaining hard-coded 13-criterion copy.
+- Keep the Dashboard's Three-pillar monitor on its fixed 20-review window and Bearings → Monitor on its adjustable window. Show the current-rubric sample collected; retain the pillar score cards, radar, hard-block/caution markers, and scope explanations.
+- Use the Zone-aligned 12-criterion label consistently in review history and score help.
 - Continue using escaped values for custom Dashboard HTML, stable Streamlit widget keys, native bordered containers/forms, sentence-case labels, and existing Material Symbols.
 
 ## Versioning and compatibility
 
-- Add an explicit `rubric_version` to assessments and revisions with supported values `legacy_v1` and `zone_v2`. Existing rows are safely backfilled as `legacy_v1`; all new and corrected reviews use `zone_v2`.
-- Make criterion validation and scoring version-aware. Legacy reviews retain their original 13-criterion scores and labels in history and trends.
-- Correcting a legacy review preserves the original as a legacy revision, prefills unchanged Risk/System fields, and requires the four new Psychology grades before saving as v2.
-- Monitor scores, readiness gates, roadmap sample counts, period reviews, and automated coaching use only v2 evidence. The UI explicitly shows how many legacy reviews were excluded, preventing old criteria from being treated as evidence for concepts they did not measure.
-- Archive any active pre-v2 coaching focus during the additive migration with an audit explanation. Do not delete assessments or require a database reset.
+- Keep an explicit `rubric_version` on assessments and revisions, accepting only `zone_v2` after migration.
+- Back up the SQLite database, then convert earlier assessments and revisions automatically. Retain the eight compatible Risk/System grades, set the four new Psychology grades to neutral `Partial`, and discard the removed invalidation grade.
+- Remove incompatible earlier period reviews, coaching focuses, and Psychology roadmap evidence so no v1 scoring path remains active.
+- Monitor scores, readiness gates, roadmap sample counts, period reviews, and automated coaching use only v2 evidence.
 - Update assessment/revision view types and repository save/read interfaces to expose the rubric version. Quick Risk Checks generate the current 12-criterion v2 shape.
 
 ## Test plan
 
-- Verify both rubric weight sets total 100% and v2 contains exactly 12 criteria.
-- Confirm v1 reviews retain their original pillar/process scores after upgrade.
+- Verify the v2 rubric weights total 100% and v2 contains exactly 12 criteria.
+- Confirm earlier assessments and revisions convert to the v2 shape with compatible fields retained and new Psychology fields neutral.
 - Test v2 validation, scoring, Quick Risk Check generation, and rejection of missing or removed criteria.
-- Test legacy-to-v2 correction, revision preservation, shared-field prefilling, and unchanged hard-rule overrides.
-- Confirm Monitor, readiness, roadmap gates, period reviews, and coaching exclude legacy evidence while history and trends retain it.
+- Confirm migration creates one backup, is idempotent, and removes incompatible derived artifacts.
+- Confirm Monitor, readiness, roadmap gates, period reviews, and coaching use only v2 evidence.
 - Test the four new Psychology coaching paths, new mistake tags, System's four-component calculation, and movement of invalidation responsibility to Risk.
-- Update UI and internationalization assertions for dynamic rubric totals, version badges, v2/legacy sample captions, and the fixed coaching panel.
+- Update UI and internationalization assertions for dynamic rubric totals, v2 sample captions, and the fixed coaching panel.
 - Preserve the Dashboard regression assertions introduced by `f14ce8b`: dense `dashboard-stat-label` markup remains present and Performance, Consistency, and Breakdowns remain always-visible sections rather than tabs.
 - Run `make check`, then visually verify Dashboard and Bearings in light/dark themes and at desktop/mobile widths, paying particular attention to the fixed coaching panel and 20-review v2 sample message.
 
 ## Assumptions
 
 - Risk Management remains otherwise unchanged.
-- Existing journal data is preserved through additive migration; no reset or destructive rewrite is allowed.
-- Legacy and v2 scores may appear together in historical trends but are visibly labeled because their rubrics differ.
+- Imported trades and compatible assessment evidence are preserved without a database reset. Incompatible v1 aggregate artifacts are removed after a backup, as described above.
+- Runtime analytics and historical trends use `zone_v2` only after the one-time migration; legacy scores are not retained as an active or parallel scoring path.
 - The recent dense Dashboard is the UI baseline; this work updates rubric-dependent content rather than redesigning performance analytics.
 - The implementation remains post-trade and advisory; it does not place or block MT5 orders.

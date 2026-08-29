@@ -11,6 +11,14 @@ from trading_journal.domain.models import MT5PositionExport
 from trading_journal.infrastructure.sqlite_repository import JournalDatabaseResetRequiredError, SQLiteJournalRepository
 
 
+def _rebuild_without_columns(connection: sqlite3.Connection, table: str, excluded: set[str]) -> None:
+    columns = [row[1] for row in connection.execute(f"PRAGMA table_info({table})") if row[1] not in excluded]
+    selected = ", ".join(columns)
+    connection.execute(f"CREATE TABLE {table}_legacy_shape AS SELECT {selected} FROM {table}")
+    connection.execute(f"DROP TABLE {table}")
+    connection.execute(f"ALTER TABLE {table}_legacy_shape RENAME TO {table}")
+
+
 def position(
     position_id: str,
     *,
@@ -194,6 +202,8 @@ def test_account_policy_supplies_r_and_preserves_imported_policy_context(tmp_pat
         max_consecutive_losses=3,
         minimum_rr="1.5",
         correlation_policy=None,
+        expected_active_policy_id=repository.get_active_risk_policy(account.id).id,
+        confirm_recalculation=True,
     )
     repository.upsert_mt5_positions(
         account.id,
@@ -202,11 +212,70 @@ def test_account_policy_supplies_r_and_preserves_imported_policy_context(tmp_pat
         "updated-policy-hash",
     )
     after = {trade.position_id: trade for trade in repository.list_trades()}
-    assert after["1001"].result_r == "2"
-    assert after["1002"].result_r == "-0.5"
+    assert after["1001"].result_r == "1"
+    assert after["1002"].result_r == "-0.25"
     assert after["1003"].effective_risk == "20"
     assert after["1003"].risk_source == "Risk policy v2 standard risk"
     assert after["1003"].result_r == "1"
+
+
+def test_replacing_active_policy_requires_current_confirmation(tmp_path: Path) -> None:
+    repository = configured_repository(tmp_path, standard_risk_percent="10")
+    account = repository.find_active_mt5_account("123456", "DemoBroker-Live")
+    assert account is not None
+    active = repository.get_active_risk_policy(account.id)
+    assert active is not None
+    preview = repository.preview_risk_policy_change(account.id)
+    assert preview.expected_active_policy_id == active.id
+    assert preview.affected_logical_trades == 2
+
+    values = dict(
+        account_id=account.id,
+        standard_risk_per_trade_percent="20",
+        maximum_risk_per_trade_percent="20",
+        daily_loss_limit_r="2",
+        weekly_loss_limit_r="4",
+        max_drawdown_percent="10",
+        max_open_risk_r="1",
+        max_consecutive_losses=3,
+        minimum_rr="1.5",
+        correlation_policy=None,
+    )
+    with pytest.raises(ValueError, match="Confirm recalculation"):
+        repository.save_account_risk_policy(**values)
+    with pytest.raises(ValueError, match="changed"):
+        repository.save_account_risk_policy(
+            **values,
+            expected_active_policy_id=active.id + 999,
+            confirm_recalculation=True,
+        )
+
+
+def test_identical_active_policy_is_a_no_op_without_confirmation(tmp_path: Path) -> None:
+    repository = configured_repository(tmp_path, standard_risk_percent="10")
+    account = repository.find_active_mt5_account("123456", "DemoBroker-Live")
+    assert account is not None
+    active = repository.get_active_risk_policy(account.id)
+    assert active is not None
+    values = dict(
+        account_id=account.id,
+        standard_risk_per_trade_percent="10.00",
+        maximum_risk_per_trade_percent="10.0",
+        daily_loss_limit_r="2.00",
+        weekly_loss_limit_r="4.0",
+        max_drawdown_percent="10.00",
+        max_open_risk_r="1.0",
+        max_consecutive_losses=3,
+        minimum_rr="1.50",
+        correlation_policy="  ",
+    )
+
+    assert not repository.risk_policy_change_required(**values)
+    saved = repository.save_account_risk_policy(**values)
+
+    assert saved.id == active.id
+    assert saved.version == active.version
+    assert len(repository.list_account_risk_policies(account.id)) == 1
 
 
 def test_initialization_does_not_rewrite_existing_clean_trade_tables(tmp_path: Path) -> None:
@@ -243,9 +312,19 @@ def test_initialization_migrates_monitoring_reset_periods_and_policy_server_offs
     database_path = tmp_path / "journal.db"
     connection = sqlite3.connect(database_path)
     connection.execute("UPDATE mt5_accounts SET latest_server_utc_offset_minutes = 180")
-    connection.execute("ALTER TABLE account_risk_policies DROP COLUMN drawdown_reset_period")
-    connection.execute("ALTER TABLE account_risk_policies DROP COLUMN loss_streak_reset_period")
-    connection.execute("ALTER TABLE account_risk_policies DROP COLUMN server_utc_offset_minutes")
+    for trigger in (
+        "enforce_trade_account_insert",
+        "enforce_trade_account_update",
+        "enforce_assessment_account_insert",
+        "enforce_assessment_account_update",
+        "prevent_risk_policy_account_reassignment",
+    ):
+        connection.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+    _rebuild_without_columns(
+        connection,
+        "account_risk_policies",
+        {"drawdown_reset_period", "loss_streak_reset_period", "server_utc_offset_minutes"},
+    )
     connection.commit()
     connection.close()
 
@@ -282,6 +361,8 @@ def test_saved_policy_keeps_the_account_server_offset_snapshot(tmp_path: Path) -
         max_consecutive_losses=3,
         minimum_rr="1.5",
         correlation_policy=None,
+        expected_active_policy_id=repository.get_active_risk_policy(account.id).id,
+        confirm_recalculation=True,
     )
     repository.upsert_mt5_positions(
         account.id,
@@ -311,6 +392,8 @@ def test_first_sync_backfills_every_null_policy_offset_once(tmp_path: Path) -> N
         max_consecutive_losses=4,
         minimum_rr="1.5",
         correlation_policy=None,
+        expected_active_policy_id=repository.get_active_risk_policy(account.id).id,
+        confirm_recalculation=True,
     )
     with sqlite3.connect(repository.database_path) as connection:
         connection.execute(

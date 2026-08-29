@@ -1,0 +1,66 @@
+@startuml
+title Trade Compass — Account Isolation Overview
+
+hide methods
+hide stereotypes
+skinparam shadowing false
+skinparam linetype ortho
+skinparam defaultFontName Monospace
+
+entity "Shared vocabulary" as shared {
+  strategy_profiles
+  strategy_setups
+  review_context_tags
+}
+
+entity "MT5 account" as account {
+  * id
+  --
+  funded capital <<immutable>>
+  one trading system
+}
+
+entity "Execution history" as execution {
+  logical_trades
+  trades
+  imports / live state
+}
+
+entity "Risk policy history" as risk {
+  one active version
+  prior versions retained
+}
+
+entity "Review evidence" as review {
+  zone_v2 assessments
+  immutable revisions
+  period review snapshots
+}
+
+entity "Development state" as development {
+  per-account review rules
+  roadmap evidence
+  coaching focus
+}
+
+shared }o--|| account : selected by
+account ||--o{ execution
+account ||--o{ risk
+account ||--o{ review
+account ||--o{ development
+risk ..> execution : active policy recalculates\ncurrent Risk/R analytics
+risk ..> review : policy IDs retained\nfor audit only
+
+note bottom of account
+  Operational records never cross accounts.
+  Funded capital may be initialized once when
+  legacy NULL data is repaired, then is locked.
+end note
+
+note bottom of review
+  Runtime supports zone_v2 only.
+  A one-time v1 migration reuses compatible
+  grades and fills missing criteria as Partial.
+end note
+
+@enduml

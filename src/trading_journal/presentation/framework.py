@@ -14,7 +14,6 @@ import streamlit as st
 import altair as alt
 
 from trading_journal.application.framework import (
-    LEGACY_PSYCHOLOGY_ROADMAP_ITEMS,
     PILLAR_NAMES,
     ROADMAP_LEVEL_NAMES,
     FrameworkService,
@@ -29,8 +28,6 @@ from trading_journal.application.reporting_time import reporting_datetime
 from trading_journal.domain.review_taxonomy import REVIEW_MISTAKE_CODES, REVIEW_MISTAKES_BY_PILLAR
 from trading_journal.infrastructure.sqlite_repository import (
     ASSESSMENT_CRITERIA,
-    CURRENT_RUBRIC_VERSION,
-    LEGACY_RUBRIC_VERSION,
     PSYCHOLOGY_CRITERIA,
     RISK_CRITERIA,
     SYSTEM_CRITERIA,
@@ -53,11 +50,6 @@ CRITERION_LABELS = {
     "risk_acceptance": "Risk acceptance",
     "probability_mindset": "Probability mindset",
     "outcome_independence": "Outcome independence and reset",
-    # Legacy labels remain available for rubric-v1 history.
-    "rule_adherence": "Rule adherence",
-    "impulse_control": "Impulse control",
-    "emotional_control": "Emotional control",
-    "patience_discipline": "Patience & discipline",
     "policy_adherence": "Risk-policy adherence",
     "position_size_accuracy": "Position-size accuracy",
     "stop_discipline": "Stop discipline",
@@ -65,7 +57,6 @@ CRITERION_LABELS = {
     "setup_validity": "Setup validity",
     "context_alignment": "Context alignment",
     "entry_fidelity": "Entry fidelity",
-    "invalidation_fidelity": "Invalidation / stop fidelity",
     "management_exit_fidelity": "Management / exit fidelity",
 }
 CRITERION_HELP = {
@@ -185,18 +176,16 @@ def _score_text(value: str | None) -> str:
 
 
 def _rubric_label(rubric_version: str | None) -> str:
-    return tr("Legacy 13-criterion") if rubric_version == LEGACY_RUBRIC_VERSION else tr("Zone-aligned 12-criterion")
+    return tr("Zone-aligned 12-criterion")
 
 
 def _render_rubric_sample_caption(scores: tuple[PillarScore, ...], window: int) -> None:
     reviewed = min((score.sample_size for score in scores), default=0)
-    legacy = max((score.legacy_reviewed_total for score in scores), default=0)
     st.caption(
         tr(
-            "Zone-aligned sample: {reviewed}/{window} reviewed trades · {legacy} legacy review(s) retained in history and excluded",
+            "Zone-aligned sample: {reviewed}/{window} reviewed trades",
             reviewed=reviewed,
             window=window,
-            legacy=legacy,
         )
     )
 
@@ -989,16 +978,9 @@ def _render_post_trade_review_dialog(repo: SQLiteJournalRepository, account: Acc
         st.rerun()
     if existing is not None:
         st.caption("Changing member positions supersedes this assessment and requires a new review. Changing only the label keeps it active.")
-    if existing_manual is not None and existing_manual.rubric_version == LEGACY_RUBRIC_VERSION:
-        st.info(
-            tr(
-                "This review uses the legacy 13-criterion rubric. Saving a correction preserves it in history and creates a Zone-aligned 12-criterion review; rate the four new Psychology criteria explicitly."
-            ),
-            icon=":material/history:",
-        )
     strategy = repo.get_account_strategy(account.id)
     policy = repo.get_active_risk_policy(account.id)
-    rule_settings = repo.get_framework_rule_settings()
+    rule_settings = repo.get_framework_rule_settings(account.id)
     enabled_hard_rules = {
         code
         for code, active in {
@@ -1870,7 +1852,7 @@ def _render_monitor(repo: SQLiteJournalRepository, account: AccountListItem) -> 
         start_date, end_date = range_value
     with scope_note:
         st.caption(f"Analysis: {start_date.isoformat()} to {end_date.isoformat()} · scores and gates always use the rolling reviewed sample.")
-    critical_threshold = repo.get_framework_rule_settings().repeated_critical_threshold
+    critical_threshold = repo.get_framework_rule_settings(account.id).repeated_critical_threshold
     st.caption(
         tr(
             "Caution triggers after {threshold} repeated critical violations within this window — a smaller window reaches that count sooner.",
@@ -1935,7 +1917,7 @@ def _render_monitor_process(service: FrameworkService, account: AccountListItem,
     if trend:
         with st.container(horizontal=True, vertical_alignment="center", gap="small", width="content"):
             st.markdown("##### Score trend")
-            _render_help_popover("Zone-aligned series follow the selected rolling window. Legacy series preserve each trade's original score, and the rubrics remain separate so unlike criteria are never silently blended.")
+            _render_help_popover("Zone-aligned series follow the selected rolling window.")
         records = []
         for closed, psychology, risk, system, rubric_version in trend:
             rubric = _rubric_label(rubric_version)
@@ -2406,7 +2388,6 @@ def _render_period_reviews(repo: SQLiteJournalRepository, account: AccountListIt
 def _render_roadmap(repo: SQLiteJournalRepository, account: AccountListItem) -> None:
     service = FrameworkService(repo)
     statuses = {item.pillar: item for item in service.roadmap_status(account.id)}
-    legacy_psychology_evidence = service.legacy_psychology_roadmap_evidence(account.id)
     with st.container(horizontal=True, vertical_alignment="center", gap="small", width="content"):
         st.markdown("#### Readiness roadmap")
         _render_help_popover("Define, Test, Execute, Measure, then Optimize. Most steps are detected automatically as you use the journal — only a few still need your own note.")
@@ -2476,18 +2457,6 @@ def _render_roadmap(repo: SQLiteJournalRepository, account: AccountListItem) -> 
                         tag = tr("Auto") if item.is_auto else tr("Manual")
                         detail = f" — {item.evidence_summary}" if item.evidence_summary else ""
                         st.markdown(f"- {tr('Level')} {item.level} · {tag}: {tr(item.label)}{detail}")
-            if pillar == "psychology" and legacy_psychology_evidence:
-                with st.expander(tr("Legacy Psychology roadmap evidence"), icon=":material/archive:"):
-                    st.caption(
-                        tr(
-                            "These pre-v2 notes are retained for audit history. They do not satisfy the Zone-aligned roadmap because the underlying Psychology evidence changed."
-                        )
-                    )
-                    for item in sorted(legacy_psychology_evidence, key=lambda entry: (entry.level, entry.item_key)):
-                        state = tr("Completed") if item.completed else tr("Not completed")
-                        detail = f" — {item.evidence_note}" if item.evidence_note else ""
-                        label = LEGACY_PSYCHOLOGY_ROADMAP_ITEMS[item.item_key]
-                        st.markdown(f"- {tr('Level')} {item.level} · {state}: {tr(label)}{detail}")
 def _render_risk_policy(repo: SQLiteJournalRepository, account: AccountListItem) -> None:
     policy = repo.get_active_risk_policy(account.id)
     funded = repo.get_account_funded_capital(account.id)
@@ -2533,25 +2502,74 @@ def _render_risk_policy(repo: SQLiteJournalRepository, account: AccountListItem)
         )
         submitted = st.form_submit_button("Save risk policy", type="primary")
     if submitted:
-        try:
-            with st.spinner(tr("Saving…")):
-                repo.save_account_risk_policy(
-                    account_id=account.id, standard_risk_per_trade_percent=str(standard), maximum_risk_per_trade_percent=str(maximum),
-                    daily_loss_limit_r=str(daily), weekly_loss_limit_r=str(weekly), max_drawdown_percent=str(drawdown),
-                    max_open_risk_r=str(open_risk), max_consecutive_losses=int(streak), minimum_rr=str(minimum_rr), correlation_policy=correlation,
-                    pretrade_balance_auto_evidence_enabled=pretrade_balance_evidence,
-                    drawdown_reset_period=reset_period_options[drawdown_reset_label],
-                    loss_streak_reset_period=reset_period_options[streak_reset_label],
-                )
-        except ValueError as error:
-            st.error(str(error))
+        policy_values = {
+            "account_id": account.id,
+            "standard_risk_per_trade_percent": str(standard),
+            "maximum_risk_per_trade_percent": str(maximum),
+            "daily_loss_limit_r": str(daily),
+            "weekly_loss_limit_r": str(weekly),
+            "max_drawdown_percent": str(drawdown),
+            "max_open_risk_r": str(open_risk),
+            "max_consecutive_losses": int(streak),
+            "minimum_rr": str(minimum_rr),
+            "correlation_policy": correlation,
+            "pretrade_balance_auto_evidence_enabled": pretrade_balance_evidence,
+            "drawdown_reset_period": reset_period_options[drawdown_reset_label],
+            "loss_streak_reset_period": reset_period_options[streak_reset_label],
+        }
+
+        def save_policy(**confirmation):  # type: ignore[no-untyped-def]
+            try:
+                with st.spinner(tr("Saving…")):
+                    repo.save_account_risk_policy(**policy_values, **confirmation)
+            except ValueError as error:
+                st.error(str(error))
+            else:
+                queue_toast(tr("Risk policy saved as a new version."))
+                st.rerun()
+
+        change_required = True
+        if policy is not None:
+            try:
+                change_required = repo.risk_policy_change_required(**policy_values)
+            except ValueError as error:
+                st.error(str(error))
+                return
+
+        if policy is None:
+            save_policy()
+        elif not change_required:
+            st.info(tr("No risk-policy changes to save."), icon=":material/info:")
         else:
-            queue_toast(tr("Risk policy saved as a new version."))
-            st.rerun()
+            preview = repo.preview_risk_policy_change(account.id)
+
+            @st.dialog(tr("Confirm account-wide recalculation"), width="large")
+            def confirm_policy_change() -> None:
+                st.warning(
+                    "This replaces the active analytical policy for this account and recalculates all derived historical Risk and R metrics.",
+                    icon=":material/calculate:",
+                )
+                st.markdown(
+                    f"**Affected:** {preview.affected_logical_trades} logical trades  \n"
+                    f"**Preserved unchanged:** {preview.preserved_assessments} saved assessments and "
+                    f"{preview.preserved_period_reviews} saved weekly/monthly reviews  \n"
+                    "MT5 trades and funded capital are not modified. The prior policy version remains in audit history."
+                )
+                confirmed = st.checkbox(
+                    tr("I understand current analytics for this account will be recalculated"),
+                    key=f"confirm-risk-recalculation-{account.id}-{preview.expected_active_policy_id}",
+                )
+                if st.button(tr("Confirm and create new policy version"), type="primary", disabled=not confirmed):
+                    save_policy(
+                        expected_active_policy_id=preview.expected_active_policy_id,
+                        confirm_recalculation=True,
+                    )
+
+            confirm_policy_change()
 
 
-def _render_framework_rules(repo: SQLiteJournalRepository) -> None:
-    settings = repo.get_framework_rule_settings()
+def _render_framework_rules(repo: SQLiteJournalRepository, account: AccountListItem) -> None:
+    settings = repo.get_framework_rule_settings(account.id)
     st.markdown("#### Review rules")
     st.caption("The four hard-rule toggles below affect new or corrected assessments only — their effective result is snapshotted when an assessment is saved, so later changes never rewrite an already-saved review. The violation-count threshold is different: it is read live and can change the Caution cap for trades still inside the current rolling Monitor window. Neither ever locks MT5 trading.")
     with st.form("framework-rule-settings"):
@@ -2565,6 +2583,7 @@ def _render_framework_rules(repo: SQLiteJournalRepository) -> None:
         try:
             with st.spinner(tr("Saving…")):
                 repo.save_framework_rule_settings(
+                    account_id=account.id,
                     oversized_revenge_hard=revenge, mandatory_setup_hard=setup, stop_widened_hard=stop,
                     shutdown_breach_hard=shutdown, repeated_critical_threshold=int(threshold),
                 )

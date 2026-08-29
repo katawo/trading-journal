@@ -531,6 +531,11 @@ def test_new_account_resets_stale_onboarding_state(monkeypatch, tmp_path):
     next(item for item in app.text_input if item.label == "Broker server").set_value("asdf").run()
     next(item for item in app.text_input if item.label == "Funded capital").set_value("1000").run()
     next(item for item in app.button if item.label == "Continue to risk policy").click().run()
+    assert next(item for item in app.button if item.label == "Create and activate account").disabled
+    assert any(
+        item.label == "I confirm the funded capital is correct and understand it cannot be changed later"
+        for item in app.checkbox
+    )
     next(item for item in app.text_input if item.label == "Standard risk (1R) %").set_value("").run()
 
     next(item for item in app.button if item.label == "New account").click().run()
@@ -576,6 +581,53 @@ def test_settings_can_update_an_existing_mt5_account(monkeypatch, tmp_path):
     assert updated.display_name == "Renamed account"
     assert updated.funded_capital == "1000"
     assert any("MT5 account updated." in item.value for item in app.success)
+
+    refreshed = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
+    refreshed.switch_page("app_pages/settings.py").run()
+    locked = next(item for item in refreshed.text_input if item.label == "Funded capital · locked")
+    assert locked.disabled
+
+
+def test_settings_skips_confirmation_for_an_unchanged_risk_policy(monkeypatch, tmp_path):
+    database_path = tmp_path / "journal.db"
+    repository = SQLiteJournalRepository(database_path)
+    repository.initialize()
+    repository.register_mt5_account(
+        display_name="Primary",
+        login="123456",
+        broker_server="DemoBroker-Live",
+        account_currency="USD",
+        export_file_path="",
+        opening_balance="1000",
+    )
+    account = repository.list_mt5_accounts()[0]
+    repository.save_account_risk_policy(
+        account_id=account.id,
+        standard_risk_per_trade_percent="2",
+        maximum_risk_per_trade_percent="3",
+        daily_loss_limit_r="5",
+        weekly_loss_limit_r="20",
+        max_drawdown_percent="30",
+        max_open_risk_r="1",
+        max_consecutive_losses=10,
+        minimum_rr="1",
+        correlation_policy=None,
+    )
+    monkeypatch.setenv("TRADING_JOURNAL_DB", str(database_path))
+
+    app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
+    app.switch_page("app_pages/settings.py").run()
+    next(item for item in app.button if item.label == "Save risk policy").click().run()
+
+    assert not app.exception
+    assert any("No risk-policy changes to save." in item.value for item in app.info)
+    assert len(SQLiteJournalRepository(database_path).list_account_risk_policies(account.id)) == 1
+
+    next(item for item in app.number_input if item.label == "Maximum risk per trade (%)").set_value(1.0).run()
+    next(item for item in app.button if item.label == "Save risk policy").click().run()
+    assert not app.exception
+    assert any("must be at least the standard risk" in item.value for item in app.error)
+    assert len(SQLiteJournalRepository(database_path).list_account_risk_policies(account.id)) == 1
 
 
 def test_settings_can_change_an_unlocked_accounts_strategy(monkeypatch, tmp_path):

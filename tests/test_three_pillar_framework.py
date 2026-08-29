@@ -11,7 +11,6 @@ import streamlit as st
 
 from trading_journal.application.framework import (
     FrameworkService,
-    LEGACY_TRADE_WEIGHTS,
     PERIOD_WEIGHTS,
     PillarScore,
     ROADMAP_ITEMS,
@@ -25,8 +24,6 @@ from trading_journal.infrastructure.sqlite_repository import (
     ASSESSMENT_CRITERIA,
     CURRENT_RUBRIC_VERSION,
     JournalDatabaseResetRequiredError,
-    LEGACY_ASSESSMENT_CRITERIA,
-    LEGACY_RUBRIC_VERSION,
     ReviewContextSelection,
     SQLiteJournalRepository,
 )
@@ -46,6 +43,25 @@ from trading_journal.presentation.framework import (
     _risk_state_metric,
     _set_pillar_grades_to_pass,
 )
+
+
+def _rebuild_legacy_table(
+    connection: sqlite3.Connection,
+    table: str,
+    *,
+    excluded: set[str] | None = None,
+) -> None:
+    excluded = excluded or set()
+    for (trigger_name,) in connection.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'trigger' AND sql LIKE ?",
+        (f"%{table}%",),
+    ).fetchall():
+        connection.execute(f"DROP TRIGGER IF EXISTS {trigger_name}")
+    columns = [row[1] for row in connection.execute(f"PRAGMA table_info({table})") if row[1] not in excluded]
+    selected = ", ".join(columns)
+    connection.execute(f"CREATE TABLE {table}_legacy_shape AS SELECT {selected} FROM {table}")
+    connection.execute(f"DROP TABLE {table}")
+    connection.execute(f"ALTER TABLE {table}_legacy_shape RENAME TO {table}")
 from trading_journal.presentation.trade_tags import direction_tag, outcome_tag
 
 
@@ -53,7 +69,7 @@ ALL_PASS = {criterion: "pass" for criterion in ASSESSMENT_CRITERIA}
 
 
 def test_every_trade_and_monitor_rubric_weight_set_totals_one_hundred_percent() -> None:
-    for weights in (*LEGACY_TRADE_WEIGHTS.values(), *TRADE_WEIGHTS.values()):
+    for weights in TRADE_WEIGHTS.values():
         assert sum(weight for _, weight in weights) == Decimal("1")
     for weights in PERIOD_WEIGHTS.values():
         assert sum(weights) == Decimal("1")
@@ -204,6 +220,7 @@ def _policy(
     loss_streak_reset_period: str = "daily",
     created_at: str = "2026-07-01T00:00:00+00:00",
 ):
+    active = repository.get_active_risk_policy(account_id)
     policy = repository.save_account_risk_policy(
         account_id=account_id,
         standard_risk_per_trade_percent="1",
@@ -218,6 +235,8 @@ def _policy(
         pretrade_balance_auto_evidence_enabled=pretrade_balance_auto_evidence_enabled,
         drawdown_reset_period=drawdown_reset_period,
         loss_streak_reset_period=loss_streak_reset_period,
+        expected_active_policy_id=None if active is None else active.id,
+        confirm_recalculation=active is not None,
     )
     _set_policy_created_at(repository, policy.id, created_at)
     saved = repository.get_risk_policy(policy.id)
@@ -499,6 +518,7 @@ def test_hard_rule_status_is_snapshotted_when_framework_rules_later_change(tmp_p
         action="Keep the stop at the documented invalidation point.",
     )
     repository.save_framework_rule_settings(
+        account_id=account_id,
         oversized_revenge_hard=True,
         mandatory_setup_hard=True,
         stop_widened_hard=False,
@@ -525,6 +545,60 @@ def test_hard_rule_status_is_snapshotted_when_framework_rules_later_change(tmp_p
             hard_rules=("stop_widened",),
             action="Keep the stop at the documented invalidation point.",
         )
+
+
+def test_framework_rule_settings_are_isolated_by_account(tmp_path) -> None:
+    repository, first_account_id = _repository(tmp_path)
+    repository.register_mt5_account(
+        display_name="Secondary",
+        login="654321",
+        broker_server="DemoBroker-Live",
+        account_currency="USD",
+        export_file_path="",
+        opening_balance="1000",
+    )
+    second_account_id = next(account.id for account in repository.list_mt5_accounts() if account.id != first_account_id)
+
+    repository.save_framework_rule_settings(
+        account_id=first_account_id,
+        oversized_revenge_hard=False,
+        mandatory_setup_hard=False,
+        stop_widened_hard=False,
+        shutdown_breach_hard=False,
+        repeated_critical_threshold=5,
+    )
+
+    assert repository.get_framework_rule_settings(first_account_id).repeated_critical_threshold == 5
+    assert repository.get_framework_rule_settings(second_account_id).repeated_critical_threshold == 2
+    assert repository.get_framework_rule_settings(second_account_id).stop_widened_hard
+
+
+def test_database_rejects_cross_account_reassignment_and_v1_runtime_rows(tmp_path) -> None:
+    repository, first_account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, first_account_id), _strategy(repository)
+    trade_id = _import_position(repository, first_account_id, position_id="isolated-trade")
+    _review(repository, first_account_id, trade_id, policy, strategy)
+    repository.register_mt5_account(
+        display_name="Secondary",
+        login="654321",
+        broker_server="DemoBroker-Live",
+        account_currency="USD",
+        export_file_path="",
+        opening_balance="1000",
+    )
+    second_account_id = next(account.id for account in repository.list_mt5_accounts() if account.id != first_account_id)
+
+    with sqlite3.connect(repository.database_path) as connection:
+        with pytest.raises(sqlite3.IntegrityError, match="account is immutable"):
+            connection.execute(
+                "UPDATE logical_trades SET mt5_account_id = ? WHERE id = ?",
+                (second_account_id, trade_id),
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="zone_v2"):
+            connection.execute(
+                "UPDATE post_trade_assessments SET rubric_version = 'legacy_v1' WHERE logical_trade_id = ?",
+                (trade_id,),
+            )
 
 
 def test_low_raw_score_is_not_classified_as_a_good_trade_without_a_hard_rule(tmp_path) -> None:
@@ -769,7 +843,7 @@ def test_drawdown_and_loss_streak_reset_independently(tmp_path) -> None:
     assert snapshot.consecutive_losses == 2
 
 
-def test_cadence_change_without_a_new_trade_starts_a_new_epoch(tmp_path) -> None:
+def test_active_policy_recalculates_prior_trades_without_a_transition_epoch(tmp_path) -> None:
     repository, account_id = _repository(tmp_path)
     _policy(repository, account_id, drawdown_reset_period="all_time", loss_streak_reset_period="all_time")
     _import_position(repository, account_id, position_id="epoch-1", net_pnl="-10")
@@ -791,9 +865,9 @@ def test_cadence_change_without_a_new_trade_starts_a_new_epoch(tmp_path) -> None
 
     snapshot = FrameworkService(repository).risk_snapshot(account_id, now=datetime(2026, 8, 10, 12, tzinfo=timezone.utc))
 
-    assert snapshot.current_drawdown_percent == "0"
-    assert snapshot.max_drawdown_percent == "0"
-    assert snapshot.consecutive_losses == 0
+    assert snapshot.current_drawdown_percent == "2"
+    assert snapshot.max_drawdown_percent == "2"
+    assert snapshot.consecutive_losses == 2
 
 
 def test_threshold_only_policy_change_preserves_monitoring_state(tmp_path) -> None:
@@ -816,6 +890,34 @@ def test_threshold_only_policy_change_preserves_monitoring_state(tmp_path) -> No
     assert snapshot.current_drawdown_percent == "2"
     assert snapshot.max_drawdown_percent == "2"
     assert snapshot.consecutive_losses == 2
+
+
+def test_policy_recalculation_preserves_saved_assessments_and_period_snapshots(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    original_policy, strategy = _policy(repository, account_id), _strategy(repository)
+    trade_id = _import_position(repository, account_id, position_id="preserved-review")
+    _review(repository, account_id, trade_id, original_policy, strategy)
+    repository.save_framework_period_review(
+        account_id=account_id,
+        cadence="weekly",
+        period_start="2026-08-10",
+        period_end="2026-08-16",
+        psychology_score="80",
+        risk_score="90",
+        system_score="85",
+        readiness_score="80",
+        alert_codes=(),
+        recurring_issues=(),
+        review_note="Keep the process stable.",
+        priority_action="Repeat the checklist.",
+    )
+    assessment_before = repository.get_post_trade_assessment_for_trade(trade_id)
+    periods_before = repository.list_framework_period_reviews(account_id)
+
+    _policy(repository, account_id, daily_loss_limit_r="3")
+
+    assert repository.get_post_trade_assessment_for_trade(trade_id) == assessment_before
+    assert repository.list_framework_period_reviews(account_id) == periods_before
 
 
 def test_raising_policy_thresholds_clears_old_shutdown_latches(tmp_path) -> None:
@@ -868,7 +970,7 @@ def test_raising_policy_thresholds_clears_old_shutdown_latches(tmp_path) -> None
     assert snapshot.max_drawdown_percent == "2"
 
 
-def test_raised_thresholds_do_not_excuse_a_trade_opened_under_the_old_policy(tmp_path) -> None:
+def test_raised_active_thresholds_recalculate_a_trade_opened_before_the_update(tmp_path) -> None:
     repository, account_id = _repository(tmp_path)
     _policy(
         repository,
@@ -914,7 +1016,7 @@ def test_raised_thresholds_do_not_excuse_a_trade_opened_under_the_old_policy(tmp
         if item.trade_id == overlapping_id
     )
 
-    assert score.shutdown_candidate_codes == ("daily_limit", "drawdown_limit", "loss_streak", "weekly_limit")
+    assert score.shutdown_candidate_codes == ()
 
 
 def test_intermediate_policy_transition_controls_the_latch_at_entry(tmp_path) -> None:
@@ -1025,7 +1127,7 @@ def test_lowering_policy_thresholds_activates_shutdown_at_policy_time(tmp_path) 
     assert snapshot.state == "stop"
 
 
-def test_lowered_threshold_does_not_retroactively_flag_an_open_trade(tmp_path) -> None:
+def test_lowered_active_threshold_recalculates_an_earlier_open_trade(tmp_path) -> None:
     repository, account_id = _repository(tmp_path)
     _policy(
         repository,
@@ -1071,7 +1173,7 @@ def test_lowered_threshold_does_not_retroactively_flag_an_open_trade(tmp_path) -
         if item.trade_id == overlapping_id
     )
 
-    assert score.shutdown_candidate_codes == ()
+    assert score.shutdown_candidate_codes == ("daily_limit", "drawdown_limit", "loss_streak", "weekly_limit")
 
 
 def test_shutdown_candidate_uses_entry_period_before_final_close_period_reset(tmp_path) -> None:
@@ -1270,6 +1372,7 @@ def test_upgrading_an_auto_review_requires_hard_rules_to_be_currently_enabled(tm
         criterion_grades=FrameworkService._automatic_review_grades(before.risk_policy_state),
     )
     repository.save_framework_rule_settings(
+        account_id=account_id,
         oversized_revenge_hard=True,
         mandatory_setup_hard=False,
         stop_widened_hard=True,
@@ -1422,7 +1525,7 @@ def test_maximum_drawdown_breach_persists_after_same_period_recovery(tmp_path) -
     assert snapshot.state == "stop"
 
 
-def test_monitoring_policy_is_selected_by_event_time_not_attached_import_policy(tmp_path) -> None:
+def test_monitoring_uses_the_active_policy_for_every_historical_trade(tmp_path) -> None:
     repository, account_id = _repository(tmp_path)
     first = _policy(repository, account_id, daily_loss_limit_r="20")
     late_old_id = _import_position(
@@ -1458,7 +1561,7 @@ def test_monitoring_policy_is_selected_by_event_time_not_attached_import_policy(
 
     events = FrameworkService(repository)._historical_risk_events(account_id)
 
-    assert events[backfill_id]["policy_id"] == first.id
+    assert events[backfill_id]["policy_id"] == second.id
     assert events[newer_id]["policy_id"] == second.id
     assert events[late_old_id]["policy_id"] == second.id
 
@@ -1507,7 +1610,7 @@ def test_shutdown_candidate_is_frozen_at_entry_when_latch_clears_before_close(tm
     assert score.shutdown_candidate_codes == ("loss_streak",)
 
 
-def test_trade_closed_before_first_policy_is_audit_only_for_monitoring(tmp_path) -> None:
+def test_active_policy_recalculates_trades_closed_before_its_creation(tmp_path) -> None:
     repository, account_id = _repository(tmp_path)
     policy = _policy(repository, account_id, created_at="2026-08-10T10:00:00+00:00")
     historical_id = _import_position(
@@ -1532,10 +1635,10 @@ def test_trade_closed_before_first_policy_is_audit_only_for_monitoring(tmp_path)
     snapshot = service.risk_snapshot(account_id, now=datetime(2026, 8, 10, 12, tzinfo=timezone.utc))
     report = DashboardService(repository).build_report(account_id=account_id)
 
-    assert events[historical_id]["policy_id"] is None
-    assert events[historical_id]["result_r"] == Decimal("0")
+    assert events[historical_id]["policy_id"] == policy.id
+    assert events[historical_id]["result_r"] == Decimal("-2")
     assert events[monitored_id]["policy_id"] == policy.id
-    assert snapshot.daily_r == "-1"
+    assert snapshot.daily_r == "-3"
     assert report.trade_count == 2
     assert report.total_r == "-3"
 
@@ -1608,7 +1711,7 @@ def test_policy_transition_uses_its_saved_server_offset_not_a_later_trade_offset
 
     assert saved is not None
     assert saved.server_utc_offset_minutes == 120
-    assert score.shutdown_candidate_codes == ()
+    assert score.shutdown_candidate_codes == ("daily_limit",)
 
 
 def test_unchanged_cadence_transition_does_not_reset_via_previous_policy_offset(tmp_path) -> None:
@@ -1956,7 +2059,7 @@ def test_group_rejects_positions_with_different_imported_risk_policy_versions(tm
     repository, account_id = _repository(tmp_path)
     _policy(repository, account_id)
     first = _import_position(repository, account_id, position_id="policy-1")
-    _policy(repository, account_id)
+    _policy(repository, account_id, daily_loss_limit_r="3")
     second = _import_position(repository, account_id, position_id="policy-2")
 
     with pytest.raises(ValueError, match="Risk-policy version"):
@@ -2943,50 +3046,78 @@ def test_auto_migration_adds_missing_revision_context_columns_without_a_reset(tm
     assert history[0].setup_snapshot is None
 
 
-def test_rubric_migration_preserves_legacy_scores_but_excludes_them_from_current_monitoring(tmp_path) -> None:
+def test_v1_assessments_and_revisions_migrate_to_v2_with_neutral_psychology(tmp_path) -> None:
     repository, account_id = _repository(tmp_path)
     policy, strategy = _policy(repository, account_id), _strategy(repository)
     trade_id = _import_position(repository, account_id)
     _review(repository, account_id, trade_id, policy, strategy)
+    _review(
+        repository,
+        account_id,
+        trade_id,
+        policy,
+        strategy,
+        grades={**ALL_PASS, "edge_execution": "partial"},
+        tags=("fear_hesitation",),
+        action="Execute the accepted edge.",
+    )
     database = repository.database_path
     repository.close()
 
-    legacy_grades = {criterion: "pass" for criterion in LEGACY_ASSESSMENT_CRITERIA}
-    legacy_grades["rule_adherence"] = "partial"
+    v1_grades = {
+        criterion: "pass"
+        for criterion in (
+            "rule_adherence", "impulse_control", "emotional_control", "patience_discipline",
+            "policy_adherence", "position_size_accuracy", "stop_discipline", "exposure_limit_compliance",
+            "setup_validity", "context_alignment", "entry_fidelity", "invalidation_fidelity",
+            "management_exit_fidelity",
+        )
+    }
     with sqlite3.connect(database) as connection:
         connection.execute(
             "UPDATE post_trade_assessments SET criterion_grades = ? WHERE logical_trade_id = ?",
-            (json.dumps(legacy_grades), trade_id),
+            (json.dumps(v1_grades), trade_id),
         )
-        connection.execute("ALTER TABLE post_trade_assessments DROP COLUMN rubric_version")
+        connection.execute(
+            "UPDATE post_trade_assessment_revisions SET criterion_grades = ?",
+            (json.dumps(v1_grades),),
+        )
+        _rebuild_legacy_table(connection, "post_trade_assessments", excluded={"rubric_version"})
+        _rebuild_legacy_table(connection, "post_trade_assessment_revisions", excluded={"rubric_version"})
 
     reopened = SQLiteJournalRepository(database)
     reopened.initialize()
     assessment = reopened.get_post_trade_assessment_for_trade(trade_id)
+    revisions = reopened.list_post_trade_assessment_revisions(trade_id)
     trade_score = FrameworkService(reopened).trade_process_scores(account_id)[0]
     pillars = {item.pillar: item for item in FrameworkService(reopened).pillar_scores(account_id)}
+    backups = list(tmp_path.glob("journal.pre-v2-only-*.db.bak"))
 
     assert assessment is not None
-    assert assessment.rubric_version == LEGACY_RUBRIC_VERSION
-    assert trade_score.rubric_version == LEGACY_RUBRIC_VERSION
-    assert trade_score.psychology_score == "82.5"
-    assert FrameworkService(reopened).rolling_score_trend(account_id)[0][1:] == (
-        "82.5", "100", "100", LEGACY_RUBRIC_VERSION,
-    )
-    assert pillars["psychology"].score is None
-    assert pillars["psychology"].reviewed_total == 0
-    assert pillars["psychology"].legacy_reviewed_total == 1
+    assert assessment.rubric_version == CURRENT_RUBRIC_VERSION
+    assert set(assessment.criterion_grades) == set(ASSESSMENT_CRITERIA)
+    assert all(assessment.criterion_grades[key] == "partial" for key in (
+        "edge_execution", "risk_acceptance", "probability_mindset", "outcome_independence",
+    ))
+    assert all(assessment.criterion_grades[key] == "pass" for key in (
+        "policy_adherence", "position_size_accuracy", "stop_discipline", "exposure_limit_compliance",
+        "setup_validity", "context_alignment", "entry_fidelity", "management_exit_fidelity",
+    ))
+    assert revisions[0].rubric_version == CURRENT_RUBRIC_VERSION
+    assert set(revisions[0].criterion_grades) == set(ASSESSMENT_CRITERIA)
+    assert trade_score.psychology_score == "50"
+    assert trade_score.risk_score == "100"
+    assert trade_score.system_score == "100"
+    assert pillars["psychology"].reviewed_total == 1
+    assert len(backups) == 1
 
-    corrected = _review(reopened, account_id, trade_id, policy, strategy)
-    revisions = reopened.list_post_trade_assessment_revisions(trade_id)
-    assert corrected.rubric_version == CURRENT_RUBRIC_VERSION
-    assert revisions[0].rubric_version == LEGACY_RUBRIC_VERSION
-    assert set(revisions[0].criterion_grades) == set(LEGACY_ASSESSMENT_CRITERIA)
+    reopened.initialize()
+    assert len(list(tmp_path.glob("journal.pre-v2-only-*.db.bak"))) == 1
 
 
-def test_rubric_migration_archives_an_active_legacy_coaching_focus(tmp_path) -> None:
+def test_v1_migration_removes_incompatible_coaching_focus(tmp_path) -> None:
     repository, account_id = _repository(tmp_path)
-    focus = repository.save_framework_focus(
+    repository.save_framework_focus(
         account_id=account_id,
         pillar="psychology",
         metric_kind="manual_evidence",
@@ -3002,20 +3133,16 @@ def test_rubric_migration_archives_an_active_legacy_coaching_focus(tmp_path) -> 
     repository.close()
 
     with sqlite3.connect(database) as connection:
-        connection.execute("ALTER TABLE framework_focuses DROP COLUMN rubric_version")
+        _rebuild_legacy_table(connection, "framework_focuses", excluded={"rubric_version"})
 
     reopened = SQLiteJournalRepository(database)
     reopened.initialize()
-    history = reopened.list_framework_focuses(account_id)
 
     assert reopened.get_active_framework_focus(account_id) is None
-    assert history[0].id == focus.id
-    assert history[0].status == "abandoned"
-    assert history[0].rubric_version == LEGACY_RUBRIC_VERSION
-    assert "Zone-aligned rubric upgrade" in (history[0].resolution_note or "")
+    assert reopened.list_framework_focuses(account_id) == []
 
 
-def test_period_review_upgrade_requires_v2_reviews_and_preserves_the_legacy_reflection(tmp_path) -> None:
+def test_v1_migration_removes_incompatible_period_and_roadmap_evidence(tmp_path) -> None:
     repository, account_id = _repository(tmp_path)
     policy, strategy = _policy(repository, account_id), _strategy(repository)
     trade_id = _import_position(
@@ -3036,108 +3163,26 @@ def test_period_review_upgrade_requires_v2_reviews_and_preserves_the_legacy_refl
         review_note="Legacy weekly reflection.",
         priority_action="Keep following the plan.",
     )
-    database = repository.database_path
-    repository.close()
-
-    legacy_grades = {criterion: "pass" for criterion in LEGACY_ASSESSMENT_CRITERIA}
-    legacy_grades["rule_adherence"] = "partial"
-    with sqlite3.connect(database) as connection:
-        connection.execute(
-            "UPDATE post_trade_assessments SET rubric_version = ?, criterion_grades = ? WHERE logical_trade_id = ?",
-            (LEGACY_RUBRIC_VERSION, json.dumps(legacy_grades), trade_id),
-        )
-        connection.execute(
-            "UPDATE framework_period_reviews SET rubric_version = ?",
-            (LEGACY_RUBRIC_VERSION,),
-        )
-        connection.execute("ALTER TABLE framework_period_reviews RENAME TO framework_period_reviews_new_schema")
-        connection.execute(
-            """CREATE TABLE framework_period_reviews (
-                id INTEGER NOT NULL PRIMARY KEY,
-                mt5_account_id INTEGER NOT NULL,
-                cadence VARCHAR(12) NOT NULL,
-                period_start VARCHAR(10) NOT NULL,
-                period_end VARCHAR(10) NOT NULL,
-                status VARCHAR(12) NOT NULL,
-                rubric_version VARCHAR(24) NOT NULL,
-                psychology_score VARCHAR,
-                risk_score VARCHAR,
-                system_score VARCHAR,
-                readiness_score VARCHAR,
-                alert_codes TEXT NOT NULL,
-                recurring_issues TEXT NOT NULL,
-                review_note TEXT NOT NULL,
-                priority_action TEXT NOT NULL,
-                created_at VARCHAR(64) NOT NULL,
-                CONSTRAINT uq_framework_period UNIQUE (
-                    mt5_account_id, cadence, period_start, period_end
-                ),
-                FOREIGN KEY(mt5_account_id) REFERENCES mt5_accounts(id)
-            )"""
-        )
-        columns = (
-            "id, mt5_account_id, cadence, period_start, period_end, status, rubric_version, "
-            "psychology_score, risk_score, system_score, readiness_score, alert_codes, "
-            "recurring_issues, review_note, priority_action, created_at"
-        )
-        connection.execute(
-            f"INSERT INTO framework_period_reviews ({columns}) "
-            f"SELECT {columns} FROM framework_period_reviews_new_schema"
-        )
-        connection.execute("DROP TABLE framework_period_reviews_new_schema")
-
-    reopened = SQLiteJournalRepository(database)
-    reopened.initialize()
-    reopened.initialize()  # the period uniqueness migration is idempotent across application starts
-    now = datetime(2026, 8, 18, tzinfo=timezone.utc)
-    before = FrameworkService(reopened).period_review_status(account_id, "weekly", now=now)
-
-    assert (before.reviewed_trades, before.closed_trades, before.disposition, before.due) == (
-        0, 1, "unreviewed", False,
-    )
-
-    _review(reopened, account_id, trade_id, policy, strategy)
-    after_correction = FrameworkService(reopened).period_review_status(account_id, "weekly", now=now)
-    assert after_correction.due
-    FrameworkService(reopened).save_period_review(
-        account_id=account_id,
-        cadence="weekly",
-        review_note="Zone-aligned weekly reflection.",
-        priority_action="Continue the v2 process.",
-        now=now,
-    )
-
-    reviews = reopened.list_framework_period_reviews(account_id, "weekly")
-    assert {review.rubric_version for review in reviews} == {
-        LEGACY_RUBRIC_VERSION, CURRENT_RUBRIC_VERSION,
-    }
-    with sqlite3.connect(database) as connection:
-        unique_indexes = [row for row in connection.execute("PRAGMA index_list(framework_period_reviews)") if row[2]]
-        unique_columns = {
-            tuple(column[2] for column in connection.execute(f"PRAGMA index_info('{index[1]}')"))
-            for index in unique_indexes
-        }
-    assert ("mt5_account_id", "cadence", "period_start", "period_end", "rubric_version") in unique_columns
-
-
-def test_legacy_psychology_roadmap_evidence_remains_visible_but_does_not_complete_v2(tmp_path) -> None:
-    repository, account_id = _repository(tmp_path)
     repository.save_pillar_roadmap_evidence(
         account_id=account_id,
         pillar="psychology",
         level=1,
         item_key="triggers",
         completed=True,
-        evidence_note="Legacy trigger and stop-condition notes.",
+        evidence_note="Earlier Psychology evidence.",
     )
-    service = FrameworkService(repository)
+    database = repository.database_path
+    repository.close()
 
-    current = next(item for item in service.roadmap_status(account_id) if item.pillar == "psychology")
-    legacy = service.legacy_psychology_roadmap_evidence(account_id)
+    with sqlite3.connect(database) as connection:
+        _rebuild_legacy_table(connection, "framework_period_reviews")
+        connection.execute("UPDATE framework_period_reviews SET rubric_version = 'legacy_v1'")
 
-    assert current.completed_items == 0
-    assert [item.item_key for item in legacy] == ["triggers"]
-    assert legacy[0].evidence_note == "Legacy trigger and stop-condition notes."
+    reopened = SQLiteJournalRepository(database)
+    reopened.initialize()
+
+    assert reopened.list_framework_period_reviews(account_id, "weekly") == []
+    assert reopened.list_pillar_roadmap_evidence(account_id) == []
 
 
 def test_greenfield_database_rejects_legacy_framework_schema(tmp_path) -> None:

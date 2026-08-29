@@ -13,7 +13,6 @@ from trading_journal.domain.review_taxonomy import canonical_violation_code, vio
 
 from trading_journal.infrastructure.sqlite_repository import (
     CURRENT_RUBRIC_VERSION,
-    LEGACY_RUBRIC_VERSION,
     PSYCHOLOGY_CRITERIA,
     RISK_CRITERIA,
     SYSTEM_CRITERIA,
@@ -34,11 +33,6 @@ PILLAR_NAMES = {"psychology": "Psychology", "risk": "Risk management", "system":
 GRADE_VALUES = {"pass": Decimal("100"), "partial": Decimal("50"), "fail": Decimal("0")}
 GOOD_PROCESS_SCORE = Decimal("70")
 REVIEWED_KINDS = frozenset({"approved_auto_review", "manual_review"})
-LEGACY_TRADE_WEIGHTS = {
-    "psychology": (("rule_adherence", Decimal("0.35")), ("impulse_control", Decimal("0.25")), ("emotional_control", Decimal("0.20")), ("patience_discipline", Decimal("0.20"))),
-    "risk": (("policy_adherence", Decimal("0.35")), ("position_size_accuracy", Decimal("0.20")), ("stop_discipline", Decimal("0.25")), ("exposure_limit_compliance", Decimal("0.20"))),
-    "system": (("setup_validity", Decimal("0.30")), ("context_alignment", Decimal("0.20")), ("entry_fidelity", Decimal("0.20")), ("invalidation_fidelity", Decimal("0.15")), ("management_exit_fidelity", Decimal("0.15"))),
-}
 TRADE_WEIGHTS = {
     "psychology": (("edge_execution", Decimal("0.35")), ("risk_acceptance", Decimal("0.25")), ("probability_mindset", Decimal("0.20")), ("outcome_independence", Decimal("0.20"))),
     "risk": (("policy_adherence", Decimal("0.35")), ("position_size_accuracy", Decimal("0.20")), ("stop_discipline", Decimal("0.25")), ("exposure_limit_compliance", Decimal("0.20"))),
@@ -85,12 +79,6 @@ ROADMAP_ITEMS: dict[str, dict[int, tuple[tuple[str, str], ...]]] = {
 }
 
 ROADMAP_LEVEL_NAMES: dict[int, str] = {1: "Define", 2: "Test", 3: "Execute", 4: "Measure", 5: "Optimize"}
-LEGACY_PSYCHOLOGY_ROADMAP_ITEMS = {
-    "triggers": "Document triggers and stop conditions",
-    "behaviour_rules": "Document no-revenge and no-chase rules",
-    "practice": "Record structured practice and recurring patterns",
-}
-
 # Items with no equivalent structured data anywhere in the app; the trader must self-certify these.
 _MANUAL_ROADMAP_ITEM_KEYS = frozenset({"probability_beliefs", "risk_acceptance_routine", "consistency_sample", "test"})
 
@@ -230,7 +218,6 @@ class PillarScore:
     component_scores: tuple[tuple[str, str | None], ...]
     detail: str
     scope: str
-    legacy_reviewed_total: int = 0
 
 
 @dataclass(frozen=True)
@@ -400,7 +387,7 @@ class FrameworkService:
         self._risk_event_cache: dict[int, dict[int, dict[str, object]]] = {}
         self._pillar_score_cache: dict[tuple[int, int, date | None], tuple[PillarScore, ...]] = {}
         self._reporting_time_basis_cache: str | None = None
-        self._framework_rule_settings_cache: FrameworkRuleSettingsView | None = None
+        self._framework_rule_settings_cache: dict[int, FrameworkRuleSettingsView] = {}
         self._mt5_accounts_cache: tuple[AccountListItem, ...] | None = None
 
     def trade_process_scores(self, account_id: int) -> tuple[TradeProcessScore, ...]:
@@ -717,27 +704,22 @@ class FrameworkService:
     def rolling_score_trend(
         self, account_id: int, *, window: int = 20
     ) -> tuple[tuple[str, str | None, str | None, str | None, str], ...]:
-        """Historical v2 rolling scores plus labeled legacy per-trade score evidence."""
+        """Historical rolling scores for the current Zone-aligned rubric."""
         account_scores, historical_events = self._account_trade_scores(account_id)
         points: list[tuple[str, str | None, str | None, str | None, str]] = []
         for index, trade in enumerate(account_scores):
             if trade.review_kind not in REVIEWED_KINDS:
                 continue
             closed = reporting_datetime(trade.exit_time, trade.server_utc_offset_minutes, self._reporting_time_basis()).isoformat()
-            if trade.rubric_version == CURRENT_RUBRIC_VERSION:
-                values_by_pillar = {
-                    item.pillar: item.score
-                    for item in self._pillar_scores_from_sample(
-                        account_scores[:index + 1], historical_events, window
-                    )
-                }
-                psychology = values_by_pillar["psychology"]
-                risk = values_by_pillar["risk"]
-                system = values_by_pillar["system"]
-            else:
-                psychology = trade.psychology_score
-                risk = trade.risk_score
-                system = trade.system_score
+            values_by_pillar = {
+                item.pillar: item.score
+                for item in self._pillar_scores_from_sample(
+                    account_scores[:index + 1], historical_events, window
+                )
+            }
+            psychology = values_by_pillar["psychology"]
+            risk = values_by_pillar["risk"]
+            system = values_by_pillar["system"]
             points.append((
                 closed,
                 psychology,
@@ -1138,14 +1120,6 @@ class FrameworkService:
             statuses.append(PillarRoadmapStatus(pillar, completed_count, total, current_level, tuple(items)))
         return tuple(statuses)
 
-    def legacy_psychology_roadmap_evidence(self, account_id: int) -> tuple[PillarRoadmapEvidenceView, ...]:
-        """Retain superseded Psychology roadmap notes as visible audit evidence."""
-        return tuple(
-            item
-            for item in self._repository.list_pillar_roadmap_evidence(account_id)
-            if item.pillar == "psychology" and item.item_key in LEGACY_PSYCHOLOGY_ROADMAP_ITEMS
-        )
-
     def save_pillar_roadmap_evidence(
         self,
         *,
@@ -1301,19 +1275,19 @@ class FrameworkService:
         # A reviewed trade is either a one-click approval of normalized MT5
         # evidence or a full Manual Review. Both use persisted criterion grades
         # and have equal weight in framework scoring and maturity gates.
-        all_reviewed = [item for item in scores if item.review_kind in REVIEWED_KINDS]
-        reviewed = [item for item in all_reviewed if item.rubric_version == CURRENT_RUBRIC_VERSION]
-        legacy_reviewed = sum(item.rubric_version == LEGACY_RUBRIC_VERSION for item in all_reviewed)
+        reviewed = [
+            item
+            for item in scores
+            if item.review_kind in REVIEWED_KINDS and item.rubric_version == CURRENT_RUBRIC_VERSION
+        ]
         sample = reviewed[-window:]
         automatic = sum(item.review_kind in {"auto_review", "approved_auto_review"} for item in scores)
         unreviewed = sum(item.review_kind not in REVIEWED_KINDS for item in scores)
         if not sample:
             detail = "No Zone-aligned post-trade review evidence yet."
-            if legacy_reviewed:
-                detail += f" {legacy_reviewed} legacy review(s) remain in history and are excluded from this v2 sample."
             return PillarScore(
                 pillar, None, None, "incomplete", 0, 0, unreviewed, automatic,
-                False, 0, (), detail, scope, legacy_reviewed,
+                False, 0, (), detail, scope,
             )
         pnl_by_trade = {item.trade_id: Decimal(item.net_pnl) for item in scores}
         components = self._period_components(pillar, sample, historical_events, pnl_by_trade)
@@ -1328,15 +1302,13 @@ class FrameworkService:
         raw = None if not available else sum((value * weight for value, weight in available), Decimal("0")) / weight_total
         hard_block = any(getattr(item, f"{pillar}_hard_block") for item in sample)
         critical = sum(1 for item in sample if self._is_critical_violation(pillar, item))
-        settings = self._cached_framework_rule_settings()
+        settings = self._cached_framework_rule_settings(sample[-1].account_id)
         reviewed_after_critical, last_critical_date = self._review_after_last_critical(pillar, sample)
         capped = critical >= settings.repeated_critical_threshold and not reviewed_after_critical
         score = None if raw is None else min(raw, Decimal("59")) if capped else raw
         status = "fail" if hard_block else "caution" if capped else "incomplete" if len(sample) < window else "ready"
         formatted = tuple((name, None if value is None else _decimal_text(Decimal(value))) for name, value in components)
         detail = f"{len(sample)} of {window} complete review(s) in this rolling sample."
-        if legacy_reviewed:
-            detail += f" {legacy_reviewed} legacy review(s) remain in history and are excluded from this v2 sample."
         if hard_block:
             detail += " A hard-rule failure overrides the numeric score."
         elif capped:
@@ -1348,7 +1320,7 @@ class FrameworkService:
         return PillarScore(
             pillar, None if score is None else _decimal_text(score), None if raw is None else _decimal_text(raw),
             status, len(reviewed), len(sample), unreviewed, automatic, hard_block, critical,
-            formatted, detail, scope, legacy_reviewed,
+            formatted, detail, scope,
         )
 
     def _period_components(
@@ -1555,15 +1527,26 @@ class FrameworkService:
 
     @staticmethod
     def _trade_pillar_score(assessment: PostTradeAssessmentView, pillar: str) -> Decimal:
-        weights = LEGACY_TRADE_WEIGHTS if assessment.rubric_version == LEGACY_RUBRIC_VERSION else TRADE_WEIGHTS
-        return sum((GRADE_VALUES[assessment.criterion_grades[key]] * weight for key, weight in weights[pillar]), Decimal("0"))
+        if assessment.rubric_version != CURRENT_RUBRIC_VERSION:
+            raise ValueError("Unsupported three-pillar rubric version")
+        return sum(
+            (
+                GRADE_VALUES[assessment.criterion_grades[key]] * weight
+                for key, weight in TRADE_WEIGHTS[pillar]
+            ),
+            Decimal("0"),
+        )
 
     @staticmethod
     def _pillar_score_from_grades(
         grades: dict[str, str], pillar: str, rubric_version: str = CURRENT_RUBRIC_VERSION
     ) -> Decimal:
-        weights = LEGACY_TRADE_WEIGHTS if rubric_version == LEGACY_RUBRIC_VERSION else TRADE_WEIGHTS
-        return sum((GRADE_VALUES[grades[key]] * weight for key, weight in weights[pillar]), Decimal("0"))
+        if rubric_version != CURRENT_RUBRIC_VERSION:
+            raise ValueError("Unsupported three-pillar rubric version")
+        return sum(
+            (GRADE_VALUES[grades[key]] * weight for key, weight in TRADE_WEIGHTS[pillar]),
+            Decimal("0"),
+        )
 
     @staticmethod
     def _quality_status(overall: Decimal, hard_rule_status: str) -> str:
@@ -1613,7 +1596,7 @@ class FrameworkService:
         if trades is None:
             trades = tuple(self._repository.list_closed_trades_for_review(account_id))
             self._account_trade_cache[account_id] = trades
-        policies = self._repository.list_account_risk_policies(account_id)
+        active_policy = self._repository.get_active_risk_policy(account_id)
         funded = self._repository.get_account_funded_capital(account_id)
         capital = Decimal(funded or "0")
         state = _RiskTimelineState(balance=capital, peak=capital)
@@ -1635,24 +1618,26 @@ class FrameworkService:
         if funded is None:
             return events, state
 
+        # Re-evaluate the entire account history through the current policy.
+        # Policy IDs saved on trades and assessments remain audit metadata.
         timeline: list[tuple[datetime, int, int, str, object]] = []
-        timeline.extend(
-            (self._as_utc_datetime(item.created_at), 0, item.id, "policy", item)
-            for item in policies
-        )
         for trade in trades:
             timeline.append((self._as_utc_datetime(trade.exit_time), 1, trade.id, "close", trade))
             timeline.append((self._as_utc_datetime(trade.entry_time), 2, trade.id, "entry", trade))
         cutoff = None if as_of is None else (
             as_of.replace(tzinfo=timezone.utc) if as_of.tzinfo is None else as_of.astimezone(timezone.utc)
         )
+        if active_policy is not None:
+            effective_from = min(
+                (occurred_at for occurred_at, *_ in timeline),
+                default=self._as_utc_datetime(active_policy.created_at),
+            )
+            self._apply_risk_policy_event(state, active_policy, effective_from)
 
         for occurred_at, _, _, kind, payload in sorted(timeline, key=lambda item: item[:3]):
             if cutoff is not None and occurred_at > cutoff:
                 continue
-            if kind == "policy":
-                self._apply_risk_policy_event(state, payload, occurred_at)  # type: ignore[arg-type]
-            elif kind == "entry":
+            if kind == "entry":
                 trade = payload
                 assert isinstance(trade, ClosedTradeReviewItem)
                 self._apply_risk_entry_event(state, events[trade.id], trade, occurred_at)
@@ -1869,8 +1854,7 @@ class FrameworkService:
 
     @staticmethod
     def _risk_policy_for_trade(assessment, trade, policies, active_policy):  # type: ignore[no-untyped-def]
-        policy_id = (assessment.risk_policy_id if assessment is not None else None) or trade.auto_risk_policy_id
-        return policies.get(policy_id) if policy_id is not None else active_policy
+        return active_policy
 
     @staticmethod
     def _standard_risk_amount(funded: str | None, policy: AccountRiskPolicyView | None) -> Decimal:
@@ -1964,7 +1948,7 @@ class FrameworkService:
         observed_stop = True if any(value is True for value in observed_stops) else False if observed_stops and all(value is False for value in observed_stops) else None
         initial_reward = _decimal_text(reward_total) if all_rewards and reward_total > 0 else None
         initial_rr = _decimal_text(reward_total / specific_total) if all_specific and all_rewards and specific_total > 0 else None
-        policy = policies.get(trade.auto_risk_policy_id) or active_policy
+        policy = active_policy
         if not member_sources:
             return AutoRiskEvidence("unavailable", "No usable automatic risk source is available.", specific, real_loss, pretrade, basis, confidence, initial_reward, initial_rr, observed_stop, None if policy is None else policy.version, None if policy is None else policy.id)
         source_description = {
@@ -2011,10 +1995,10 @@ class FrameworkService:
             self._reporting_time_basis_cache = self._repository.get_journal_settings().reporting_time_basis
         return self._reporting_time_basis_cache
 
-    def _cached_framework_rule_settings(self) -> FrameworkRuleSettingsView:
-        if self._framework_rule_settings_cache is None:
-            self._framework_rule_settings_cache = self._repository.get_framework_rule_settings()
-        return self._framework_rule_settings_cache
+    def _cached_framework_rule_settings(self, account_id: int) -> FrameworkRuleSettingsView:
+        if account_id not in self._framework_rule_settings_cache:
+            self._framework_rule_settings_cache[account_id] = self._repository.get_framework_rule_settings(account_id)
+        return self._framework_rule_settings_cache[account_id]
 
     def _cached_mt5_accounts(self) -> tuple[AccountListItem, ...]:
         if self._mt5_accounts_cache is None:

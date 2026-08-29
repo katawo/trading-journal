@@ -107,9 +107,11 @@ Không bằng chứng rủi ro tự động nào tự nó được tính vào đ
 
 Ứng dụng so sánh số tiền khả dụng với chính sách rủi ro tối đa của tài khoản và gắn nhãn trong chính sách, vượt chính sách hoặc chưa khả dụng. Nhập **Số tiền rủi ro thực tế** đã xác minh khi số tiền tự động không phải bằng chứng tốt nhất. Nó thay thế số tiền tự động trong so sánh chính sách của giao dịch logic nhưng **không** viết lại các vị thế MT5 thành viên hoặc kết quả giao dịch logic tổng hợp dùng cho theo dõi giới hạn tài khoản.
 
+Chính sách Rủi ro đang hoạt động là tiêu chuẩn phân tích hiện tại cho toàn bộ lịch sử của tài khoản. Việc lưu chính sách thay thế cần xác nhận và tính lại các chỉ số Rủi ro/R dẫn xuất; các phiên bản cùng ID chính sách đính kèm vẫn được giữ để kiểm toán, còn đánh giá, lịch sử sửa đổi và bản chụp đánh giá tuần/tháng đã lưu không đổi. Vốn được cấp phải được xác nhận khi tạo tài khoản và không thể thay đổi sau đó.
+
 ### Theo dõi giới hạn tự động và đánh giá shutdown
 
-Giới hạn lỗ ngày, lỗ tuần, drawdown và chuỗi lỗ được tính từ giao dịch logic đã đóng theo thứ tự đóng cuối cùng. Trạng thái drawdown và chuỗi lỗ đặt lại tại ranh giới lịch báo cáo đã cấu hình. Drawdown tối đa ghi nhận mức sụt giảm lớn nhất trong kỳ, nên việc phục hồi không xóa vi phạm trước ranh giới reset. Thay đổi policy chỉ về ngưỡng sẽ giữ nguyên chỉ số tích lũy nhưng đánh giá lại vi phạm từ thời điểm lưu policy mới; nó không hồi tố đánh dấu hoặc bỏ qua giao dịch đã vào trước thay đổi. Khi một giao dịch logic lần đầu chạm giới hạn, ứng dụng ghi cảnh báo **Đã chạm theo dõi rủi ro**. Giao dịch đó không tự động là giao dịch thất bại: nhật ký không thể suy ra ý định trader hoặc điều đã biết khi lệnh còn mở.
+Giới hạn lỗ ngày, lỗ tuần, drawdown và chuỗi lỗ được tính từ giao dịch logic đã đóng theo thứ tự đóng cuối cùng. Trạng thái drawdown và chuỗi lỗ đặt lại tại ranh giới lịch báo cáo đã cấu hình. Drawdown tối đa ghi nhận mức sụt giảm lớn nhất trong kỳ, nên việc phục hồi không xóa vi phạm trước ranh giới reset. Khi chính sách thay đổi, toàn bộ lịch sử tài khoản được đánh giá lại theo phiên bản đang hoạt động. Khi một giao dịch logic lần đầu chạm giới hạn, ứng dụng ghi cảnh báo **Đã chạm theo dõi rủi ro**. Giao dịch đó không tự động là giao dịch thất bại: nhật ký không thể suy ra ý định trader hoặc điều đã biết khi lệnh còn mở.
 
 Với giao dịch logic có lần vào sớm nhất sau thời điểm đóng cuối cùng của giao dịch logic trước đó đã chạm giới hạn, và lần vào vẫn thuộc cùng kỳ theo dõi áp dụng, ứng dụng hiện ứng viên **Đánh giá shutdown**. Đây là lời nhắc kiểm tra chuỗi sự kiện, không phải kết luận. Chỉ chọn **Giao dịch sau shutdown cứng** khi đánh giá sau giao dịch xác nhận lệnh vào đã vi phạm quy tắc dừng của bạn và quy tắc cứng này được bật trong **Cài đặt → Quy tắc đánh giá** lúc lưu. Chỉ sự kiện đã xác nhận và được bật mới đổi trạng thái quy tắc cứng thành `KHÔNG ĐẠT`.
 
@@ -117,7 +119,7 @@ Với giao dịch logic có lần vào sớm nhất sau thời điểm đóng cu
 
 Mở **Định hướng → Đánh giá** và chọn một giao dịch logic từ **Cần xem xét**, **Đã đánh giá tự động** hoặc **Đã đánh giá**. Bất kỳ bằng chứng rủi ro tự động nào cũng có thể được chấp nhận bằng một nhấp chuột, hoặc bạn có thể chấm đủ 12 tiêu chí hiện tại. Một giao dịch logic đã gộp chỉ đóng góp một đánh giá vào mẫu trượt, không phải một đánh giá cho mỗi vị thế thành viên.
 
-Rubric hiện tại có mã `zone_v2`. Các đánh giá 13 tiêu chí sẵn có được giữ là `legacy_v1`: điểm gốc vẫn xuất hiện trong lịch sử và xu hướng, nhưng không tham gia mẫu Theo dõi, mức sẵn sàng, huấn luyện hoặc lộ trình hiện tại. Khi sửa một đánh giá cũ, ứng dụng lưu trữ bản gốc và tạo một đánh giá `zone_v2` mới.
+Rubric duy nhất được hỗ trợ là `zone_v2`. Trong lần khởi động đầu tiên sau khi nâng cấp, các đánh giá 13 tiêu chí và lịch sử sửa đổi được chuyển đổi tự động: tám điểm Rủi ro/Hệ thống không đổi được giữ lại, bốn tiêu chí Tâm lý mới được đặt mặc định trung lập `Một phần`, và tiêu chí invalidation đã bỏ được loại đi. Cơ sở dữ liệu được sao lưu trước khi chuyển đổi. Các đánh giá giai đoạn, trọng tâm coaching và mục lộ trình Tâm lý cũ không tương thích sẽ bị xóa để không còn cách tính v1 hoạt động.
 
 | Đánh giá | Giá trị số | Dùng khi |
 |---|---:|---|
@@ -229,9 +231,9 @@ Thẻ lý do cũng làm mẫu hình lặp lại hiển thị. Thẻ nghiêm tr�
 
 ## 6. Cách tính theo dõi trượt
 
-Trong **Định hướng → Theo dõi**, chọn cửa sổ trượt từ 10 đến 100 giao dịch (thanh trượt, bước 5; ô xem gọn trên Dashboard luôn hiển thị cửa sổ cố định 20 giao dịch). Điểm trụ cột, mức sẵn sàng, vấn đề lặp lại, huấn luyện và cổng lộ trình chỉ dùng các đánh giá `zone_v2` Tự động đã duyệt và Thủ công gần nhất. Đánh giá cũ vẫn xuất hiện trong lịch sử và xu hướng, đồng thời được báo là đã loại khỏi mẫu hiện tại. Đánh giá nhanh vẫn hiển thị riêng dưới dạng độ phủ bằng chứng rủi ro trên các giao dịch logic đã đóng gần nhất của tài khoản. Bản nhập **Đang chờ phê duyệt** hoặc **Cần đánh giá** nằm ngoài mẫu cho đến khi được phê duyệt hoặc đánh giá chuyên sâu. Cửa sổ nhỏ hơn sẽ đạt ngưỡng Cảnh báo do vi phạm nghiêm trọng lặp lại sớm hơn cửa sổ lớn hơn, vì ngưỡng này là một số đếm cố định, không phải tỷ lệ phần trăm của cửa sổ.
+Trong **Định hướng → Theo dõi**, chọn cửa sổ trượt từ 10 đến 100 giao dịch (thanh trượt, bước 5; ô xem gọn trên Dashboard luôn hiển thị cửa sổ cố định 20 giao dịch). Điểm trụ cột, mức sẵn sàng, vấn đề lặp lại, huấn luyện và cổng lộ trình dùng các đánh giá `zone_v2` Tự động đã duyệt và Thủ công gần nhất. Đánh giá nhanh vẫn hiển thị riêng dưới dạng độ phủ bằng chứng rủi ro trên các giao dịch logic đã đóng gần nhất của tài khoản. Bản nhập **Đang chờ phê duyệt** hoặc **Cần đánh giá** nằm ngoài mẫu cho đến khi được phê duyệt hoặc đánh giá chuyên sâu. Cửa sổ nhỏ hơn sẽ đạt ngưỡng Cảnh báo do vi phạm nghiêm trọng lặp lại sớm hơn cửa sổ lớn hơn, vì ngưỡng này là một số đếm cố định, không phải tỷ lệ phần trăm của cửa sổ.
 
-Xu hướng điểm giữ chuỗi rubric hiện tại đồng bộ với cửa sổ trượt đã chọn. Chuỗi cũ được gắn nhãn riêng và hiển thị điểm trụ cột gốc của từng giao dịch cũ, nên các công thức theo dõi khác nhau không bị trộn. Số lượng hoàn tất tuần và tháng cũng chỉ tính đánh giá giao dịch v2; nếu kỳ đó đã có phản hồi cũ, phản hồi này vẫn nằm trong lịch sử và có thể lưu một phản hồi v2 riêng sau khi mọi giao dịch trong kỳ có đánh giá hiện tại.
+Xu hướng điểm giữ chuỗi theo Zone đồng bộ với cửa sổ trượt đã chọn. Số lượng hoàn tất tuần và tháng chỉ tính đánh giá giao dịch v2. Các snapshot đánh giá giai đoạn cũ bị xóa trong lần chuyển đổi vì điểm của chúng được tính theo rubric khác.
 
 Theo dõi còn có **Kỳ phân tích** (Tháng này, 90 ngày qua, Tất cả thời gian hoặc Tùy chỉnh). Kỳ này chỉ thay đổi các biểu đồ mô tả; không thay đổi điểm trượt, mức sẵn sàng hoặc cổng lộ trình. Các góc nhìn Quy trình & kết quả, Rủi ro và Hệ thống & bối cảnh tách riêng chất lượng quy trình khỏi kết quả, độ phủ đánh giá khỏi bằng chứng chính sách, và quan sát bối cảnh khỏi kết luận nhân quả. Giao dịch không có 1R chuẩn dùng được bị loại khỏi biểu đồ R và được báo là thiếu bằng chứng.
 
@@ -316,7 +318,7 @@ Ba trụ cột tiến song song:
 
 Lộ trình sẵn sàng tiến song song ở cả ba trụ cột. Bằng chứng **Tâm lý** tập trung vào hành vi; **Quản lý rủi ro** là bằng chứng chính sách và khối lượng theo tài khoản; **Hệ thống giao dịch** là quy tắc chiến lược, ví dụ và bằng chứng backtest.
 
-Các ghi chú lộ trình Tâm lý trước v2 vẫn hiển thị trong **Bằng chứng lộ trình Tâm lý cũ**. Chúng chỉ là lịch sử kiểm toán và không đáp ứng yêu cầu mới về tư duy xác suất, chấp nhận rủi ro hoặc thực hành theo mẫu cố định.
+Các ghi chú lộ trình Tâm lý trước v2 bị xóa trong lần chuyển đổi vì không đáp ứng yêu cầu mới về tư duy xác suất, chấp nhận rủi ro hoặc thực hành theo mẫu cố định.
 
 Hầu hết các mục trong lộ trình được tự động phát hiện từ dữ liệu đã lưu sẵn ở nơi khác trong nhật ký, không cần thao tác thủ công:
 

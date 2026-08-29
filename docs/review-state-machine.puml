@@ -38,8 +38,8 @@ note bottom of Reviewed
   Both Auto and Manual count toward
   current pillar scores / readiness roadmap
   when rubric_version = zone_v2.
-  legacy_v1 reviews remain in history/trends
-  but are excluded from current monitoring.
+  Earlier rubric assessments are converted once
+  to zone_v2 with neutral new Psychology grades.
   Only Manual can record violation tags
   or hard-rule events.
 end note

@@ -109,9 +109,11 @@ Automatic risk evidence enters the Psychology, Risk management, and Trading syst
 
 The app compares the available amount with the account's maximum-risk policy and labels it within policy, over policy, or unavailable. Enter a verified **Actual risk amount** during review when the automatic amount is not the best evidence. It replaces the automatic amount for that logical trade's policy comparison, but it does **not** rewrite imported member positions or the aggregate logical-trade outcome used for account-limit monitoring.
 
+The active Risk policy is the current analytical lens for the account's complete history. Saving a replacement requires confirmation and recalculates derived Risk and R analytics; policy versions and attached IDs remain for audit, while saved assessments, revisions, and period-review snapshots remain unchanged. Funded capital is confirmed at account creation and is immutable thereafter.
+
 ### Automatic limit monitoring and shutdown review
 
-Daily loss, weekly loss, drawdown, and losing-streak limits are calculated from completed logical trades in final-close order. Drawdown and streak state reset at their configured reporting-calendar boundary. Maximum drawdown records the worst decline in that period, so a recovery does not clear its breach before the boundary. A threshold-only policy change preserves the accumulated metric but reevaluates its breach from the new policy's save time; it never retroactively marks or excuses a trade entered before that change. When a logical trade first reaches a limit, the app records a **Risk monitor reached** warning. That trade is not automatically a failed trade: the journal cannot infer the trader's intention or what was known while an order was open.
+Daily loss, weekly loss, drawdown, and losing-streak limits are calculated from completed logical trades in final-close order. Drawdown and streak state reset at their configured reporting-calendar boundary. Maximum drawdown records the worst decline in that period, so a recovery does not clear its breach before the boundary. A confirmed policy replacement reevaluates the complete account history under the new active thresholds and reset rules. When a logical trade first reaches a limit, the app records a **Risk monitor reached** warning. That trade is not automatically a failed trade: the journal cannot infer the trader's intention or what was known while an order was open.
 
 For a later logical trade whose earliest entry is after an earlier logical trade's final close reached a limit, and whose entry is inside the same applicable monitoring period, the app shows a **Shutdown review** candidate. It is a prompt to inspect the sequence, not a verdict. Select **Trading after hard shutdown** only when your post-trade review confirms that the entry broke your own stop rule and that hard rule is enabled in **Settings → Review rules** when the assessment is saved. Only that confirmed, enabled event changes the Hard-rule status to `FAIL`.
 
@@ -119,7 +121,7 @@ For a later logical trade whose earliest entry is after an earlier logical trade
 
 Open **Bearings → Review** and choose a logical trade from **Requires review**, **Auto-reviewed**, or **Reviewed**. Any automatic risk evidence can be accepted in one click, or you can rate all 12 current criteria in a full assessment. A grouped logical trade contributes one review to the rolling sample, not one review per member position.
 
-The current rubric is identified as `zone_v2`. Existing 13-criterion reviews remain `legacy_v1`: their original scores stay visible in trade history and trends, but they do not enter the current Monitor, readiness, coaching, or roadmap sample. Correcting a legacy review archives the original and creates a new `zone_v2` review.
+The only supported rubric is `zone_v2`. On the first startup after upgrading, existing 13-criterion assessments and their revisions are converted automatically: the eight unchanged Risk/System grades are retained, the four new Psychology criteria are set to neutral `Partial`, and the removed invalidation criterion is discarded. The database is backed up before conversion. Incompatible old period reviews, coaching focuses, and Psychology roadmap items are removed so no v1 scoring remains active.
 
 | Rating | Numeric value | Use it when |
 |---|---:|---|
@@ -231,9 +233,9 @@ Reason tags also make recurring patterns visible. Psychology critical tags inclu
 
 ## 6. How rolling monitoring is calculated
 
-In **Bearings → Monitor**, choose a rolling window from 10 to 100 trades (slider, step 5; the Dashboard's compact widget always shows a fixed 20-trade snapshot). Pillar scores, readiness, recurring issues, coaching, and roadmap gates use only the latest approved `zone_v2` Auto and Manual reviews. Legacy reviews remain visible in history and trends and are reported as excluded from the current sample. Quick Risk Checks remain visible separately as selected-account risk-evidence coverage over the latest closed logical trades. A smaller reviewed window reaches the repeated-critical-violation Caution threshold sooner than a larger one, since that threshold is a fixed count, not a percentage of the window.
+In **Bearings → Monitor**, choose a rolling window from 10 to 100 trades (slider, step 5; the Dashboard's compact widget always shows a fixed 20-trade snapshot). Pillar scores, readiness, recurring issues, coaching, and roadmap gates use the latest approved `zone_v2` Auto and Manual reviews. Quick Risk Checks remain visible separately as selected-account risk-evidence coverage over the latest closed logical trades. A smaller reviewed window reaches the repeated-critical-violation Caution threshold sooner than a larger one, since that threshold is a fixed count, not a percentage of the window.
 
-The score trend keeps the current-rubric series aligned with the selected rolling window. Legacy series remain separately labeled and show each legacy trade's original pillar scores, so unlike monitoring formulas are never blended. Weekly and monthly completion counts also require v2 trade reviews; when a legacy reflection already exists for a period, it remains in history and a separate v2 reflection can be saved after every trade in that period has a current review.
+The score trend keeps the Zone-aligned series aligned with the selected rolling window. Weekly and monthly completion counts require v2 trade reviews. Old period-review snapshots are removed during the one-time conversion because their scores were calculated from a different rubric.
 
 The Monitor also has an **Analysis period** (this month, last 90 days, all time, or custom). It changes descriptive charts only; it never changes a rolling score, readiness, or roadmap gate. Its Overview highlights the next evidence-led actions, while the Process & outcomes, Risk, and System & context views separate process quality from outcome, review coverage from policy evidence, and strategy/context observations from causal claims. Outcome comparisons use the same standard 1R convention as the Performance dashboard. Trades without a usable standard 1R are excluded from R charts and reported as missing evidence.
 
@@ -320,7 +322,7 @@ The three pillars progress in parallel:
 
 The readiness roadmap progresses in parallel across the three pillars. **Psychology** evidence is behaviour-focused; **Risk management** evidence is account-specific policy and sizing evidence; **Trading system** evidence is strategy rules, examples, and backtest evidence.
 
-Superseded Psychology roadmap notes from before v2 remain visible under **Legacy Psychology roadmap evidence**. They are audit history only and do not satisfy the new probability-mindset, risk-acceptance, or fixed-sample evidence requirements.
+Psychology roadmap notes from before v2 are removed during the one-time conversion because they do not satisfy the probability-mindset, risk-acceptance, or fixed-sample evidence requirements.
 
 Most roadmap items are detected automatically from data already saved elsewhere in the journal, and never need a manual click:
 
@@ -333,6 +335,6 @@ Only the items with no equivalent structured data anywhere in the app stay self-
 
 ## 9. Data limits
 
-The post-trade MT5 bridge supplies completed positions only. Monitoring replays policy saves, logical-trade entries, and logical final closes in UTC order. A policy becomes effective at its saved timestamp; the server UTC offset captured with that policy defines its reporting day at the transition. Trades closed before the account's first saved policy remain available for Dashboard and per-trade audit, but are excluded from time-effective limit monitoring and Shutdown candidates. A logical trade contributes once, at its final member close, while a Shutdown candidate is frozen at its earliest member entry.
+The post-trade MT5 bridge supplies completed positions only. Monitoring replays logical-trade entries and logical final closes in UTC order through the account's active policy. The server UTC offset captured with that active policy defines its reporting calendar across the recalculation. A logical trade contributes once, at its final member close, while a Shutdown candidate is frozen at its earliest member entry. Prior policy timestamps and attached policy IDs remain audit evidence; they do not select the current analytical policy.
 
 The bridge can retrospectively monitor realized R, daily/weekly limits, drawdown, loss streak, exported entry-stop information, and account-balance snapshots. A separate live snapshot feed shows entry-to-current-stop open risk and unprotected positions. Market-price movement alone does not change that risk; changing the stop or position volume does, and a breakeven or profit-locking stop contributes zero risk. This feed is temporary operational state: it never becomes post-trade evidence, historical correlation proof, intratrade stop-adjustment history, mental-state evidence, planned intent, or a real original stop for a profitable no-SL export. Those limitations are why the journal combines automatic evidence with a deliberate human post-trade assessment.
