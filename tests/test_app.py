@@ -429,7 +429,8 @@ def test_ongoing_page_renders_its_auto_refreshing_workspace(monkeypatch, tmp_pat
     app.switch_page("app_pages/ongoing.py").run()
 
     assert not app.exception
-    assert any("Ongoing positions" in item.value for item in app.markdown)
+    assert [item.value for item in app.subheader] == ["Ongoing positions"]
+    assert any('class="dashboard-kicker">Live risk monitor<' in item.value for item in app.markdown)
     assert any("separate from closed-trade reporting" in item.value for item in app.caption)
     assert any("Add and select an MT5 account" in item.value for item in app.info)
 
@@ -451,6 +452,16 @@ def test_ongoing_page_does_not_claim_positions_are_flat_before_the_first_snapsho
     app.switch_page("app_pages/ongoing.py").run()
 
     assert not app.exception
+    page_markup = "\n".join(item.value for item in app.markdown)
+    assert "#### Exposure snapshot" in page_markup
+    assert "#### Current positions" in page_markup
+    assert any("Highest-risk and unprotected positions remain first" in item.value for item in app.caption)
+    assert {item.label for item in app.metric} >= {
+        "Unprotected",
+        "Known open risk",
+        "Open positions",
+        "Unrealized P&L",
+    }
     assert any("Position data will appear after the first live MT5 snapshot" in item.value for item in app.caption)
     assert not any("No open positions in the latest live snapshot" in item.value for item in app.info)
 

@@ -657,6 +657,22 @@ def apply_application_style() -> None:
         h1 { font-size: 2.8rem !important; margin-bottom: 0.15rem !important; }
         h2 { margin-top: 1.35rem !important; }
         .stButton > button { border-radius: 6px; font-weight: 650; }
+        .dashboard-kicker {
+            color: var(--st-red-color, #c73545);
+            font-size: 0.68rem;
+            font-weight: 700;
+            letter-spacing: 0.18em;
+            text-transform: uppercase;
+        }
+        .dashboard-period {
+            color: var(--st-gray-color, #667168);
+            font-size: 0.68rem;
+            font-weight: 600;
+            letter-spacing: 0.04em;
+            padding: 0.1rem 0 0.35rem;
+            text-align: right;
+            text-transform: uppercase;
+        }
         div.st-key-trade-compass-brand { flex-direction: row !important; align-items: center !important; gap: 0.65rem; }
         div.st-key-trade-compass-brand [data-testid="stImage"] { flex: 0 0 auto; }
         div.st-key-trade-compass-brand h1 { margin: 0 !important; }

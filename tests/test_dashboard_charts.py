@@ -134,6 +134,20 @@ def test_direction_matrices_stack_without_a_fixed_mobile_width(monkeypatch) -> N
     assert "border-top: 1px solid" in mobile_css
 
 
+def test_dashboard_visual_vocabulary_styles_kickers_and_period_metadata(monkeypatch) -> None:
+    rendered: list[str] = []
+    monkeypatch.setattr(journal_app.st, "html", rendered.append)
+
+    journal_app.apply_application_style()
+
+    css = rendered[0]
+    period_css = css.split(".dashboard-period {", maxsplit=1)[1].split("}", maxsplit=1)[0]
+    assert ".dashboard-kicker" in css
+    assert "letter-spacing: 0.18em;" in css
+    assert "text-align: right;" in period_css
+    assert "text-transform: uppercase;" in period_css
+
+
 def test_dashboard_metric_tones_only_color_clear_performance_signals() -> None:
     assert journal_app._signed_metric_tone("12.5") == "positive"
     assert journal_app._signed_metric_tone(Decimal("-0.01")) == "negative"

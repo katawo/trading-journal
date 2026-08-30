@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from html import escape
 
 import pandas as pd
 import streamlit as st
@@ -26,56 +27,78 @@ _METRIC_COLOR_TO_TONE: dict[str, AccentMetricTone] = {
 @st.fragment(run_every=ONGOING_REFRESH_INTERVAL_SECONDS)
 def render_ongoing_positions_page(repo: SQLiteJournalRepository) -> None:
     account = repo.get_active_mt5_account()
-    st.markdown(tr("#### Ongoing positions"))
-    st.caption(tr("Live exposure is read-only and separate from closed-trade reporting, reviews, and framework scores."))
+    _render_header(account)
     if account is None:
         st.info(tr("Add and select an MT5 account in Settings to monitor live positions."))
         return
     report = LivePositionService(repo).build_report(account.id)
     _render_status(report.status, report.detail)
     snapshot_text = "No snapshot" if report.snapshot_time is None else report.snapshot_time.strftime("%Y-%m-%d %H:%M:%S UTC")
-    st.caption(f"Snapshot: {snapshot_text} · This workspace refreshes every {ONGOING_REFRESH_INTERVAL_SECONDS} seconds.")
+    st.markdown(
+        '<div class="dashboard-period">'
+        f'{escape(tr("Live"))} · {escape(tr("Snapshot"))} {escape(tr(snapshot_text))} · '
+        f'{escape(tr("Refresh"))} {ONGOING_REFRESH_INTERVAL_SECONDS}s'
+        "</div>",
+        unsafe_allow_html=True,
+    )
     risk_value, risk_delta, risk_color, risk_description = _risk_metric(report)
     unprotected_value, unprotected_delta, unprotected_color = _unprotected_metric(report)
     pnl_value, pnl_delta, pnl_color = _pnl_metric(report, account.account_currency)
-    with st.container(horizontal=True, gap="small"):
-        render_accent_metric(
-            tr("Unprotected"),
-            unprotected_value,
-            key="ongoing-unprotected",
-            tone=_METRIC_COLOR_TO_TONE[unprotected_color],
-            delta=unprotected_delta,
-            delta_color=unprotected_color,
-            delta_arrow="off",
-        )
-        render_accent_metric(
-            tr("Known open risk"),
-            risk_value,
-            key="ongoing-known-open-risk",
-            tone=_METRIC_COLOR_TO_TONE[risk_color],
-            delta=risk_delta,
-            delta_color=risk_color,
-            delta_arrow="off",
-            delta_description=risk_description,
-        )
-        render_accent_metric(
-            tr("Open positions"),
-            None if report.snapshot_time is None else str(len(report.positions)),
-            key="ongoing-open-positions",
-            tone="neutral",
-        )
-        render_accent_metric(
-            tr("Unrealized P&L"),
-            pnl_value,
-            key="ongoing-unrealized-pnl",
-            tone=_METRIC_COLOR_TO_TONE[pnl_color],
-            delta=pnl_delta,
-            delta_color=pnl_color,
-            delta_arrow="off",
-            delta_description="floating" if report.snapshot_time is not None else None,
-        )
+    with st.container(border=True, key="ongoing-exposure-snapshot"):
+        st.markdown(f"#### {tr('Exposure snapshot')}")
+        st.caption(tr("Action-first live account risk. Floating values do not affect closed-trade reporting."))
+        with st.container(horizontal=True, gap="small"):
+            render_accent_metric(
+                tr("Unprotected"),
+                unprotected_value,
+                key="ongoing-unprotected",
+                tone=_METRIC_COLOR_TO_TONE[unprotected_color],
+                delta=unprotected_delta,
+                delta_color=unprotected_color,
+                delta_arrow="off",
+            )
+            render_accent_metric(
+                tr("Known open risk"),
+                risk_value,
+                key="ongoing-known-open-risk",
+                tone=_METRIC_COLOR_TO_TONE[risk_color],
+                delta=risk_delta,
+                delta_color=risk_color,
+                delta_arrow="off",
+                delta_description=risk_description,
+            )
+            render_accent_metric(
+                tr("Open positions"),
+                None if report.snapshot_time is None else str(len(report.positions)),
+                key="ongoing-open-positions",
+                tone="neutral",
+                delta=tr("Latest snapshot") if report.snapshot_time is not None else tr("Unavailable"),
+                delta_color="gray",
+                delta_arrow="off",
+            )
+            render_accent_metric(
+                tr("Unrealized P&L"),
+                pnl_value,
+                key="ongoing-unrealized-pnl",
+                tone=_METRIC_COLOR_TO_TONE[pnl_color],
+                delta=pnl_delta,
+                delta_color=pnl_color,
+                delta_arrow="off",
+                delta_description=tr("Floating") if report.snapshot_time is not None else None,
+            )
     _render_positions(report, account)
     _render_incidents(repo, account)
+
+
+def _render_header(account: AccountListItem | None) -> None:
+    st.markdown(
+        f'<div class="dashboard-kicker">{escape(tr("Live risk monitor"))}</div>',
+        unsafe_allow_html=True,
+    )
+    st.subheader(tr("Ongoing positions"))
+    if account is not None:
+        st.caption(f"{account.display_name} · {account.login} · {account.account_currency} · {account.broker_server}")
+    st.caption(tr("Live exposure is read-only and separate from closed-trade reporting, reviews, and framework scores."))
 
 
 def _render_status(status: str, detail: str) -> None:
@@ -137,29 +160,31 @@ def _pnl_metric(report, currency: str) -> tuple[str | None, str, str]:
 
 
 def _render_positions(report, account: AccountListItem) -> None:
-    st.markdown(tr("##### Current positions"))
-    if report.snapshot_time is None:
-        st.caption(tr("Position data will appear after the first live MT5 snapshot."))
-        return
-    if not report.positions:
-        st.info(tr("No open positions in the latest live snapshot."))
-        return
-    rows = []
-    for item in sorted(report.positions, key=_position_priority):
-        position = item.position
-        rows.append({
-            "Position": position.position_id,
-            "Symbol": position.symbol,
-            "Side": position.direction.title(),
-            "Volume": position.volume,
-            "Entry": position.entry_price,
-            "Current": position.current_price,
-            "Stop": position.stop_price or "—",
-            "Open risk": _risk_label(item.protected, item.risk_r),
-            "Unrealized P&L": format_currency(position.net_unrealized_pnl, account.account_currency),
-            "Magic": position.magic_number or "—",
-        })
-    st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+    with st.container(border=True, key="ongoing-current-positions"):
+        st.markdown(f"#### {tr('Current positions')}")
+        st.caption(tr("Highest-risk and unprotected positions remain first."))
+        if report.snapshot_time is None:
+            st.caption(tr("Position data will appear after the first live MT5 snapshot."))
+            return
+        if not report.positions:
+            st.info(tr("No open positions in the latest live snapshot."))
+            return
+        rows = []
+        for item in sorted(report.positions, key=_position_priority):
+            position = item.position
+            rows.append({
+                "Position": position.position_id,
+                "Symbol": position.symbol,
+                "Side": position.direction.title(),
+                "Volume": position.volume,
+                "Entry": position.entry_price,
+                "Current": position.current_price,
+                "Stop": position.stop_price or "—",
+                "Open risk": _risk_label(item.protected, item.risk_r),
+                "Unrealized P&L": format_currency(position.net_unrealized_pnl, account.account_currency),
+                "Magic": position.magic_number or "—",
+            })
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
 
 
 def _position_priority(item) -> tuple[int, Decimal, str, str]:
@@ -181,15 +206,17 @@ def _render_incidents(repo: SQLiteJournalRepository, account: AccountListItem) -
     incidents = repo.list_live_position_incidents(account.id)
     if not incidents:
         return
-    st.markdown(tr("##### Live-risk incidents"))
-    frame = pd.DataFrame([
-        {
-            "Time": incident.occurred_at,
-            "Event": incident.category.replace("_", " ").title(),
-            "State": incident.state.title(),
-            "Position": incident.position_id or "Account",
-            "Detail": incident.detail,
-        }
-        for incident in incidents
-    ])
-    st.dataframe(frame, hide_index=True, width="stretch")
+    with st.container(border=True, key="ongoing-live-risk-incidents"):
+        st.markdown(f"#### {tr('Live-risk incidents')}")
+        st.caption(tr("Recent state transitions only; newest event first."))
+        frame = pd.DataFrame([
+            {
+                "Time": incident.occurred_at,
+                "Event": incident.category.replace("_", " ").title(),
+                "State": incident.state.title(),
+                "Position": incident.position_id or "Account",
+                "Detail": incident.detail,
+            }
+            for incident in incidents
+        ])
+        st.dataframe(frame, hide_index=True, width="stretch")

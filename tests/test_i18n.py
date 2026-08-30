@@ -34,6 +34,8 @@ def test_vietnamese_keeps_familiar_trading_terms(monkeypatch) -> None:
     assert i18n.tr("Maximum open risk (R)") == "Open risk tối đa (R)"
     assert i18n.tr("Report period") == "Kỳ báo cáo"
     assert i18n.tr("Ongoing") == "Đang diễn ra"
+    assert i18n.tr("Live risk monitor") == "Theo dõi rủi ro trực tiếp"
+    assert i18n.tr("Exposure snapshot") == "Ảnh chụp mức phơi nhiễm"
     assert i18n.tr("Edge quality") == "Chất lượng lợi thế"
     assert i18n.tr("Daily result range") == "Biên độ kết quả theo ngày"
     assert i18n.tr("Select at least one trading mistake when a criterion fails") == "Chọn ít nhất một lỗi giao dịch khi một tiêu chí không đạt"
