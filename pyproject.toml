@@ -13,7 +13,7 @@ dependencies = [
   "pydantic>=2.13,<3",
   "plotly>=6.0,<7",
   "sqlalchemy>=2.0,<3",
-  "streamlit>=1.61,<2",
+  "streamlit==1.61.1",
 ]
 
 [project.optional-dependencies]
