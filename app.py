@@ -8,6 +8,7 @@ from uuid import uuid4
 from decimal import Decimal
 from datetime import date
 from pathlib import Path
+from typing import Literal
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -44,7 +45,6 @@ from trading_journal.presentation.i18n import (
     tr,
 )
 from trading_journal.presentation.formatting import (
-    AccentMetricTone,
     currency_decimal_places,
     currency_prefix,
     format_count,
@@ -63,7 +63,7 @@ _CHART_POSITIVE = "#0e9163"
 _CHART_NEGATIVE = "#c73545"
 _CHART_NEUTRAL = "#7a828e"
 
-_DashboardMetricTone = AccentMetricTone
+_DashboardMetricTone = Literal["positive", "negative", "warning", "info", "neutral", "disabled"]
 
 
 def application_version() -> str:
@@ -726,6 +726,10 @@ def apply_application_style() -> None:
         .dashboard-stat-tone-warning { color: var(--st-orange-color, #a65f00); }
         .dashboard-stat-tone-info { color: var(--st-blue-color, #1666a5); }
         .dashboard-stat-tone-neutral { color: inherit; }
+        .dashboard-stat-tone-disabled {
+            color: var(--st-gray-color, #667168);
+            opacity: 0.65;
+        }
         .dashboard-stat-list {
             display: block;
             padding-top: 0.35rem;
@@ -2041,7 +2045,7 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
                 (
                     tr("Funded capital"),
                     "—" if report.starting_balance is None else format_currency(report.starting_balance, currency, signed=False),
-                    "info" if report.starting_balance is not None else "neutral",
+                    "disabled",
                 ),
             ], class_name="dashboard-stat-list")
         with performance:

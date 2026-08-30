@@ -2051,6 +2051,10 @@ def test_dashboard_renders_graphics_for_imported_trades(monkeypatch, tmp_path):
     assert "Long − Short" not in stat_markup
     assert "#### Account & risk snapshot" in stat_markup
     assert 'class="dashboard-stat-column-head">Capital<' in stat_markup
+    assert (
+        '<div class="dashboard-stat-label">Funded capital</div>'
+        '<div class="dashboard-stat-value dashboard-stat-tone-disabled">'
+    ) in stat_markup
     assert 'class="dashboard-stat-column-head">Drawdown · Daily close<' in stat_markup
     assert 'class="dashboard-stat-column-head">Quality<' in stat_markup
     assert 'class="dashboard-stat-section-head">Consistency profile<' in stat_markup

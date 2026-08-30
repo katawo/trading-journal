@@ -157,6 +157,18 @@ def test_dashboard_metric_tones_only_color_clear_performance_signals() -> None:
     assert journal_app._risk_metric_tone(None, 0) == "neutral"
 
 
+def test_dashboard_disabled_tone_mutes_immutable_reference_values(monkeypatch) -> None:
+    rendered: list[str] = []
+    monkeypatch.setattr(journal_app.st, "html", rendered.append)
+
+    journal_app.apply_application_style()
+
+    css = rendered[0]
+    disabled_css = css.split(".dashboard-stat-tone-disabled {", maxsplit=1)[1].split("}", maxsplit=1)[0]
+    assert "color: var(--st-gray-color" in disabled_css
+    assert "opacity: 0.65;" in disabled_css
+
+
 def test_drawdown_values_group_the_percentage_in_parentheses() -> None:
     assert journal_app._format_drawdown_value("68.21", "5.2", "USD") == "−$68.21 (5.2%)"
     assert journal_app._format_drawdown_value("84.37", "6.4", "USD") == "−$84.37 (6.4%)"
