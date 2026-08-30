@@ -842,29 +842,6 @@ def apply_application_style() -> None:
             padding: 0.6rem 0.75rem;
             text-align: center;
         }
-        .dashboard-pillar-empty {
-            display: grid;
-            align-content: center;
-            gap: 1.15rem;
-            min-height: 180px;
-            padding: 0.75rem 0;
-        }
-        .dashboard-pillar-empty-row {
-            display: grid;
-            grid-template-columns: minmax(7.5rem, 0.8fr) minmax(8rem, 1.5fr) auto;
-            align-items: center;
-            gap: 0.8rem;
-        }
-        .dashboard-pillar-empty-label,
-        .dashboard-pillar-empty-value {
-            font-size: 0.78rem;
-            color: var(--st-gray-color, #667168);
-        }
-        .dashboard-pillar-empty-track {
-            height: 0.45rem;
-            border-radius: 999px;
-            background: color-mix(in srgb, var(--st-gray-color, #667168) 18%, transparent);
-        }
         @media (max-width: 760px) {
             .dashboard-stat-grid,
             .dashboard-framework-stats {
@@ -896,10 +873,6 @@ def apply_application_style() -> None:
             }
             .dashboard-direction-coverage {
                 min-width: 0;
-            }
-            .dashboard-pillar-empty-row {
-                grid-template-columns: 1fr;
-                gap: 0.35rem;
             }
         }
         /* st.tabs' row doesn't wrap on narrow viewports and clips the last label;

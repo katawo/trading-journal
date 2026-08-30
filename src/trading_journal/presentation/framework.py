@@ -438,7 +438,7 @@ def _render_score_cards(scores: tuple[PillarScore, ...], account: AccountListIte
             column.caption(tr(score.detail))
 
 
-def _render_pillar_radar(scores: tuple[PillarScore, ...]) -> None:
+def _build_pillar_radar_figure(scores: tuple[PillarScore, ...]) -> go.Figure:
     labels = [tr(PILLAR_NAMES[score.pillar]) for score in scores]
     values = [float(Decimal(score.score)) if score.score is not None else 0.0 for score in scores]
     # A hard-blocked pillar's score is not capped (only Caution caps at 59), so its
@@ -465,6 +465,13 @@ def _render_pillar_radar(scores: tuple[PillarScore, ...]) -> None:
         paper_bgcolor="rgba(0,0,0,0)",
         polar=dict(radialaxis=dict(range=[0, 100], showticklabels=True, ticksuffix="%"), bgcolor="rgba(0,0,0,0)"),
     )
+    return figure
+
+
+def _render_pillar_radar(scores: tuple[PillarScore, ...]) -> None:
+    blocked = [score.hard_block for score in scores]
+    capped = [score.status == "caution" and not score.hard_block for score in scores]
+    figure = _build_pillar_radar_figure(scores)
     st.plotly_chart(figure, width="stretch", config={"displayModeBar": False})
     sample_line = "  ·  ".join(f"{tr(PILLAR_NAMES[score.pillar])} {score.sample_size}" for score in scores)
     with st.container(horizontal=True, vertical_alignment="center", gap="small", width="content"):
@@ -491,58 +498,6 @@ def _pillar_monitor_status(score: PillarScore) -> tuple[str, str]:
     if score.status == "caution":
         return tr("Caution"), "#a65f00"
     return tr(score.status.capitalize()), "#0e9163"
-
-
-def _build_pillar_score_figure(scores: tuple[PillarScore, ...]) -> go.Figure:
-    """Use precise bars rather than a three-axis radar for pillar comparison."""
-    labels = [tr(PILLAR_NAMES[score.pillar]) for score in scores]
-    values = [float(Decimal(score.score)) if score.score is not None else 0.0 for score in scores]
-    statuses = [_pillar_monitor_status(score) for score in scores]
-    display_values = [_score_text(score.score) for score in scores]
-    customdata = [
-        [status, _score_text(score.raw_score), format_count(score.sample_size)]
-        for score, (status, _) in zip(scores, statuses, strict=True)
-    ]
-    figure = go.Figure(
-        go.Bar(
-            x=values,
-            y=labels,
-            orientation="h",
-            marker_color=[colour for _, colour in statuses],
-            marker_line_width=0,
-            customdata=customdata,
-            text=display_values,
-            textposition="outside",
-            cliponaxis=False,
-            hovertemplate=(
-                "%{y}<br><b>%{text}</b> · %{customdata[0]}"
-                f"<br>{tr('Raw score')}: %{{customdata[1]}}"
-                f"<br>{tr('Sample')}: %{{customdata[2]}}<extra></extra>"
-            ),
-        )
-    )
-    figure.update_layout(
-        height=200,
-        margin=dict(l=12, r=60, t=20, b=12),
-        showlegend=False,
-        bargap=0.42,
-    )
-    figure.update_xaxes(range=[0, 100], visible=False, fixedrange=True)
-    figure.update_yaxes(showgrid=False, zeroline=False, autorange="reversed", fixedrange=True)
-    return figure
-
-
-def _render_empty_pillar_scores(scores: tuple[PillarScore, ...], window: int) -> None:
-    """Keep an all-incomplete sample compact instead of drawing three zero bars."""
-    rows = "".join(
-        '<div class="dashboard-pillar-empty-row">'
-        f'<div class="dashboard-pillar-empty-label">{escape(tr(PILLAR_NAMES[score.pillar]))}</div>'
-        '<div class="dashboard-pillar-empty-track"></div>'
-        f'<div class="dashboard-pillar-empty-value">— · {escape(tr("Incomplete"))} · {score.sample_size}/{window}</div>'
-        "</div>"
-        for score in scores
-    )
-    st.markdown(f'<div class="dashboard-pillar-empty">{rows}</div>', unsafe_allow_html=True)
 
 
 def _render_framework_stat_grid(items: list[tuple[str, str, str, str]]) -> None:
@@ -625,15 +580,7 @@ def render_framework_dashboard(repo: SQLiteJournalRepository, account: AccountLi
             )
             st.caption(tr(readiness.detail))
         with pillars:
-            if all(score.score is None for score in scores):
-                _render_empty_pillar_scores(scores, 20)
-            else:
-                st.plotly_chart(
-                    _build_pillar_score_figure(scores),
-                    width="stretch",
-                    config={"displayModeBar": False},
-                    key="dashboard-pillar-scores",
-                )
+            _render_pillar_radar(scores)
         _render_rubric_sample_caption(scores, 20)
         non_ready_scores = [score for score in scores if score.status != "ready"]
         if non_ready_scores:

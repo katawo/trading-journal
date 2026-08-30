@@ -2036,7 +2036,8 @@ def test_dashboard_renders_graphics_for_imported_trades(monkeypatch, tmp_path):
     assert concentration_control.options == ["Trade", "Symbol"]
     assert concentration_control.value == "Trade"
     assert any("No losing logical trades" in item.value for item in app.caption)
-    assert len(app.get("plotly_chart")) == 2
+    assert len(app.get("plotly_chart")) == 3
+    assert any("Pillars without a scored sample yet show as 0" in item.value for item in app.caption)
     assert not any(item.label == "Breakdown view" for item in app.segmented_control)
     assert 'class="dashboard-stat-section-head">Direction edge<' in stat_markup
     assert 'class="dashboard-stat-column-head">Edge quality<' in stat_markup
