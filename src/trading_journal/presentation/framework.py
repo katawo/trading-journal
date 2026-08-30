@@ -175,6 +175,27 @@ def _score_text(value: str | None) -> str:
     return "—" if value is None else format_score(value)
 
 
+def _prs_summary(score: TradeProcessScore) -> str:
+    """Condense the Psychology/Risk/System breakdown to bare numbers, in that fixed
+    order (documented once in the Score column's help popover), next to the overall
+    score badge - e.g. overall badge "56%" beside this caption "(50-70⚠-50)"."""
+
+    def part(value: str | None, blocked: bool) -> str:
+        text = _score_text(value)
+        number = text[:-1] if text.endswith("%") else text
+        return f"{number}⚠" if blocked else number
+
+    fields = (
+        (score.psychology_score, score.psychology_hard_block),
+        (score.risk_score, score.risk_hard_block),
+        (score.system_score, score.system_hard_block),
+    )
+    return "(" + "-".join(part(value, blocked) for value, blocked in fields) + ")"
+
+
+_SCORE_BADGE_COLOR = {"good": "green", "needs_improvement": "orange", "bad": "red"}
+
+
 def _rubric_label(rubric_version: str | None) -> str:
     return tr("Zone-aligned 12-criterion")
 
@@ -347,9 +368,20 @@ def _format_trade_duration(entry_time: str, exit_time: str) -> str:
     return " ".join(parts)
 
 
-def _format_execution_number(value: str) -> str:
-    """Preserve imported precision while adding separators for execution facts."""
-    return f"{Decimal(value):,f}"
+def _format_execution_number(value: str, *, reference: str | None = None) -> str:
+    """Preserve imported precision while adding separators for execution facts.
+
+    A grouped logical trade's entry/exit price is a notional-weighted average across
+    its member positions, which can carry dozens of repeating digits (e.g.
+    4,466.67266666666666666667). Round to the decimal precision the broker actually
+    quotes this symbol at - taken from a raw member position's price via `reference`
+    - instead of showing the raw division result or an arbitrary fixed precision.
+    """
+    precision_source = reference if reference is not None else value
+    decimals = len(precision_source.split(".", 1)[1]) if "." in precision_source else 0
+    quantum = Decimal(1).scaleb(-decimals) if decimals else Decimal(1)
+    text = f"{Decimal(value).quantize(quantum):,f}"
+    return text.rstrip("0").rstrip(".") if "." in text else text
 
 
 def _score_scope_label(score: PillarScore, account: AccountListItem) -> str:
@@ -1423,39 +1455,28 @@ def _render_logical_trade_regroup_confirmation(repo: SQLiteJournalRepository, ac
     st.rerun()
 
 
-def _mobile_field_label(container, label: str) -> None:  # type: ignore[no-untyped-def]
-    """Print a field label that only shows once the 9-column trade row has stacked.
-
-    On desktop the header row above the table already labels every column, so this
-    stays hidden there (see the CSS in _render_review_register) and only appears
-    once Streamlit's column-stacking collapses each field onto its own full-width
-    line, where the header row's labels are no longer adjacent to their values.
-    """
-    container.markdown(f'<span class="trade-review-field-label">{tr(label)}</span>', unsafe_allow_html=True)
-
-
 def _render_review_register(repo: SQLiteJournalRepository, account: AccountListItem, trades, scores: dict[int, TradeProcessScore], profiles) -> None:  # type: ignore[no-untyped-def]
     st.html(
         """
         <style>
-        /* Below Streamlit's column-stacking breakpoint, the 9-column trade row
-           collapses into 9 full-width blocks in DOM order. The header row (which
-           only prints its labels once, above all rows) then reads as a detached
-           list, and every trade's values lose their labels entirely. Print a small
-           inline label ahead of each field's value - hidden on desktop, where the
-           header row already does that job - and hide the now-redundant header row
-           at that width instead. */
-        .trade-review-field-label { display: none; }
+        /* Each trade card's execution-detail row (Opened/Entry/Closed/Exit/Duration/
+           Size) is scanned far more than it's studied - keep every field visible
+           (unlike the rest of the card, which was consolidated into fewer, denser
+           rows) but shrink it so it reads as a footnote rather than a second card. */
+        div[class*="st-key-review-detail-"] {
+            margin-top: 0.35rem;
+            padding-top: 0.35rem;
+            border-top: 1px solid var(--st-border-color, #c8d0c8);
+        }
+        div[class*="st-key-review-detail-"] [data-testid="stCaptionContainer"] p {
+            font-size: 0.68rem;
+            margin-bottom: 0;
+        }
+        div[class*="st-key-review-detail-"] [data-testid="stMarkdownContainer"] p {
+            font-size: 0.8rem;
+            margin-top: -0.15rem;
+        }
         @media (max-width: 640px) {
-            .trade-review-field-label {
-                display: block;
-                font-size: 0.72rem;
-                font-weight: 600;
-                text-transform: uppercase;
-                letter-spacing: 0.03em;
-                opacity: 0.65;
-                margin-bottom: 0.1rem;
-            }
             div.st-key-trade-review-table-header { display: none; }
         }
         </style>
@@ -1640,13 +1661,11 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
         position_by_id = {trade.id: index for index, (trade, _) in enumerate(visible)}
         start = (current_page - 1) * REVIEW_PAGE_SIZE
         page_items = visible[start : start + REVIEW_PAGE_SIZE]
+        column_widths = [0.45, 1.7, 0.7, 0.8, 0.9, 1.5, 0.6, 1.1]
+        column_labels = ("Select", "Trade", "Positions", "P&L", "Method", "Score", "Rules", "Actions")
         with st.container(key="trade-review-table-header"):
-            header = st.columns([0.5, 0.85, 1.35, 1.3, 0.75, 1.1, 0.85, 0.75, 1.0])
-            for column, label in zip(
-                header,
-                ("Select", "Logical trade", "Trade", "Positions", "P&L", "Review", "Score", "Hard rules", "Actions"),
-                strict=True,
-            ):
+            header = st.columns(column_widths)
+            for column, label in zip(header, column_labels, strict=True):
                 if label == "Score":
                     with column:
                         with st.container(horizontal=True, vertical_alignment="center", gap="small", width="content"):
@@ -1665,8 +1684,8 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
                 "manual_review": "Manual",
             }.get(score.review_kind, "Requires review")
             with st.container(border=True):
-                select_column, logical_column, trade_column, positions_column, pnl_column, review_column, score_column, process_column, actions_column = st.columns(
-                    [0.5, 0.85, 1.35, 1.3, 0.75, 1.1, 0.85, 0.75, 1.0]
+                select_column, trade_column, positions_column, pnl_column, method_column, score_column, process_column, actions_column = st.columns(
+                    column_widths
                 )
                 checkbox_key = f"{_logical_trade_selection_prefix(account.id)}{trade.id}"
                 if checkbox_key not in st.session_state:
@@ -1681,106 +1700,114 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
                     on_change=_toggle_logical_trade_selection,
                     args=(account.id, trade.id, visible_trade_ids),
                 )
-                _mobile_field_label(logical_column, "Logical trade")
-                logical_column.markdown(f"**LT-{trade.id}**")
-                _mobile_field_label(trade_column, "Trade")
-                trade_column.write(trade.display_label)
                 direction = direction_tag(trade.direction)
                 outcome = outcome_tag(trade.net_pnl)
-                trade_column.badge(tr(direction.label), color=direction.color, icon=direction.icon)
-                _mobile_field_label(positions_column, "Positions")
-                positions_column.write(", ".join(f"#{position_id}" for position_id in trade.position_ids))
-                _mobile_field_label(pnl_column, "P&L")
-                pnl_column.write(format_currency(trade.net_pnl, account.account_currency))
-                pnl_column.badge(tr(outcome.label), color=outcome.color, icon=outcome.icon)
-                _mobile_field_label(review_column, "Review")
-                review_column.write(tr(review))
-                _mobile_field_label(score_column, "Score")
-                score_column.markdown(f"**{_score_text(score.overall_score)}**")
-                psychology_flag = " ⚠" if score.psychology_hard_block else ""
-                risk_flag = " ⚠" if score.risk_hard_block else ""
-                system_flag = " ⚠" if score.system_hard_block else ""
-                score_column.caption(
-                    f"P {_score_text(score.psychology_score)}{psychology_flag}  \n"
-                    f"R {_score_text(score.risk_score)}{risk_flag}  \n"
-                    f"S {_score_text(score.system_score)}{system_flag}"
+                position_count = len(trade.position_ids)
+                position_label = tr("1 pos") if position_count == 1 else tr("{count} pos", count=position_count)
+                with trade_column:
+                    with st.container(horizontal=True, vertical_alignment="center", gap="small"):
+                        st.markdown(f"**LT-{trade.id}**")
+                        st.write(trade.symbol)
+                        st.badge(tr(direction.label), color=direction.color, icon=direction.icon)
+                        if trade.custom_label:
+                            st.write(trade.custom_label)
+                positions_column.badge(
+                    position_label,
+                    color="gray",
+                    help=", ".join(f"#{position_id}" for position_id in trade.position_ids),
                 )
-                if score.rubric_version is not None:
-                    score_column.caption(_rubric_label(score.rubric_version))
-                _mobile_field_label(process_column, "Hard rules")
+                pnl_column.badge(format_currency(trade.net_pnl, account.account_currency), color=outcome.color)
+                method_column.badge(tr(review), color="gray")
+                with score_column:
+                    with st.container(horizontal=True, vertical_alignment="center", gap="small"):
+                        st.badge(
+                            _score_text(score.overall_score),
+                            color=_SCORE_BADGE_COLOR.get(score.quality_status, "gray"),
+                        )
+                        st.caption(_prs_summary(score))
                 if score.process_status == "FAIL":
                     process_column.badge(tr("Fail"), icon=":material/error:", color="red")
                 elif score.process_status == "PASS":
                     process_column.badge(tr("Clear"), icon=":material/check:", color="green")
                 else:
                     process_column.write("—")
-                if actions_column.button(
-                    "Review",
-                    key=f"open-logical-trade-review-{account.id}-{trade.id}",
-                    type="tertiary",
-                    icon=":material/edit:",
-                ):
-                    st.session_state["post-trade-review-trade-id"] = trade.id
-                    st.session_state["post-trade-review-queue"] = tuple(
-                        item.id for item, _ in visible[position_by_id[trade.id] + 1 :]
-                    )
-                    st.rerun()
-                if score.review_kind in {"needs_approval", "auto_review"}:
-                    is_within_policy = score.review_kind == "auto_review"
-                    label = "Approve" if is_within_policy else "Quick review"
-                    help_text = (
-                        "Approve this within-policy automatic risk evidence so it counts toward your pillar scores."
-                        if is_within_policy
-                        else "Accept the automatic risk evidence in one click instead of a full Zone-aligned 12-criterion review."
-                    )
-                    if actions_column.button(
-                        label,
-                        key=f"approve-auto-review-{account.id}-{trade.id}",
-                        type="tertiary",
-                        icon=":material/check:",
-                        help=help_text,
-                    ):
-                        try:
-                            with st.spinner(tr("Saving…")):
-                                repo.approve_auto_review(
-                                    account_id=account.id, trade_id=trade.id, risk_policy_id=score.auto_risk.policy_id,
-                                    risk_evidence_source=score.risk_evidence_source,
-                                    risk_policy_state=score.risk_policy_state,
-                                    actual_risk_amount=score.actual_risk_amount,
-                                    criterion_grades=FrameworkService._automatic_review_grades(score.risk_policy_state),
-                                )
-                        except ValueError as error:
-                            st.error(str(error))
-                        else:
-                            st.session_state["post-trade-review-notice"] = "Automatic risk evidence approved."
-                            queue_toast(tr("Automatic risk evidence approved."))
+                with actions_column:
+                    with st.container(horizontal=True, gap="small"):
+                        if st.button(
+                            "Review",
+                            key=f"open-logical-trade-review-{account.id}-{trade.id}",
+                            type="primary",
+                            icon=":material/edit:",
+                        ):
+                            st.session_state["post-trade-review-trade-id"] = trade.id
+                            st.session_state["post-trade-review-queue"] = tuple(
+                                item.id for item, _ in visible[position_by_id[trade.id] + 1 :]
+                            )
                             st.rerun()
-                if trade.is_group and actions_column.button(
-                    "Ungroup",
-                    key=f"ungroup-logical-trade-{account.id}-{trade.id}",
-                    type="tertiary",
-                    icon=":material/group_off:",
-                ):
-                    _begin_logical_trade_disband(repo, account, trade.id)
+                        has_quick_action = score.review_kind in {"needs_approval", "auto_review"}
+                        if has_quick_action or trade.is_group:
+                            with st.popover("", icon=":material/more_vert:", help=tr("More actions")):
+                                if has_quick_action:
+                                    is_within_policy = score.review_kind == "auto_review"
+                                    label = "Approve" if is_within_policy else "Quick review"
+                                    help_text = (
+                                        "Approve this within-policy automatic risk evidence so it counts toward your pillar scores."
+                                        if is_within_policy
+                                        else "Accept the automatic risk evidence in one click instead of a full Zone-aligned 12-criterion review."
+                                    )
+                                    if st.button(
+                                        label,
+                                        key=f"approve-auto-review-{account.id}-{trade.id}",
+                                        icon=":material/check:",
+                                        help=help_text,
+                                        width="stretch",
+                                    ):
+                                        try:
+                                            with st.spinner(tr("Saving…")):
+                                                repo.approve_auto_review(
+                                                    account_id=account.id, trade_id=trade.id, risk_policy_id=score.auto_risk.policy_id,
+                                                    risk_evidence_source=score.risk_evidence_source,
+                                                    risk_policy_state=score.risk_policy_state,
+                                                    actual_risk_amount=score.actual_risk_amount,
+                                                    criterion_grades=FrameworkService._automatic_review_grades(score.risk_policy_state),
+                                                )
+                                        except ValueError as error:
+                                            st.error(str(error))
+                                        else:
+                                            st.session_state["post-trade-review-notice"] = "Automatic risk evidence approved."
+                                            queue_toast(tr("Automatic risk evidence approved."))
+                                            st.rerun()
+                                if trade.is_group and st.button(
+                                    "Ungroup",
+                                    key=f"ungroup-logical-trade-{account.id}-{trade.id}",
+                                    icon=":material/group_off:",
+                                    width="stretch",
+                                ):
+                                    _begin_logical_trade_disband(repo, account, trade.id)
                 opened_at = _reporting_time(repo, trade.entry_time, trade.server_utc_offset_minutes)
                 closed_at = _reporting_time(repo, trade.exit_time, trade.server_utc_offset_minutes)
-                execution_columns = st.columns([1.25, 1, 1.25, 1, 0.8, 0.8])
-                execution_values = (
-                    ("Opened", opened_at),
-                    ("Entry price", _format_execution_number(trade.entry_price)),
-                    ("Closed", closed_at),
-                    ("Exit price", _format_execution_number(trade.exit_price)),
-                    ("Duration", _format_trade_duration(trade.entry_time, trade.exit_time)),
-                    ("Size", f"{_format_execution_number(trade.volume)} {tr('lots')}"),
-                )
-                for detail_column, (label, value) in zip(execution_columns, execution_values, strict=True):
-                    detail_column.caption(tr(label))
-                    detail_column.markdown(f"**{value}**")
-                summary = (
-                    f"{trade.symbol} {trade.direction} · {_auto_risk_label(score)} "
-                    f"· {tr(score.classification or 'Unclassified')}"
-                )
-                st.caption(summary)
+                with st.container(key=f"review-detail-{trade.id}"):
+                    execution_columns = st.columns([1.25, 1, 1.25, 1, 0.8, 0.8])
+                    execution_values = (
+                        ("Opened", opened_at),
+                        ("Entry price", _format_execution_number(trade.entry_price, reference=trade.members[0].entry_price)),
+                        ("Closed", closed_at),
+                        ("Exit price", _format_execution_number(trade.exit_price, reference=trade.members[0].exit_price)),
+                        ("Duration", _format_trade_duration(trade.entry_time, trade.exit_time)),
+                        ("Size", f"{_format_execution_number(trade.volume)} {tr('lots')}"),
+                    )
+                    for detail_column, (label, value) in zip(execution_columns, execution_values, strict=True):
+                        detail_column.caption(tr(label))
+                        detail_column.markdown(f"**{value}**")
+                with st.container(horizontal=True, vertical_alignment="center", gap="small"):
+                    st.badge(
+                        tr(score.classification or "Unclassified"),
+                        color=_SCORE_BADGE_COLOR.get(score.quality_status, "gray"),
+                    )
+                    detail_parts = [_auto_risk_label(score)]
+                    if score.rubric_version is not None:
+                        detail_parts.append(_rubric_label(score.rubric_version))
+                    st.caption(" · ".join(detail_parts))
                 if failure_detail := _process_failure_detail(score):
                     st.caption(failure_detail)
                 if monitoring_detail := _automatic_risk_monitoring_detail(score):
@@ -2228,19 +2255,21 @@ def _render_period_reviews(repo: SQLiteJournalRepository, account: AccountListIt
         for status in ongoing_statuses:
             pending = status.closed_trades - status.reviewed_trades
             with st.container(border=True):
-                st.markdown(f"**{tr(f'Ongoing {status.cadence}')}**")
-                st.caption(f"{status.period_start} to {status.period_end}")
+                with st.container(horizontal=True, vertical_alignment="center", gap="small"):
+                    st.markdown(f"**{tr(f'Ongoing {status.cadence}')}**")
+                    st.badge(f"{status.period_start} → {status.period_end}", color="gray")
                 if status.closed_trades:
-                    st.write(
-                        tr(
-                            "{reviewed} of {closed} closed trades reviewed with the current rubric · {pending} pending",
+                    st.progress(
+                        status.reviewed_trades / status.closed_trades,
+                        text=tr(
+                            "{reviewed} of {closed} reviewed · {pending} pending",
                             reviewed=format_count(status.reviewed_trades),
                             closed=format_count(status.closed_trades),
                             pending=format_count(pending),
-                        )
+                        ),
                     )
                 else:
-                    st.write(tr("No closed trades yet"))
+                    st.caption(tr("No closed trades yet"))
                 st.caption(tr("Review opens {date}.", date=status.review_opens_on))
 
     st.markdown(f"###### {tr('Latest completed periods')}")
@@ -2248,19 +2277,21 @@ def _render_period_reviews(repo: SQLiteJournalRepository, account: AccountListIt
     with st.container(horizontal=True, gap="small"):
         for status in statuses:
             if status.disposition == "skipped":
-                status_label = tr("Skipped")
+                status_label, status_color = tr("Skipped"), "gray"
             elif status.disposition == "reviewed":
-                status_label = tr("Reviewed")
+                status_label, status_color = tr("Reviewed"), "green"
             elif status.closed_trades == 0:
-                status_label = tr("No activity")
+                status_label, status_color = tr("No activity"), "gray"
             elif status.reviewed_trades == 0:
-                status_label = tr("Pending review")
+                status_label, status_color = tr("Pending review"), "orange"
             elif status.due:
-                status_label = tr("Due")
+                status_label, status_color = tr("Due"), "orange"
             else:
-                status_label = tr("Up to date")
+                status_label, status_color = tr("Up to date"), "green"
             with st.container(border=True):
-                st.metric(tr(f"Last completed {status.cadence}"), status_label)
+                with st.container(horizontal=True, vertical_alignment="center", gap="small"):
+                    st.markdown(f"**{tr(f'Last completed {status.cadence}')}**")
+                    st.badge(status_label, color=status_color)
                 st.caption(f"{status.period_start} to {status.period_end}")
                 st.caption(
                     tr(
@@ -2285,20 +2316,24 @@ def _render_period_reviews(repo: SQLiteJournalRepository, account: AccountListIt
                 "Every completed period containing trades stays unreviewed until you review or explicitly skip it. Choosing a newer period never hides an older one."
             )
         )
-        attention = pd.DataFrame(
-            [
-                {
-                    tr("Cadence"): tr(f"{status.cadence.capitalize()} review"),
-                    tr("Period"): f"{status.period_start} to {status.period_end}",
-                    tr("Status"): tr("Review due" if status.due else "Review trades first"),
-                    tr("Reviewed"): status.reviewed_trades,
-                    tr("Closed"): status.closed_trades,
-                    tr("Pending"): status.closed_trades - status.reviewed_trades,
-                }
-                for status in backlog
-            ]
-        )
-        st.dataframe(attention, hide_index=True, width="stretch")
+        for status in backlog:
+            pending = status.closed_trades - status.reviewed_trades
+            with st.container(border=True):
+                with st.container(horizontal=True, vertical_alignment="center", gap="small"):
+                    st.markdown(f"**{tr(f'{status.cadence.capitalize()} review')}**")
+                    st.caption(f"{status.period_start} to {status.period_end}")
+                    st.badge(
+                        tr("Review due") if status.due else tr("Review trades first"),
+                        color="orange" if status.due else "blue",
+                    )
+                    st.caption(
+                        tr(
+                            "{reviewed}/{closed} reviewed · {pending} pending",
+                            reviewed=format_count(status.reviewed_trades),
+                            closed=format_count(status.closed_trades),
+                            pending=format_count(pending),
+                        )
+                    )
 
     if backlog:
         selected = backlog[0]

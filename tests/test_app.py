@@ -1325,7 +1325,8 @@ def test_register_flags_the_specific_hard_blocked_pillar(monkeypatch, tmp_path):
     _set_review_filters(app, auto_reviewed=True, manual_reviewed=True)
 
     assert not app.exception
-    assert any("R 100% ⚠" in item.value for item in app.caption)
+    # (Psychology-Risk-System): only the middle (risk) value carries the hard-block flag.
+    assert any("(100-100⚠-100)" in item.value for item in app.caption)
     assert any("This overrides the numeric score above" in item.value for item in app.caption)
 
 
