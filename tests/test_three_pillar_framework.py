@@ -2108,6 +2108,7 @@ def test_logical_grouping_recalculates_account_balance_history_at_final_close(tm
 
     early = DashboardService(repository).build_report(account_id=account_id, start_date="2026-08-09", end_date="2026-08-09")
     full = DashboardService(repository).build_report(account_id=account_id, start_date="2026-08-09", end_date="2026-08-10")
+    dashboard = DashboardService(repository)
 
     assert early.trade_count == 0
     assert early.net_pnl == "0"
@@ -2116,6 +2117,8 @@ def test_logical_grouping_recalculates_account_balance_history_at_final_close(tm
     assert full.trade_count == 1
     assert full.ending_balance == "1020"
     assert [(item.date, item.net_pnl) for item in full.daily] == [("2026-08-10", "20")]
+    assert dashboard.realized_pnl_on(date(2026, 8, 9), account_id) == "0"
+    assert dashboard.realized_pnl_on(date(2026, 8, 10), account_id) == "20"
 
 
 def test_account_drawdown_uses_aggregate_logical_trade_pnl(tmp_path) -> None:

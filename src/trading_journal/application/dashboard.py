@@ -474,6 +474,12 @@ class DashboardService:
         offset = 0 if account is None or account.latest_server_utc_offset_minutes is None else account.latest_server_utc_offset_minutes
         return reporting_datetime(datetime.now(timezone.utc).isoformat(), offset, settings.reporting_time_basis).date()
 
+    def realized_pnl_on(self, report_date: date, account_id: int | None = None) -> str:
+        """Return closed logical-trade P&L for one reporting-calendar day."""
+        account_id = self._single_account_id(account_id)
+        time_basis = self._repository.get_journal_settings().reporting_time_basis
+        return _decimal_string(Decimal(self._repository.realized_pnl_on(account_id, report_date, time_basis)))
+
     @staticmethod
     def _concentration_side(
         trades: list[TradePerformanceItem],

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 import json
 from pathlib import Path
@@ -11,7 +11,7 @@ from typing import Mapping
 from sqlalchemy import Boolean, CheckConstraint, ForeignKey, ForeignKeyConstraint, Index, Integer, String, Text, UniqueConstraint, create_engine, delete, event, func, select, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
 
-from trading_journal.application.reporting_time import REPORTING_TIME_BASES, normalize_server_timestamp
+from trading_journal.application.reporting_time import REPORTING_TIME_BASES, normalize_server_timestamp, reporting_date
 from trading_journal.domain.models import ImportResult, ImportedTradeView, MT5LivePositionExport, MT5PositionExport
 from trading_journal.domain.review_taxonomy import HARD_RULE_CODES, VIOLATION_CODES
 
@@ -3812,6 +3812,49 @@ class SQLiteJournalRepository:
                     )
                 )
             return sorted(performance, key=lambda item: (item.exit_time, item.logical_trade_id))
+
+    def realized_pnl_on(self, account_id: int, report_date: date, reporting_time_basis: str) -> str:
+        """Return logical-trade P&L for one reporting day without loading full performance history."""
+        if reporting_time_basis not in REPORTING_TIME_BASES:
+            raise ValueError("Reporting time basis must be UTC, Server Timezone, or Local Timezone")
+
+        # Any supported local/server offset is within 14 hours of UTC. A one-day
+        # margin on either side keeps the SQL query selective while the exact
+        # reporting-calendar check below preserves timezone and DST behavior.
+        window_start = datetime.combine(report_date - timedelta(days=1), time.min, tzinfo=timezone.utc).isoformat()
+        window_end = datetime.combine(report_date + timedelta(days=2), time.min, tzinfo=timezone.utc).isoformat()
+        with self._sessions() as session:
+            candidate_ids = (
+                select(Trade.logical_trade_id)
+                .where(
+                    Trade.mt5_account_id == account_id,
+                    Trade.exit_time >= window_start,
+                    Trade.exit_time < window_end,
+                )
+                .distinct()
+            )
+            rows = session.execute(
+                select(
+                    Trade.id,
+                    Trade.logical_trade_id,
+                    Trade.exit_time,
+                    Trade.server_utc_offset_minutes,
+                    Trade.net_pnl,
+                ).where(
+                    Trade.mt5_account_id == account_id,
+                    Trade.logical_trade_id.in_(candidate_ids),
+                )
+            ).all()
+
+        members_by_logical: dict[int, list] = {}
+        for row in rows:
+            members_by_logical.setdefault(row.logical_trade_id, []).append(row)
+        total = Decimal("0")
+        for members in members_by_logical.values():
+            latest = max(members, key=lambda item: (item.exit_time, item.id))
+            if reporting_date(latest.exit_time, latest.server_utc_offset_minutes, reporting_time_basis) == report_date:
+                total += sum((Decimal(item.net_pnl) for item in members), Decimal("0"))
+        return _decimal_string(total)
 
     def list_account_balance_movements(self, account_id: int) -> list[AccountBalanceMovement]:
         """Return raw position-close movements for audit/export compatibility."""

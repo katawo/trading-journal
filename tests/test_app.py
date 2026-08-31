@@ -1,14 +1,16 @@
 from pathlib import Path
 import csv
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pytest
 from streamlit.testing.v1 import AppTest
 
+from trading_journal.application.dashboard import DashboardService
 from trading_journal.application.display_time import format_relative_time
+from trading_journal.application.live_positions import LivePositionImportService
 from trading_journal.domain.models import MT5PositionExport
 from trading_journal.infrastructure.sqlite_repository import ASSESSMENT_CRITERIA, SQLiteJournalRepository
 from trading_journal.presentation.framework import _format_trade_duration
@@ -454,16 +456,131 @@ def test_ongoing_page_does_not_claim_positions_are_flat_before_the_first_snapsho
     assert not app.exception
     page_markup = "\n".join(item.value for item in app.markdown)
     assert "#### Exposure snapshot" in page_markup
-    assert "#### Current positions" in page_markup
-    assert any("Highest-risk and unprotected positions remain first" in item.value for item in app.caption)
-    assert {item.label for item in app.metric} >= {
-        "Unprotected",
-        "Known open risk",
-        "Open positions",
-        "Unrealized P&L",
-    }
-    assert any("Position data will appear after the first live MT5 snapshot" in item.value for item in app.caption)
+    assert "#### Current positions" not in page_markup
+    assert not any("Highest-risk and unprotected positions remain first" in item.value for item in app.caption)
+    assert all(f'>{label}<' in page_markup for label in ("Unprotected", "Known open risk", "Open positions", "Unrealized P&amp;L"))
+    assert "Position data will appear after the first live MT5 snapshot" in page_markup
     assert not any("No open positions in the latest live snapshot" in item.value for item in app.info)
+
+
+def test_ongoing_page_displays_today_realized_pnl_separately_from_unrealized_pnl(monkeypatch, tmp_path) -> None:
+    database_path = tmp_path / "journal.db"
+    repository = SQLiteJournalRepository(database_path)
+    repository.initialize()
+    repository.configure_journal(reporting_time_basis="utc")
+    repository.register_mt5_account(
+        display_name="Primary",
+        login="123456",
+        broker_server="DemoBroker-Live",
+        account_currency="USD",
+        export_file_path="",
+    )
+    account = repository.find_active_mt5_account("123456", "DemoBroker-Live")
+    assert account is not None
+    repository.upsert_mt5_positions(
+        account.id,
+        [
+            MT5PositionExport(
+                schema_version=1,
+                account_login="123456",
+                broker_server="DemoBroker-Live",
+                account_currency="USD",
+                position_id="1001",
+                symbol="XAUUSD",
+                direction="long",
+                entry_time="2026-08-10T08:00:00+00:00",
+                exit_time="2026-08-10T09:00:00+00:00",
+                entry_price="3300",
+                exit_price="3310",
+                volume="0.01",
+                gross_pnl="20",
+                commission="0",
+                swap="0",
+                fees="0",
+                net_pnl="20",
+            )
+        ],
+        "positions.csv",
+        "test-hash",
+    )
+    monkeypatch.setenv("TRADING_JOURNAL_DB", str(database_path))
+    monkeypatch.setattr(DashboardService, "current_report_date", lambda self, account_id: date(2026, 8, 10))
+
+    app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
+    app.switch_page("app_pages/ongoing.py").run()
+
+    assert not app.exception
+    markup = "\n".join(item.value for item in app.markdown)
+    assert (
+        '<div class="dashboard-stat-label">Today realized P&amp;L</div>'
+        '<div class="dashboard-stat-value dashboard-stat-tone-positive">+$20.00</div>'
+    ) in markup
+    assert (
+        markup.index("Unrealized P&amp;L")
+        < markup.index("Today realized P&amp;L")
+        < markup.index("Open positions")
+        < markup.index("Unprotected")
+        < markup.index("Known open risk")
+        < markup.index("Risk buffer")
+    )
+    assert markup.count('<div class="ongoing-exposure-column ') == 4
+    assert 'class="ongoing-exposure-column ongoing-risk-column"' in markup
+    assert not app.metric
+
+
+def test_ongoing_page_compacts_a_healthy_empty_snapshot_into_the_exposure_panel(monkeypatch, tmp_path) -> None:
+    database_path = tmp_path / "journal.db"
+    repository = SQLiteJournalRepository(database_path)
+    repository.initialize()
+    repository.configure_journal(reporting_time_basis="utc")
+    repository.register_mt5_account(
+        display_name="Primary",
+        login="123456",
+        broker_server="DemoBroker-Live",
+        account_currency="USD",
+        export_file_path="",
+        opening_balance="1000",
+    )
+    account = repository.get_active_mt5_account()
+    assert account is not None
+    repository.save_account_risk_policy(
+        account_id=account.id,
+        standard_risk_per_trade_percent="1",
+        maximum_risk_per_trade_percent="1",
+        daily_loss_limit_r="2",
+        weekly_loss_limit_r="4",
+        max_drawdown_percent="10",
+        max_open_risk_r="1",
+        max_consecutive_losses=3,
+        minimum_rr="1.5",
+        correlation_policy=None,
+    )
+    snapshot_time = datetime.now(timezone.utc).isoformat()
+    LivePositionImportService(repository).import_snapshot({
+        "schema_version": 1,
+        "account_login": "123456",
+        "broker_server": "DemoBroker-Live",
+        "account_currency": "USD",
+        "snapshot_time": snapshot_time,
+        "export_interval_seconds": 60,
+        "positions": [],
+    })
+    monkeypatch.setenv("TRADING_JOURNAL_DB", str(database_path))
+
+    app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
+    app.switch_page("app_pages/ongoing.py").run()
+
+    assert not app.exception
+    markup = "\n".join(item.value for item in app.markdown)
+    assert ":green-badge[:material/check_circle: Within limit]" in markup
+    assert any("Known open risk is within the account limit" in item.value for item in app.caption)
+    assert "No open positions in the latest live snapshot" in markup
+    assert "The position table appears when MT5 reports an open trade" in markup
+    assert "Risk buffer" in markup
+    assert "1.00R" in markup
+    assert "0% of limit used" in markup
+    assert "#### Current positions" not in markup
+    assert not app.success
 
 
 def test_guidance_page_explains_the_post_trade_three_pillar_workflow(monkeypatch, tmp_path):

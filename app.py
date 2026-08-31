@@ -835,6 +835,38 @@ def apply_application_style() -> None:
             line-height: 1.25;
             margin-top: 0.1rem;
         }
+        .ongoing-exposure-columns {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            border-bottom: 1px solid var(--st-border-color, #c8d0c8);
+            border-top: 1px solid var(--st-border-color, #c8d0c8);
+            margin: 0.45rem 0 0.65rem;
+            padding: 0.85rem 0;
+        }
+        .ongoing-exposure-column {
+            padding: 0 1rem;
+        }
+        .ongoing-exposure-column:first-child {
+            padding-left: 0;
+        }
+        .ongoing-exposure-column + .ongoing-exposure-column {
+            border-left: 1px solid var(--st-border-color, #c8d0c8);
+        }
+        .ongoing-exposure-columns .dashboard-stat-label {
+            font-size: 0.82rem;
+        }
+        .ongoing-exposure-columns .dashboard-stat-value {
+            font-size: 1.2rem;
+        }
+        .ongoing-exposure-columns .dashboard-stat-note {
+            font-size: 0.86rem;
+        }
+        .ongoing-risk-column .dashboard-stat {
+            display: block;
+        }
+        .ongoing-risk-column .dashboard-stat-value {
+            margin-top: 0.2rem;
+        }
         .dashboard-framework-stats {
             grid-template-columns: repeat(4, minmax(7rem, 1fr));
             align-content: center;
@@ -853,6 +885,16 @@ def apply_application_style() -> None:
             }
             .dashboard-stat-list {
                 display: block;
+            }
+            .ongoing-exposure-columns {
+                grid-template-columns: minmax(0, 1fr);
+            }
+            .ongoing-exposure-column {
+                padding: 0.65rem 0;
+            }
+            .ongoing-exposure-column + .ongoing-exposure-column {
+                border-left: 0;
+                border-top: 1px solid var(--st-border-color, #c8d0c8);
             }
             div.st-key-dashboard-account-risk-columns [data-testid="stColumn"] + [data-testid="stColumn"],
             div.st-key-dashboard-outcome-columns [data-testid="stColumn"] + [data-testid="stColumn"],

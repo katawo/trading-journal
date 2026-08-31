@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import csv
-from datetime import timedelta, timezone
+from datetime import date, timedelta, timezone
 from pathlib import Path
 
 from trading_journal.application.dashboard import DashboardService
@@ -71,10 +71,12 @@ def test_reporting_basis_changes_the_dashboard_calendar_without_currency_convers
 
     repository.configure_journal(reporting_time_basis="utc")
     assert dashboard.earliest_trade_date(account_id).isoformat() == "2026-08-09"
+    assert dashboard.realized_pnl_on(date(2026, 8, 9), account_id) == "98"
 
     repository.configure_journal(reporting_time_basis="server")
     report = dashboard.build_report(account_id=account_id, start_date="2026-08-10", end_date="2026-08-10")
     assert report.trade_count == 1
     assert report.net_pnl == "98"
+    assert dashboard.realized_pnl_on(date(2026, 8, 10), account_id) == "98"
 
     assert reporting_date("2026-08-09T21:30:00+00:00", 180, "local", local_zone=timezone(timedelta(hours=7))).isoformat() == "2026-08-10"

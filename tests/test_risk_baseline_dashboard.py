@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import date
 import sqlite3
 from pathlib import Path
 
@@ -690,6 +691,28 @@ def test_dashboard_statistics_handle_breakevens_streaks_and_breakdowns(tmp_path:
         ("long", 4, 3, 1),
         ("short", 2, 0, 1),
     ]
+
+
+def test_dashboard_service_returns_realized_pnl_for_a_reporting_day(monkeypatch, tmp_path: Path) -> None:
+    repository = configured_repository(tmp_path)
+    account = repository.find_active_mt5_account("123456", "DemoBroker-Live")
+    assert account is not None
+    repository.upsert_mt5_positions(
+        account.id,
+        [position("1003", net_pnl="3", exit_time="2026-08-01T12:00:00+00:00")],
+        "positions.csv",
+        "same-day-pnl-hash",
+    )
+    service = DashboardService(repository)
+    monkeypatch.setattr(
+        repository,
+        "list_trade_performance",
+        lambda account_id=None: pytest.fail("Today P&L must not rebuild full trade-performance history"),
+    )
+
+    assert service.realized_pnl_on(date(2026, 8, 1)) == "23"
+    assert service.realized_pnl_on(date(2026, 8, 2)) == "-5"
+    assert service.realized_pnl_on(date(2026, 8, 3)) == "0"
 
 
 def test_dashboard_statistics_report_unavailable_ratios_without_valid_denominators(tmp_path: Path) -> None:

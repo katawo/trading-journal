@@ -12,6 +12,8 @@ from trading_journal.presentation.ongoing import (
     ONGOING_REFRESH_INTERVAL_SECONDS,
     _pnl_metric,
     _position_priority,
+    _render_inline_position_state,
+    _risk_buffer_metric,
     _risk_label,
     _risk_metric,
     _unprotected_metric,
@@ -184,6 +186,58 @@ def test_live_metric_colors_follow_risk_and_floating_pnl_state() -> None:
     report.net_unrealized_pnl = Decimal("-3.12")
     assert _risk_metric(report) == ("1.25R", "Over limit", "red", "1.00R account limit")
     assert _pnl_metric(report, "USD") == ("−$3.12", "Loss", "red")
+
+
+def test_risk_buffer_reports_headroom_and_refuses_false_precision() -> None:
+    report = SimpleNamespace(
+        snapshot_time=datetime(2026, 8, 18, 8, 0, tzinfo=timezone.utc),
+        status="within",
+        total_risk_r=Decimal("0.24"),
+        limit_r=Decimal("1"),
+        unprotected_count=0,
+        risk_unavailable_count=0,
+    )
+
+    assert _risk_buffer_metric(report) == ("0.76R", "24% of limit used", "positive")
+
+    report.unprotected_count = 1
+    assert _risk_buffer_metric(report) == (None, "Known risk is a lower bound", "negative")
+
+
+def test_risk_buffer_uses_displayed_utilization_for_threshold_tone() -> None:
+    report = SimpleNamespace(
+        snapshot_time=datetime(2026, 8, 18, 8, 0, tzinfo=timezone.utc),
+        status="within",
+        total_risk_r=Decimal("0.7996"),
+        limit_r=Decimal("1"),
+        unprotected_count=0,
+        risk_unavailable_count=0,
+    )
+
+    assert _risk_buffer_metric(report) == ("0.20R", "80% of limit used", "warning")
+
+    report.total_risk_r = Decimal("0.9996")
+    assert _risk_buffer_metric(report) == ("0.00R", "100% of limit used", "negative")
+
+
+def test_stale_snapshot_withholds_risk_buffer_and_affirmative_empty_state(monkeypatch) -> None:
+    report = SimpleNamespace(
+        snapshot_time=datetime(2026, 8, 18, 8, 0, tzinfo=timezone.utc),
+        status="stale",
+        total_risk_r=Decimal("0.24"),
+        limit_r=Decimal("1"),
+        unprotected_count=0,
+        risk_unavailable_count=0,
+    )
+    rendered: list[str] = []
+    monkeypatch.setattr("trading_journal.presentation.ongoing.st.markdown", rendered.append)
+
+    assert _risk_buffer_metric(report) == (None, "Snapshot stale", "warning")
+    _render_inline_position_state(report)
+
+    assert rendered == [
+        ":material/warning: **Snapshot stale.** Latest position state is unavailable until a fresh MT5 snapshot arrives."
+    ]
 
 
 def test_protected_position_risk_is_unknown_without_a_risk_baseline() -> None:

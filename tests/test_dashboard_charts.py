@@ -148,6 +148,27 @@ def test_dashboard_visual_vocabulary_styles_kickers_and_period_metadata(monkeypa
     assert "text-transform: uppercase;" in period_css
 
 
+def test_ongoing_exposure_metrics_use_four_compact_desktop_columns(monkeypatch) -> None:
+    rendered: list[str] = []
+    monkeypatch.setattr(journal_app.st, "html", rendered.append)
+
+    journal_app.apply_application_style()
+
+    css = rendered[0]
+    ongoing_css = css.split(".ongoing-exposure-columns {", maxsplit=1)[1].split("}", maxsplit=1)[0]
+    divider_css = css.split(".ongoing-exposure-column + .ongoing-exposure-column {", maxsplit=1)[1].split("}", maxsplit=1)[0]
+    label_css = css.split(".ongoing-exposure-columns .dashboard-stat-label {", maxsplit=1)[1].split("}", maxsplit=1)[0]
+    value_css = css.split(".ongoing-exposure-columns .dashboard-stat-value {", maxsplit=1)[1].split("}", maxsplit=1)[0]
+    note_css = css.split(".ongoing-exposure-columns .dashboard-stat-note {", maxsplit=1)[1].split("}", maxsplit=1)[0]
+    mobile_css = css.split("@media (max-width: 760px)", maxsplit=1)[1]
+    assert "grid-template-columns: repeat(4, minmax(0, 1fr));" in ongoing_css
+    assert "border-left: 1px solid" in divider_css
+    assert "font-size: 0.82rem;" in label_css
+    assert "font-size: 1.2rem;" in value_css
+    assert "font-size: 0.86rem;" in note_css
+    assert "grid-template-columns: minmax(0, 1fr);" in mobile_css
+
+
 def test_dashboard_metric_tones_only_color_clear_performance_signals() -> None:
     assert journal_app._signed_metric_tone("12.5") == "positive"
     assert journal_app._signed_metric_tone(Decimal("-0.01")) == "negative"
