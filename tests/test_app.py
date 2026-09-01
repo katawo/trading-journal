@@ -1753,6 +1753,18 @@ def test_reopening_review_after_upgrading_an_auto_review_does_not_crash(monkeypa
         "Mark Risk management as Pass",
         "Mark Trading system as Pass",
     }
+    assert next(
+        item for item in app.button if item.label == "Mark all criteria as Pass"
+    ).proto.type == "primary"
+    assert all(
+        item.proto.type == "secondary"
+        for item in app.button
+        if item.label in {
+            "Mark Psychology as Pass",
+            "Mark Risk management as Pass",
+            "Mark Trading system as Pass",
+        }
+    )
     lower_section_headings = {
         "##### Mistakes and rule breaches",
         "##### Reflection and action",
@@ -1789,6 +1801,10 @@ def test_reopening_review_after_upgrading_an_auto_review_does_not_crash(monkeypa
     next(item for item in app.button if item.label == "Mark all criteria as Pass").click().run()
     assert all(item.value == "Pass" for item in app.segmented_control if item.label in criterion_labels)
     assert any("12 of 12 criteria graded" in item.value for item in app.caption)
+    assert any(
+        item.value == "Marked 12 criteria as Pass. Refreshing the assessment…"
+        for item in app.toast
+    )
     note = next(item for item in app.text_area if item.label == "What happened and what did you learn? *")
     note.set_value("Upgraded from an auto review.").run()
     next(item for item in app.button if item.label == "Save assessment").click().run()

@@ -954,11 +954,20 @@ def _set_pillar_grades_to_pass(
     criteria: Sequence[str],
     state: MutableMapping[str, object] | None = None,
 ) -> None:
-    """Apply an explicit Pass-all choice to one pillar's stable widget keys."""
+    """Apply Pass grades and acknowledge the bulk update before the dialog rerenders."""
 
     target = st.session_state if state is None else state
     for criterion in criteria:
         target[f"assessment-{trade_id}-{criterion}"] = "Pass"
+    if state is None:
+        st.toast(
+            tr(
+                "Marked {count} criteria as Pass. Refreshing the assessment…",
+                count=len(criteria),
+            ),
+            icon="spinner",
+            duration="long",
+        )
 
 
 def _grade_summary(
@@ -1098,7 +1107,7 @@ def _render_post_trade_review_dialog(repo: SQLiteJournalRepository, account: Acc
         "Mark all criteria as Pass",
         key=f"assessment-{trade.id}-pass-all",
         icon=":material/done_all:",
-        type="secondary",
+        type="primary",
         on_click=_set_pillar_grades_to_pass,
         args=(trade.id, ASSESSMENT_CRITERIA),
     )

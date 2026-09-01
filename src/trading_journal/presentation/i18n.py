@@ -369,6 +369,7 @@ VI: dict[str, str] = {
     "Mark a pillar as Pass, then change only the Partial or Fail exceptions.": "Đánh dấu cả trụ cột là Đạt, sau đó chỉ sửa các ngoại lệ Một phần hoặc Không đạt.",
     "Mark {pillar} as Pass": "Đánh dấu {pillar} là Đạt",
     "Mark all criteria as Pass": "Đánh dấu tất cả tiêu chí là Đạt",
+    "Marked {count} criteria as Pass. Refreshing the assessment…": "Đã đánh dấu {count} tiêu chí là Đạt. Đang làm mới đánh giá…",
     "Save & review next ({count} left)": "Lưu & xem xét mục tiếp theo (còn {count})",
     "Change only the criteria that were Partial or Fail.": "Chỉ thay đổi các tiêu chí là Một phần hoặc Không đạt.",
     "Review details": "Chi tiết đánh giá",
