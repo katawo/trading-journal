@@ -43,7 +43,7 @@ def _repository(tmp_path: Path) -> tuple[SQLiteJournalRepository, int]:
     return repository, repository.list_mt5_accounts()[0].id
 
 
-def test_schema_v4_uses_account_currency_and_preserves_original_server_clock(tmp_path: Path) -> None:
+def test_current_export_uses_account_currency_and_preserves_original_server_clock(tmp_path: Path) -> None:
     repository, account_id = _repository(tmp_path)
     export_path = tmp_path / "positions.csv"
     _write_v5_export(export_path)

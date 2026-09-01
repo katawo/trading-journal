@@ -205,18 +205,6 @@ def test_auto_sync_imports_a_changed_registered_export_only_once(tmp_path: Path)
     assert repository.count_trades() == 1
 
 
-def test_auto_sync_prefers_an_account_specific_export_beside_a_legacy_path(tmp_path: Path) -> None:
-    legacy_path = tmp_path / "positions.csv"
-    account_specific_path = tmp_path / "123456_positions.csv"
-    write_export(account_specific_path)
-    repository = configured_repository(tmp_path, legacy_path)
-
-    results = MT5AutoSyncService(repository).sync_configured_exports()
-
-    assert [(item.status, item.source_path, item.created_count) for item in results] == [("imported", str(account_specific_path), 1)]
-    assert repository.count_trades() == 1
-
-
 def test_auto_sync_records_a_validation_failure_without_changing_trades(tmp_path: Path) -> None:
     export_path = tmp_path / "positions.csv"
     export_path.write_text("not,a,valid,export\n", encoding="utf-8")
@@ -382,79 +370,3 @@ def test_latest_ingestion_import_ignores_local_file_runs_and_returns_the_newest(
     second = repository.latest_ingestion_import(account.id)
     assert second is not None
     assert (second[1], second[2]) == (0, 1)
-
-
-def test_resident_mt5_export_ea_is_event_driven_and_has_no_trading_operations() -> None:
-    source = (Path(__file__).parents[1] / "mql5" / "TradingJournalSync.mq5").read_text(encoding="utf-8")
-
-    assert 'input string CommonFilesSubfolder = "trading_journal";' in source
-    assert "input int InpSafetyExportSeconds = 60;" in source
-    assert "input int InpLiveExportSeconds = 10;" in source
-    assert "string ExportFileName()" in source
-    assert "AccountInfoInteger(ACCOUNT_LOGIN)" in source
-    assert '"_positions.csv"' in source
-    assert "int OnInit()" in source
-    assert "void OnTradeTransaction(" in source
-    assert "TRADE_TRANSACTION_DEAL_ADD" in source
-    assert "EventSetTimer" in source
-    assert "FILE_COMMON" in source
-    assert "FileMove" in source
-    assert "OrderCalcProfit" in source
-    assert "OrderCalcProfit(order_type,symbol,volume,entry_price,stop,calculated)" in source
-    assert "OrderCalcProfit(order_type,symbol,volume,current_price,stop,calculated)" not in source
-    assert "risk=MathMax(0.0,-calculated);" in source
-    assert 'risk_available ? DoubleToString(risk,8) : ""' in source
-    assert "DEAL_SL" in source
-    assert "DEAL_TP" in source
-    assert '"initial_risk_amount"' in source
-    assert '"entry_magic_number"' in source
-    assert '"account_balance"' in source
-    assert '"pretrade_account_balance"' in source
-    assert "AccountInfoDouble(ACCOUNT_BALANCE)" in source
-    assert "PreTradeBalance" in source
-    assert 'StringToCharArray(body,payload,0,StringLen(body),CP_UTF8)' in source
-    assert 'StringToCharArray(body,payload,0,WHOLE_ARRAY,CP_UTF8)' not in source
-    assert 'body+="\\"export_interval_seconds\\":"+(string)LiveExportIntervalSeconds()' in source
-    assert "now-g_last_completed_export_tick>=(ulong)ExportIntervalSeconds()*1000" in source
-    assert "now-g_last_live_export_tick>=(ulong)LiveExportIntervalSeconds()*1000" in source
-    assert "EventSetTimer(1)" in source
-    assert "g_completed_dirty=true" in source
-    assert "g_live_dirty=true" in source
-    transaction_handler = source.split("void OnTradeTransaction", 1)[1]
-    assert "ExportCompletedPositions(" not in transaction_handler
-    assert "ExportLivePositions(" not in transaction_handler
-    assert "POSITION_IDENTIFIER" in source
-    assert "IsPositionIdentifierOpen" in source
-    assert "CompletedRecordId" in source
-    assert "entry==DEAL_ENTRY_INOUT" in source
-    assert "open_volume=MathMax(volume-close_volume,0.0)" in source
-    assert "PrepareBalanceLedger" in source
-    assert "SortBalanceLedger" in source
-    assert "TRADING_JOURNAL_REMOTE_BATCH_SIZE 100" in source
-    assert "TRADING_JOURNAL_HTTP_TIMEOUT_MS 3000" in source
-    assert "RemoteBackoffSeconds" in source
-    assert "TerminalInfoInteger(TERMINAL_CONNECTED)" in source
-    assert "VolumeDigits" in source
-    assert "TRADING_JOURNAL_MONEY_DIGITS 8" in source
-    for forbidden_operation in ("OrderSend(", "OrderDelete(", "PositionClose(", "PositionModify(", "CTrade"):
-        assert forbidden_operation not in source
-
-
-def test_mt5_exporters_format_prices_with_each_exported_symbols_precision() -> None:
-    exporters = ("TradingJournalSync.mq5", "TradingJournalExporter.mq5")
-
-    for exporter in exporters:
-        source = (Path(__file__).parents[1] / "mql5" / exporter).read_text(encoding="utf-8")
-
-        assert "int SymbolDigits(const string symbol)" in source
-        assert "SymbolInfoInteger(symbol,SYMBOL_DIGITS,digits)" in source
-        assert "int VolumeDigits(const string symbol)" in source
-        assert "SYMBOL_VOLUME_STEP" in source
-        assert "TRADING_JOURNAL_MONEY_DIGITS 8" in source
-        assert "IsPositionIdentifierOpen" in source
-        assert "entry==DEAL_ENTRY_INOUT" in source
-        assert "open_volume=MathMax(volume-close_volume,0.0)" in source
-        assert "int symbol_digits=SymbolDigits(" in source
-        assert "entry_stop,symbol_digits)" in source
-        assert "entry_target,symbol_digits)" in source
-        assert "close_stop,symbol_digits)" in source

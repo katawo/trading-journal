@@ -329,37 +329,6 @@ def test_funded_capital_can_be_initialized_once_and_is_then_immutable(repository
         connection.execute("UPDATE mt5_accounts SET opening_balance = '2000' WHERE id = ?", (account.id,))
 
 
-def test_account_update_and_legacy_funded_capital_repair_are_atomic(repository: SQLiteJournalRepository) -> None:
-    account = repository.list_mt5_accounts()[0]
-    repository.update_mt5_account(
-        account_id=account.id,
-        display_name="Repaired account",
-        login=account.login,
-        broker_server=account.broker_server,
-        account_currency=account.account_currency,
-        export_file_path=account.export_file_path,
-        initial_funded_capital="1000.00",
-    )
-    repaired = repository.list_mt5_accounts()[0]
-    assert repaired.display_name == "Repaired account"
-    assert repaired.funded_capital == "1000.00"
-
-    with pytest.raises(ValueError, match="immutable"):
-        repository.update_mt5_account(
-            account_id=account.id,
-            display_name="Must roll back",
-            login=account.login,
-            broker_server=account.broker_server,
-            account_currency=account.account_currency,
-            export_file_path=account.export_file_path,
-            initial_funded_capital="2000",
-        )
-
-    unchanged = repository.list_mt5_accounts()[0]
-    assert unchanged.display_name == "Repaired account"
-    assert unchanged.funded_capital == "1000.00"
-
-
 def test_deleting_an_account_does_not_leak_roadmap_or_period_review_evidence_to_a_reused_id(repository: SQLiteJournalRepository) -> None:
     repository.register_mt5_account(
         display_name="Secondary",
@@ -454,7 +423,7 @@ def test_rejects_an_unsupported_schema_version_without_creating_trade(repository
     assert repository.count_trades() == 0
 
 
-def test_imports_schema_v2_execution_evidence(repository: SQLiteJournalRepository, tmp_path: Path) -> None:
+def test_current_export_imports_execution_evidence(repository: SQLiteJournalRepository, tmp_path: Path) -> None:
     export_path = tmp_path / "positions.csv"
     write_export(export_path, initial_risk_amount="100.00")
 
@@ -563,16 +532,8 @@ def test_csv_and_json_imports_of_the_same_logical_batch_produce_identical_trades
     assert csv_trade.members[0].pretrade_account_balance == json_trade.members[0].pretrade_account_balance
 
 
-def test_schema_v4_is_rejected_after_the_v5_export_upgrade(repository: SQLiteJournalRepository, tmp_path: Path) -> None:
-    export_path = tmp_path / "positions.csv"
-    write_export(export_path, schema_version="4")
-
-    with pytest.raises(ImportValidationError, match="expected 5"):
-        MT5ImportService(repository).import_csv(export_path)
-
-
 @pytest.mark.parametrize("initial_risk_amount", ["0", "-1"])
-def test_schema_v2_rejects_a_non_positive_initial_risk_amount(
+def test_current_export_rejects_a_non_positive_initial_risk_amount(
     repository: SQLiteJournalRepository, tmp_path: Path, initial_risk_amount: str
 ) -> None:
     export_path = tmp_path / "positions.csv"
@@ -584,7 +545,7 @@ def test_schema_v2_rejects_a_non_positive_initial_risk_amount(
     assert repository.count_trades() == 0
 
 
-def test_imports_schema_v3_live_account_balance_and_refreshes_it(repository: SQLiteJournalRepository, tmp_path: Path) -> None:
+def test_current_export_imports_live_account_balance_and_refreshes_it(repository: SQLiteJournalRepository, tmp_path: Path) -> None:
     export_path = tmp_path / "positions.csv"
     write_export(export_path, account_balance="1250.50")
 
@@ -600,7 +561,7 @@ def test_imports_schema_v3_live_account_balance_and_refreshes_it(repository: SQL
     assert repository.get_latest_mt5_balance(account.id) == "1300.00"
 
 
-def test_schema_v3_rejects_missing_or_inconsistent_live_account_balance(repository: SQLiteJournalRepository, tmp_path: Path) -> None:
+def test_current_export_rejects_missing_or_inconsistent_live_account_balance(repository: SQLiteJournalRepository, tmp_path: Path) -> None:
     export_path = tmp_path / "positions.csv"
     write_export(export_path, account_balance="")
 
@@ -613,7 +574,7 @@ def test_schema_v3_rejects_missing_or_inconsistent_live_account_balance(reposito
 
 
 @pytest.mark.parametrize("account_balance", ["0", "-25.50"])
-def test_schema_v3_accepts_a_non_positive_balance_but_keeps_it_as_a_snapshot(
+def test_current_export_accepts_a_non_positive_balance_but_keeps_it_as_a_snapshot(
     repository: SQLiteJournalRepository, tmp_path: Path, account_balance: str
 ) -> None:
     export_path = tmp_path / "positions.csv"

@@ -8,8 +8,11 @@ Trade Compass is a local-first Python 3.12+ Streamlit trading journal. Keep core
 
 - `make setup` creates `.venv` and installs the application plus test dependencies.
 - `make run` starts Streamlit with reload-on-save for source development.
-- `make test` runs the pytest suite quietly.
-- `make check` runs tests, then compiles `app.py` and `src/` as a fast syntax check.
+- `make test` runs fast maintained behavior tests plus a Streamlit smoke render.
+- `make test-bdd` runs scenarios explicitly organized as Given/When/Then.
+- `make test-web` runs the slower Streamlit interaction regression scenarios.
+- `make test-browser` runs optional real-browser behavior when Chromium is available.
+- `make check` runs the fast test gate, then compiles `app.py` and `src/`.
 
 Set `TRADING_JOURNAL_DB` to use a non-default development database. Never run `make reset-db CONFIRM_RESET=yes` unless intentionally deleting local journal data.
 
@@ -19,7 +22,7 @@ Use four-space indentation, type hints where they clarify interfaces, and standa
 
 ## Testing Guidelines
 
-Add or update pytest coverage for every behavior change, especially imports, persistence, risk calculations, and framework scoring. Keep tests deterministic by using temporary databases and explicit timestamps. Run `make check` before opening a pull request. Do not include `legacy/` in routine tests, compilation, packaging, or maintenance work unless a task explicitly targets the archive.
+Add or update pytest coverage for every behavior change, especially imports, persistence, risk calculations, and framework scoring. Express scenarios as `given / when / then` in the test name or arrange the body under those comments when it improves clarity. Test observable behavior instead of source text or historical compatibility. Keep tests deterministic by using temporary databases and explicit timestamps. Run `make check` before opening a pull request; run `make test-web` for Streamlit interaction changes. Do not include `legacy/` in tests, compilation, packaging, or maintenance work.
 
 ## Commit & Pull Request Guidelines
 

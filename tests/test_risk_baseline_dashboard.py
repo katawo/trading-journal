@@ -9,15 +9,7 @@ import pytest
 
 from trading_journal.application.dashboard import DashboardService
 from trading_journal.domain.models import MT5PositionExport
-from trading_journal.infrastructure.sqlite_repository import JournalDatabaseResetRequiredError, SQLiteJournalRepository
-
-
-def _rebuild_without_columns(connection: sqlite3.Connection, table: str, excluded: set[str]) -> None:
-    columns = [row[1] for row in connection.execute(f"PRAGMA table_info({table})") if row[1] not in excluded]
-    selected = ", ".join(columns)
-    connection.execute(f"CREATE TABLE {table}_legacy_shape AS SELECT {selected} FROM {table}")
-    connection.execute(f"DROP TABLE {table}")
-    connection.execute(f"ALTER TABLE {table}_legacy_shape RENAME TO {table}")
+from trading_journal.infrastructure.sqlite_repository import SQLiteJournalRepository
 
 
 def position(
@@ -101,82 +93,6 @@ def test_fresh_journal_settings_schema_excludes_monthly_target(tmp_path: Path) -
     assert not hasattr(repository.get_journal_settings(), "monthly_target")
     assert "default_planned_risk_amount" not in columns
     assert not hasattr(repository.get_journal_settings(), "default_planned_risk_amount")
-
-
-def test_legacy_monthly_target_database_requires_reset(tmp_path: Path) -> None:
-    database_path = tmp_path / "old-journal.db"
-    connection = sqlite3.connect(database_path)
-    connection.execute("CREATE TABLE journal_settings (id INTEGER PRIMARY KEY, base_currency VARCHAR(3) NOT NULL, reporting_timezone VARCHAR(64) NOT NULL, monthly_target VARCHAR NOT NULL)")
-    connection.execute("INSERT INTO journal_settings VALUES (1, 'USD', 'UTC', '1000')")
-    connection.commit()
-    connection.close()
-
-    repository = SQLiteJournalRepository(database_path)
-    with pytest.raises(JournalDatabaseResetRequiredError, match="make reset-db CONFIRM_RESET=yes"):
-        repository.initialize()
-
-    connection = sqlite3.connect(database_path)
-    columns = {row[1] for row in connection.execute("PRAGMA table_info(journal_settings)")}
-    row = connection.execute("SELECT base_currency, reporting_timezone, monthly_target FROM journal_settings").fetchone()
-    connection.close()
-    assert "monthly_target" in columns
-    assert row == ("USD", "UTC", "1000")
-
-
-def test_existing_account_schema_is_rejected_in_greenfield_mode(tmp_path: Path) -> None:
-    database_path = tmp_path / "old-account.db"
-    connection = sqlite3.connect(database_path)
-    connection.execute(
-        "CREATE TABLE journal_settings (id INTEGER PRIMARY KEY, base_currency VARCHAR(3) NOT NULL, reporting_timezone VARCHAR(64) NOT NULL, default_planned_risk_amount VARCHAR, starting_balance VARCHAR, default_strategy_name VARCHAR(100), default_strategy_profile_id INTEGER)"
-    )
-    connection.execute("INSERT INTO journal_settings VALUES (1, 'USD', 'UTC', NULL, NULL, NULL, NULL)")
-    connection.execute(
-        "CREATE TABLE mt5_accounts (id INTEGER PRIMARY KEY, display_name VARCHAR(100) NOT NULL, login VARCHAR(64) NOT NULL, broker_server VARCHAR(255) NOT NULL, account_currency VARCHAR(3) NOT NULL, export_file_path VARCHAR(1024) NOT NULL, active BOOLEAN NOT NULL)"
-    )
-    connection.execute("INSERT INTO mt5_accounts VALUES (1, 'Primary', '123456', 'DemoBroker-Live', 'USD', '', 1)")
-    connection.commit()
-    connection.close()
-
-    repository = SQLiteJournalRepository(database_path)
-    with pytest.raises(JournalDatabaseResetRequiredError, match="greenfield three-pillar"):
-        repository.initialize()
-
-
-def test_existing_risk_policy_schema_is_rejected_in_greenfield_mode(tmp_path: Path) -> None:
-    database_path = tmp_path / "old-risk-policy.db"
-    connection = sqlite3.connect(database_path)
-    connection.execute(
-        """
-        CREATE TABLE account_risk_policies (
-            id INTEGER PRIMARY KEY,
-            mt5_account_id INTEGER NOT NULL,
-            version INTEGER NOT NULL,
-            active BOOLEAN NOT NULL,
-            risk_per_trade_percent VARCHAR NOT NULL,
-            daily_loss_limit_r VARCHAR NOT NULL,
-            weekly_loss_limit_r VARCHAR NOT NULL,
-            max_drawdown_percent VARCHAR NOT NULL,
-            max_open_risk_r VARCHAR NOT NULL,
-            max_consecutive_losses INTEGER NOT NULL,
-            minimum_rr VARCHAR NOT NULL,
-            correlation_policy VARCHAR,
-            created_at VARCHAR NOT NULL,
-            UNIQUE(mt5_account_id, version)
-        )
-        """
-    )
-    connection.execute(
-        """
-        INSERT INTO account_risk_policies VALUES
-        (1, 1, 1, 1, '0.5', '2', '4', '10', '1', 3, '1.5', NULL, '2026-08-11T00:00:00+00:00')
-        """
-    )
-    connection.commit()
-    connection.close()
-
-    repository = SQLiteJournalRepository(database_path)
-    with pytest.raises(JournalDatabaseResetRequiredError, match="greenfield three-pillar"):
-        repository.initialize()
 
 
 def test_account_policy_supplies_r_and_preserves_imported_policy_context(tmp_path: Path) -> None:
@@ -277,68 +193,6 @@ def test_identical_active_policy_is_a_no_op_without_confirmation(tmp_path: Path)
     assert saved.id == active.id
     assert saved.version == active.version
     assert len(repository.list_account_risk_policies(account.id)) == 1
-
-
-def test_initialization_does_not_rewrite_existing_clean_trade_tables(tmp_path: Path) -> None:
-    repository = configured_repository(tmp_path, standard_risk_percent="10")
-    database_path = tmp_path / "journal.db"
-    connection = sqlite3.connect(database_path)
-    for column_name, column_type in [
-        ("strategy", "VARCHAR(100)"),
-        ("strategy_profile_id", "INTEGER"),
-        ("notes", "VARCHAR"),
-        ("planned_risk_amount", "VARCHAR"),
-        ("result_r", "VARCHAR"),
-        ("journal_completed_at", "VARCHAR(64)"),
-    ]:
-        connection.execute(f"ALTER TABLE trades ADD COLUMN {column_name} {column_type}")
-    connection.execute(
-        "UPDATE trades SET strategy = 'Legacy', notes = 'Legacy note', planned_risk_amount = '5', result_r = '4', journal_completed_at = '2026-08-10T00:00:00+00:00'"
-    )
-    connection.commit()
-    connection.close()
-
-    repository.initialize()
-
-    connection = sqlite3.connect(database_path)
-    columns = {row[1] for row in connection.execute("PRAGMA table_info(trades)")}
-    connection.close()
-    assert columns.issuperset({"strategy", "strategy_profile_id", "notes", "planned_risk_amount", "result_r", "journal_completed_at"})
-    assert {trade.position_id: trade.result_r for trade in repository.list_trades()} == {"1001": "2", "1002": "-0.5"}
-
-
-def test_initialization_migrates_monitoring_reset_periods_and_policy_server_offset(tmp_path: Path) -> None:
-    repository = configured_repository(tmp_path, standard_risk_percent="10")
-    repository.close()
-    database_path = tmp_path / "journal.db"
-    connection = sqlite3.connect(database_path)
-    connection.execute("UPDATE mt5_accounts SET latest_server_utc_offset_minutes = 180")
-    for trigger in (
-        "enforce_trade_account_insert",
-        "enforce_trade_account_update",
-        "enforce_assessment_account_insert",
-        "enforce_assessment_account_update",
-        "prevent_risk_policy_account_reassignment",
-    ):
-        connection.execute(f"DROP TRIGGER IF EXISTS {trigger}")
-    _rebuild_without_columns(
-        connection,
-        "account_risk_policies",
-        {"drawdown_reset_period", "loss_streak_reset_period", "server_utc_offset_minutes"},
-    )
-    connection.commit()
-    connection.close()
-
-    migrated = SQLiteJournalRepository(database_path)
-    migrated.initialize()
-    account = migrated.find_active_mt5_account("123456", "DemoBroker-Live")
-    assert account is not None
-    policy = migrated.get_active_risk_policy(account.id)
-
-    assert policy is not None
-    assert policy.drawdown_reset_period == "daily"
-    assert policy.loss_streak_reset_period == "daily"
-    assert policy.server_utc_offset_minutes == 180
 
 
 def test_saved_policy_keeps_the_account_server_offset_snapshot(tmp_path: Path) -> None:

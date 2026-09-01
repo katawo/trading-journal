@@ -4,7 +4,6 @@ from trading_journal.domain.review_taxonomy import (
     REVIEW_MISTAKES_BY_PILLAR,
     VIOLATION_CODES,
     VIOLATION_PILLARS,
-    canonical_violation_code,
     violation_sort_key,
 )
 
@@ -22,14 +21,6 @@ def test_current_mistake_order_is_derived_from_the_three_pillars() -> None:
 
     assert REVIEW_MISTAKE_CODES == expected
     assert len(REVIEW_MISTAKE_CODES) == len(set(REVIEW_MISTAKE_CODES))
-
-
-def test_legacy_loss_limits_share_the_current_analytics_code() -> None:
-    assert {
-        canonical_violation_code("daily_limit"),
-        canonical_violation_code("weekly_limit"),
-        canonical_violation_code("drawdown_limit"),
-    } == {"loss_limit_exceeded"}
 
 
 def test_issue_ties_use_hard_rule_then_taxonomy_order() -> None:

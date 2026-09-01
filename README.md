@@ -9,7 +9,7 @@ make setup
 make run
 ```
 
-`make run` keeps Streamlit running and automatically reruns the app when source files are saved. Use `make test` for tests and `make check` for tests plus compilation.
+`make run` keeps Streamlit running and automatically reruns the app when source files are saved. `make test` runs the fast maintained behavior suite plus a Streamlit smoke render; `make test-bdd` selects explicit Given/When/Then scenarios; `make test-web` runs the fuller Streamlit interaction regression suite, and `make test-browser` runs the optional Chromium scenario. Use `make check` for the fast suite plus compilation.
 
 Set `TRADING_JOURNAL_DB` to choose a database location during source development; it defaults to `data/trading_journal.db`.
 To intentionally erase all local accounts, imports, settings, strategies, and framework evidence, run `make reset-db CONFIRM_RESET=yes`. Restart the app afterwards to create a clean database. The three-pillar framework is greenfield: databases from an earlier schema must be reset before they can be opened; the app does not migrate or reinterpret old reviews.

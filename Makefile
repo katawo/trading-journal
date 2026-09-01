@@ -16,7 +16,7 @@ COMPOSE := docker compose -f deploy/docker-compose.yml
 
 .DEFAULT_GOAL := help
 
-.PHONY: help venv setup run test check reset-db \
+.PHONY: help venv setup run test test-bdd test-web test-browser check reset-db \
         deploy-systemd deploy-systemd-down deploy-docker deploy-docker-down \
         web-user web-token docker-user docker-token \
         docker-logs docker-shell docker-status \
@@ -40,6 +40,15 @@ run: venv ## Start Streamlit with automatic reruns when source files are saved.
 
 test: venv ## Run the automated test suite.
 	$(VENV_PYTHON) -m pytest -q
+
+test-bdd: venv ## Run Given/When/Then behavior scenarios.
+	$(VENV_PYTHON) -m pytest -v -m bdd
+
+test-web: venv ## Run the maintained Streamlit interaction regression suite.
+	$(VENV_PYTHON) -m pytest -q -m web
+
+test-browser: venv ## Run real-browser web behavior tests when Chromium is available.
+	$(VENV_PYTHON) -m pytest -q -m browser
 
 check: test ## Compile the application after the tests pass.
 	$(VENV_PYTHON) -m compileall -q $(APP) src

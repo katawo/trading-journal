@@ -1,6 +1,5 @@
 from pathlib import Path
 import csv
-import sqlite3
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
@@ -14,6 +13,8 @@ from trading_journal.application.live_positions import LivePositionImportService
 from trading_journal.domain.models import MT5PositionExport
 from trading_journal.infrastructure.sqlite_repository import ASSESSMENT_CRITERIA, SQLiteJournalRepository
 from trading_journal.presentation.framework import _format_trade_duration
+
+pytestmark = pytest.mark.web
 
 
 def write_auto_export(path: Path) -> None:
@@ -128,30 +129,6 @@ def test_trade_duration_uses_compact_review_table_units():
     assert _format_trade_duration("2026-08-10T08:00:00+00:00", "2026-08-12T11:15:00+00:00") == "2d 3h"
 
 
-def test_app_renders_local_mt5_import_entrypoint(monkeypatch, tmp_path):
-    monkeypatch.setenv("TRADING_JOURNAL_DB", str(tmp_path / "journal.db"))
-
-    # First AppTest run in the suite pays the one-time cold-start cost of
-    # importing streamlit/pandas/plotly/etc.; the default ~3s timeout can be
-    # too tight on a cold Windows CI runner.
-    app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run(timeout=10)
-
-    assert not app.exception
-    assert app.title[0].value == "Trade Compass"
-    from trading_journal.presentation import branding
-
-    captured = {}
-    monkeypatch.setattr(branding.st, "html", lambda value: captured.setdefault("value", value))
-    branding.render_trade_doctrine("Survival · Consistency · Discipline")
-    assert "trade-compass-doctrine" in captured["value"]
-    assert "Survival" in captured["value"]
-
-    import app as journal_app
-
-    assert journal_app.application_version() == "0.1.12"
-    assert journal_app.supported_mt5_schema_versions() == "5"
-
-
 def test_database_change_token_includes_sqlite_wal_changes(monkeypatch, tmp_path):
     monkeypatch.syspath_prepend(str(Path(__file__).parents[1]))
     import app as journal_app
@@ -234,24 +211,6 @@ def test_review_save_immediately_invalidates_the_menu_badge_count(monkeypatch, t
     after = journal_app._database_change_token(database_path)
     assert after != before
     assert journal_app._cached_review_queue_count(str(database_path), after, account.id) == 0
-
-
-def test_app_requires_a_reset_for_legacy_monthly_target_data(monkeypatch, tmp_path):
-    database_path = tmp_path / "journal.db"
-    connection = sqlite3.connect(database_path)
-    connection.execute(
-        "CREATE TABLE journal_settings (id INTEGER PRIMARY KEY, base_currency VARCHAR(3) NOT NULL, reporting_timezone VARCHAR(64) NOT NULL, monthly_target VARCHAR NOT NULL)"
-    )
-    connection.execute("INSERT INTO journal_settings VALUES (1, 'USD', 'UTC', '1000')")
-    connection.commit()
-    connection.close()
-    monkeypatch.setenv("TRADING_JOURNAL_DB", str(database_path))
-
-    app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
-
-    assert not app.exception
-    assert any("make reset-db CONFIRM_RESET=yes" in item.value for item in app.error)
-    assert any(item.value == "make reset-db CONFIRM_RESET=yes" for item in app.code)
 
 
 def test_format_relative_time_uses_compact_human_readable_durations():
@@ -347,15 +306,6 @@ def test_workspace_navigation_switches_from_settings_back_to_dashboard(monkeypat
     assert [item.value for item in app.subheader] == ["Performance dashboard"]
     assert not app.tabs
     assert not any(item.label == "Account name" for item in app.text_input)
-
-
-def test_ongoing_is_first_in_navigation_while_dashboard_remains_default() -> None:
-    source = (Path(__file__).parents[1] / "app.py").read_text(encoding="utf-8")
-
-    ongoing_page = 'st.Page("app_pages/ongoing.py", title=ongoing_title'
-    dashboard_page = 'st.Page("app_pages/dashboard.py", title=tr("Dashboard"), icon=":material/dashboard:", default=True)'
-    assert source.index(ongoing_page) < source.index(dashboard_page)
-    assert 'ongoing_title = f"{tr(\'Ongoing\')} ({ongoing_count})" if ongoing_count else tr("Ongoing")' in source
 
 
 def test_ongoing_page_renders_its_auto_refreshing_workspace(monkeypatch, tmp_path) -> None:

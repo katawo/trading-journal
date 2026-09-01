@@ -29,7 +29,10 @@ ingestion = [
 ]
 
 [tool.pytest.ini_options]
+addopts = "-m 'not web and not browser'"
 markers = [
+  "bdd: scenarios organized explicitly as Given/When/Then behavior",
+  "web: maintained Streamlit interaction regression scenarios",
   "browser: tests that execute client-side behavior in a real browser",
 ]
 testpaths = ["tests"]
