@@ -64,7 +64,7 @@ def _render_live_positions(repo: SQLiteJournalRepository, account: AccountListIt
     unprotected_value, _, unprotected_color = _unprotected_metric(report)
     pnl_value, _, pnl_color = _pnl_metric(report, account.account_currency)
     risk_buffer_value, risk_buffer_detail, risk_buffer_tone = _risk_buffer_metric(report)
-    exposure_column, positions_column = st.columns([1, 2.25], gap="large")
+    exposure_column, positions_column = st.columns([1, 2.25], gap="small")
     with exposure_column.container(border=True, key="ongoing-exposure-snapshot"):
         with st.container(horizontal=True, vertical_alignment="center", gap="small"):
             st.markdown(f"#### {tr('Exposure snapshot')}")
@@ -438,7 +438,7 @@ def _render_today_action_center(repo: SQLiteJournalRepository, account: AccountL
                     args=(pending[0].trade_id, tuple(item.trade_id for item in pending[1:])),
                 )
         _render_today_metrics(overview, account)
-        trade_column, coaching_column = st.columns([1.45, 1], gap="large")
+        trade_column, coaching_column = st.columns([1.45, 1], gap="small")
         with trade_column:
             _render_today_trades(overview, account)
             _render_today_issues(overview)
