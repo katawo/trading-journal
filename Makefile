@@ -17,7 +17,7 @@ COMPOSE := docker compose -f deploy/docker-compose.yml
 .DEFAULT_GOAL := help
 
 .PHONY: help venv setup run test test-bdd test-web test-browser check reset-db \
-        deploy-systemd deploy-systemd-down deploy-docker deploy-docker-down \
+        deploy-systemd deploy-systemd-down deploy-docker deploy-docker-no-cache deploy-docker-down \
         web-user web-token docker-user docker-token \
         docker-logs docker-shell docker-status \
         docker-restart docker-restart-web docker-restart-ingestion docker-restart-caddy
@@ -85,6 +85,12 @@ deploy-docker: ## Deploy the multi-user web app + ingestion API + Caddy with Doc
 	@test -f deploy/.env || { echo "Create deploy/.env from deploy/.env.example and set TRADING_JOURNAL_MULTIUSER_COOKIE_KEY (openssl rand -hex 32)."; exit 2; }
 	$(COMPOSE) --env-file deploy/.env up -d --build
 	@echo "Started. Create accounts with: $(COMPOSE) run --rm web python scripts/add_web_user.py alice --name Alice --email a@example.com"
+
+deploy-docker-no-cache: ## Rebuild all Python packages without Docker or pip caches, then deploy.
+	@test -f deploy/.env || { echo "Create deploy/.env from deploy/.env.example and set TRADING_JOURNAL_MULTIUSER_COOKIE_KEY (openssl rand -hex 32)."; exit 2; }
+	$(COMPOSE) --env-file deploy/.env build --no-cache --build-arg PIP_NO_CACHE_DIR=1 web
+	$(COMPOSE) --env-file deploy/.env up -d --no-build
+	@echo "Rebuilt without caches and started the Docker deployment."
 
 deploy-docker-down: ## Stop the Docker web deployment (data volume is preserved).
 	$(COMPOSE) down
