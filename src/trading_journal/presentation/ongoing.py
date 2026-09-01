@@ -52,9 +52,10 @@ def _render_live_positions(repo: SQLiteJournalRepository, account: AccountListIt
     if report.status != "within":
         _render_status(report.status, report.detail)
     snapshot_text = "No snapshot" if report.snapshot_time is None else report.snapshot_time.strftime("%Y-%m-%d %H:%M:%S UTC")
+    live_activity = _live_activity_indicator(report)
     st.markdown(
         '<div class="dashboard-period">'
-        f'{escape(tr("Live"))} · {escape(tr("Snapshot"))} {escape(tr(snapshot_text))} · '
+        f'{live_activity}{escape(tr("Live"))} · {escape(tr("Snapshot"))} {escape(tr(snapshot_text))} · '
         f'{escape(tr("Refresh"))} {ONGOING_REFRESH_INTERVAL_SECONDS}s'
         "</div>",
         unsafe_allow_html=True,
@@ -63,36 +64,44 @@ def _render_live_positions(repo: SQLiteJournalRepository, account: AccountListIt
     unprotected_value, _, unprotected_color = _unprotected_metric(report)
     pnl_value, _, pnl_color = _pnl_metric(report, account.account_currency)
     risk_buffer_value, risk_buffer_detail, risk_buffer_tone = _risk_buffer_metric(report)
-    with st.container(border=True, key="ongoing-exposure-snapshot"):
-        header, status = st.columns([3, 2], vertical_alignment="center")
-        with header:
+    exposure_column, positions_column = st.columns([1, 2.25], gap="large")
+    with exposure_column.container(border=True, key="ongoing-exposure-snapshot"):
+        with st.container(horizontal=True, vertical_alignment="center", gap="small"):
             st.markdown(f"#### {tr('Exposure snapshot')}")
-            st.caption(tr("Action-first live account risk. Floating values do not affect closed-trade reporting."))
-        with status:
-            if report.status == "within":
-                with st.container(horizontal_alignment="right", gap=None):
-                    st.badge(tr("Within limit"), icon=":material/check_circle:", color="green")
-                    st.caption(tr(report.detail), text_alignment="right")
-        _render_compact_columns(
-            pnl_items=[
-                (tr("Unrealized P&L"), pnl_value, _METRIC_COLOR_TO_TONE[pnl_color], None),
-            ],
-            position_items=[
+            with st.popover("?", width="content"):
+                st.caption(tr("Action-first live account risk. Floating values do not affect closed-trade reporting."))
+        if report.status == "within":
+            st.badge(tr("Within limit"), icon=":material/check_circle:", color="green")
+        _render_compact_stack(
+            (
                 (
-                    tr("Open positions"),
-                    None if report.snapshot_time is None else str(len(report.positions)),
-                    "info" if report.positions else "neutral",
-                    None,
+                    (tr("Unrealized P&L"), pnl_value, _METRIC_COLOR_TO_TONE[pnl_color], None),
                 ),
-                (tr("Unprotected"), unprotected_value, _METRIC_COLOR_TO_TONE[unprotected_color], None),
-            ],
-            risk_item=(tr("Known open risk"), risk_value, _METRIC_COLOR_TO_TONE[risk_color], risk_description),
-            buffer_item=(tr("Risk buffer"), risk_buffer_value, risk_buffer_tone, risk_buffer_detail),
+                (
+                    (
+                        tr("Open positions"),
+                        None if report.snapshot_time is None else str(len(report.positions)),
+                        "info" if report.positions else "neutral",
+                        None,
+                    ),
+                    (tr("Unprotected"), unprotected_value, _METRIC_COLOR_TO_TONE[unprotected_color], None),
+                ),
+                (
+                    (tr("Known open risk"), risk_value, _METRIC_COLOR_TO_TONE[risk_color], risk_description),
+                    (tr("Risk buffer"), risk_buffer_value, risk_buffer_tone, risk_buffer_detail),
+                ),
+            )
         )
-        if not report.positions:
-            _render_inline_position_state(report)
-    if report.positions:
+    with positions_column:
         _render_positions(report, account)
+
+
+def _live_activity_indicator(report) -> str:  # type: ignore[no-untyped-def]
+    """Show motion only while fresh open positions are being monitored."""
+
+    if not report.positions or report.status == "stale":
+        return ""
+    return '<span class="ongoing-live-pulse" aria-hidden="true"></span>'
 
 
 def _render_header(account: AccountListItem | None) -> None:
@@ -124,24 +133,21 @@ def _compact_stat_html(
     )
 
 
-def _render_compact_columns(
-    *,
-    pnl_items: list[tuple[str, str | None, str, str | None]],
-    position_items: list[tuple[str, str | None, str, str | None]],
-    risk_item: tuple[str, str | None, str, str | None],
-    buffer_item: tuple[str, str | None, str, str | None],
+def _render_compact_stack(
+    sections: tuple[tuple[tuple[str, str | None, str, str | None], ...], ...],
 ) -> None:
-    pnl = "".join(_compact_stat_html(item) for item in pnl_items)
-    positions = "".join(_compact_stat_html(item) for item in position_items)
-    risk = _compact_stat_html(risk_item)
-    buffer = _compact_stat_html(buffer_item, note_tone=buffer_item[2])
     st.markdown(
-        '<div class="ongoing-exposure-columns">'
-        f'<div class="ongoing-exposure-column dashboard-stat-list">{pnl}</div>'
-        f'<div class="ongoing-exposure-column dashboard-stat-list">{positions}</div>'
-        f'<div class="ongoing-exposure-column ongoing-risk-column">{risk}</div>'
-        f'<div class="ongoing-exposure-column ongoing-risk-column">{buffer}</div>'
-        "</div>",
+        '<div class="ongoing-exposure-stack">'
+        + "".join(
+            '<div class="ongoing-exposure-section dashboard-stat-list">'
+            + "".join(
+                _compact_stat_html(item, note_tone=item[2] if item_index == len(section) - 1 and section_index == len(sections) - 1 else None)
+                for item_index, item in enumerate(section)
+            )
+            + "</div>"
+            for section_index, section in enumerate(sections)
+        )
+        + "</div>",
         unsafe_allow_html=True,
     )
 
@@ -445,6 +451,9 @@ def _render_positions(report, account: AccountListItem) -> None:
     with st.container(border=True, key="ongoing-current-positions"):
         st.markdown(f"#### {tr('Current positions')}")
         st.caption(tr("Highest-risk and unprotected positions remain first."))
+        if not report.positions:
+            _render_inline_position_state(report)
+            return
         rows = []
         for item in sorted(report.positions, key=_position_priority):
             position = item.position

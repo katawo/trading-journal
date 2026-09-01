@@ -148,25 +148,26 @@ def test_dashboard_visual_vocabulary_styles_kickers_and_period_metadata(monkeypa
     assert "text-transform: uppercase;" in period_css
 
 
-def test_ongoing_exposure_metrics_use_four_compact_desktop_columns(monkeypatch) -> None:
+def test_ongoing_exposure_metrics_use_a_vertical_stack(monkeypatch) -> None:
     rendered: list[str] = []
     monkeypatch.setattr(journal_app.st, "html", rendered.append)
 
     journal_app.apply_application_style()
 
     css = rendered[0]
-    ongoing_css = css.split(".ongoing-exposure-columns {", maxsplit=1)[1].split("}", maxsplit=1)[0]
-    divider_css = css.split(".ongoing-exposure-column + .ongoing-exposure-column {", maxsplit=1)[1].split("}", maxsplit=1)[0]
-    label_css = css.split(".ongoing-exposure-columns .dashboard-stat-label {", maxsplit=1)[1].split("}", maxsplit=1)[0]
-    value_css = css.split(".ongoing-exposure-columns .dashboard-stat-value {", maxsplit=1)[1].split("}", maxsplit=1)[0]
-    note_css = css.split(".ongoing-exposure-columns .dashboard-stat-note {", maxsplit=1)[1].split("}", maxsplit=1)[0]
-    mobile_css = css.split("@media (max-width: 760px)", maxsplit=1)[1]
-    assert "grid-template-columns: repeat(4, minmax(0, 1fr));" in ongoing_css
-    assert "border-left: 1px solid" in divider_css
-    assert "font-size: 0.82rem;" in label_css
-    assert "font-size: 1.2rem;" in value_css
-    assert "font-size: 0.86rem;" in note_css
-    assert "grid-template-columns: minmax(0, 1fr);" in mobile_css
+    section_css = css.split(".ongoing-exposure-section {", maxsplit=1)[1].split("}", maxsplit=1)[0]
+    stat_css = css.split(".ongoing-exposure-stack .dashboard-stat {", maxsplit=1)[1].split("}", maxsplit=1)[0]
+    label_css = css.split(".ongoing-exposure-stack .dashboard-stat-label {", maxsplit=1)[1].split("}", maxsplit=1)[0]
+    value_css = css.split(".ongoing-exposure-stack .dashboard-stat-value {", maxsplit=1)[1].split("}", maxsplit=1)[0]
+    note_css = css.split(".ongoing-exposure-stack .dashboard-stat-note {", maxsplit=1)[1].split("}", maxsplit=1)[0]
+    assert "border-bottom: 1px solid" in section_css
+    assert "padding: 0.5rem 0;" in section_css
+    assert "gap: 0.15rem 0.75rem;" in stat_css
+    assert "font-size: 0.68rem;" in label_css
+    assert "font-size: 1rem;" in value_css
+    assert "text-align: right;" in value_css
+    assert "font-size: 0.72rem;" in note_css
+    assert "grid-column: 1 / -1;" in note_css
 
 
 def test_ongoing_today_metrics_use_a_responsive_four_card_grid(monkeypatch) -> None:
@@ -195,6 +196,22 @@ def test_ongoing_metric_notes_support_semantic_risk_tones(monkeypatch) -> None:
     assert ".dashboard-stat-note.dashboard-stat-tone-positive" in css
     assert ".dashboard-stat-note.dashboard-stat-tone-negative" in css
     assert ".dashboard-stat-note.dashboard-stat-tone-warning" in css
+
+
+def test_ongoing_live_indicator_twinkles_with_a_reduced_motion_fallback(monkeypatch) -> None:
+    rendered: list[str] = []
+    monkeypatch.setattr(journal_app.st, "html", rendered.append)
+
+    journal_app.apply_application_style()
+
+    css = rendered[0]
+    assert ".ongoing-live-pulse" in css
+    assert "@keyframes ongoing-live-twinkle" in css
+    assert "animation: ongoing-live-twinkle 1.8s ease-in-out infinite;" in css
+    assert "height: 0.65rem;" in css
+    assert "width: 0.65rem;" in css
+    assert "@media (prefers-reduced-motion: reduce)" in css
+    assert "animation: none;" in css
 
 
 def test_dashboard_metric_tones_only_color_clear_performance_signals() -> None:

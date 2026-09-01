@@ -673,6 +673,35 @@ def apply_application_style() -> None:
             text-align: right;
             text-transform: uppercase;
         }
+        .ongoing-live-pulse {
+            animation: ongoing-live-twinkle 1.8s ease-in-out infinite;
+            background: var(--st-green-color, #0e9163);
+            border-radius: 50%;
+            display: inline-block;
+            height: 0.65rem;
+            margin-right: 0.55rem;
+            vertical-align: -0.02rem;
+            width: 0.65rem;
+        }
+        @keyframes ongoing-live-twinkle {
+            0%, 100% {
+                box-shadow: 0 0 0 0 transparent;
+                opacity: 0.55;
+                transform: scale(0.9);
+            }
+            50% {
+                box-shadow: 0 0 0.65rem var(--st-green-color, #0e9163);
+                opacity: 1;
+                transform: scale(1.25);
+            }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            .ongoing-live-pulse {
+                animation: none;
+                box-shadow: 0 0 0.25rem var(--st-green-color, #0e9163);
+                opacity: 0.9;
+            }
+        }
         div.st-key-trade-compass-brand { flex-direction: row !important; align-items: center !important; gap: 0.65rem; }
         div.st-key-trade-compass-brand [data-testid="stImage"] { flex: 0 0 auto; }
         div.st-key-trade-compass-brand h1 { margin: 0 !important; }
@@ -838,31 +867,30 @@ def apply_application_style() -> None:
         .dashboard-stat-note.dashboard-stat-tone-positive { color: var(--st-green-color, #0e9163); }
         .dashboard-stat-note.dashboard-stat-tone-negative { color: var(--st-red-color, #c73545); }
         .dashboard-stat-note.dashboard-stat-tone-warning { color: var(--st-orange-color, #a65f00); }
-        .ongoing-exposure-columns {
-            display: grid;
-            grid-template-columns: repeat(4, minmax(0, 1fr));
-            border-bottom: 1px solid var(--st-border-color, #c8d0c8);
+        .ongoing-exposure-stack {
             border-top: 1px solid var(--st-border-color, #c8d0c8);
             margin: 0.45rem 0 0.65rem;
-            padding: 0.85rem 0;
         }
-        .ongoing-exposure-column {
-            padding: 0 1rem;
+        .ongoing-exposure-section {
+            border-bottom: 1px solid var(--st-border-color, #c8d0c8);
+            padding: 0.5rem 0;
         }
-        .ongoing-exposure-column:first-child {
-            padding-left: 0;
+        .ongoing-exposure-stack .dashboard-stat {
+            gap: 0.15rem 0.75rem;
         }
-        .ongoing-exposure-column + .ongoing-exposure-column {
-            border-left: 1px solid var(--st-border-color, #c8d0c8);
+        .ongoing-exposure-stack .dashboard-stat + .dashboard-stat {
+            margin-top: 0.3rem;
         }
-        .ongoing-exposure-columns .dashboard-stat-label {
-            font-size: 0.82rem;
+        .ongoing-exposure-stack .dashboard-stat-label {
+            font-size: 0.68rem;
         }
-        .ongoing-exposure-columns .dashboard-stat-value {
-            font-size: 1.2rem;
+        .ongoing-exposure-stack .dashboard-stat-value {
+            font-size: 1rem;
+            text-align: right;
         }
-        .ongoing-exposure-columns .dashboard-stat-note {
-            font-size: 0.86rem;
+        .ongoing-exposure-stack .dashboard-stat-note {
+            font-size: 0.72rem;
+            grid-column: 1 / -1;
         }
         .ongoing-today-columns {
             display: grid;
@@ -890,12 +918,6 @@ def apply_application_style() -> None:
         .ongoing-today-columns .dashboard-stat-note {
             font-size: 0.86rem;
         }
-        .ongoing-risk-column .dashboard-stat {
-            display: block;
-        }
-        .ongoing-risk-column .dashboard-stat-value {
-            margin-top: 0.2rem;
-        }
         .dashboard-framework-stats {
             grid-template-columns: repeat(4, minmax(7rem, 1fr));
             align-content: center;
@@ -915,18 +937,8 @@ def apply_application_style() -> None:
             .dashboard-stat-list {
                 display: block;
             }
-            .ongoing-exposure-columns {
-                grid-template-columns: minmax(0, 1fr);
-            }
             .ongoing-today-columns {
                 grid-template-columns: repeat(2, minmax(0, 1fr));
-            }
-            .ongoing-exposure-column {
-                padding: 0.65rem 0;
-            }
-            .ongoing-exposure-column + .ongoing-exposure-column {
-                border-left: 0;
-                border-top: 1px solid var(--st-border-color, #c8d0c8);
             }
             .ongoing-today-column {
                 padding: 0.65rem;

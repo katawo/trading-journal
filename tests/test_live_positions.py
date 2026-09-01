@@ -12,6 +12,7 @@ from trading_journal.infrastructure.sqlite_repository import SQLiteJournalReposi
 from trading_journal.presentation.ongoing import (
     ONGOING_REFRESH_INTERVAL_SECONDS,
     _compact_stat_html,
+    _live_activity_indicator,
     _pnl_metric,
     _position_priority,
     _render_inline_position_state,
@@ -77,6 +78,18 @@ def test_live_snapshot_accepts_a_small_positive_protective_risk(tmp_path) -> Non
     account = repository.get_active_mt5_account()
     assert account is not None
     assert repository.list_live_positions(account.id)[0].risk_to_stop_amount == "1E-8"
+
+
+def test_live_activity_twinkles_only_for_fresh_open_positions() -> None:
+    active = SimpleNamespace(positions=(object(),), status="within")
+    caution = SimpleNamespace(positions=(object(),), status="caution")
+    stale = SimpleNamespace(positions=(object(),), status="stale")
+    flat = SimpleNamespace(positions=(), status="within")
+
+    assert 'class="ongoing-live-pulse"' in _live_activity_indicator(active)
+    assert 'class="ongoing-live-pulse"' in _live_activity_indicator(caution)
+    assert _live_activity_indicator(stale) == ""
+    assert _live_activity_indicator(flat) == ""
 
 
 def test_break_even_or_profitable_stop_reports_zero_open_risk(tmp_path) -> None:

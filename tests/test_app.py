@@ -456,8 +456,9 @@ def test_ongoing_page_does_not_claim_positions_are_flat_before_the_first_snapsho
     assert not app.exception
     page_markup = "\n".join(item.value for item in app.markdown)
     assert "#### Exposure snapshot" in page_markup
-    assert "#### Current positions" not in page_markup
-    assert not any("Highest-risk and unprotected positions remain first" in item.value for item in app.caption)
+    assert "#### Current positions" in page_markup
+    assert page_markup.index("#### Exposure snapshot") < page_markup.index("#### Current positions")
+    assert any("Highest-risk and unprotected positions remain first" in item.value for item in app.caption)
     assert all(f'>{label}<' in page_markup for label in ("Unprotected", "Known open risk", "Open positions", "Unrealized P&amp;L"))
     assert "Position data will appear after the first live MT5 snapshot" in page_markup
     assert not any("No open positions in the latest live snapshot" in item.value for item in app.info)
@@ -524,8 +525,8 @@ def test_ongoing_page_displays_today_realized_pnl_separately_from_unrealized_pnl
         < markup.index("Today realized P&amp;L")
     )
     assert "#### Today action center" in markup
-    assert markup.count('<div class="ongoing-exposure-column ') == 4
-    assert 'class="ongoing-exposure-column ongoing-risk-column"' in markup
+    assert markup.count('<div class="ongoing-exposure-section dashboard-stat-list">') == 3
+    assert markup.index("Risk buffer") < markup.index("#### Current positions")
     assert all(
         metric.label not in {"Unrealized P&L", "Today realized P&L", "Open positions", "Known open risk"}
         for metric in app.metric
@@ -544,7 +545,7 @@ def test_ongoing_page_displays_today_realized_pnl_separately_from_unrealized_pnl
     assert any(field.label == "What happened and what did you learn? *" for field in app.text_area)
 
 
-def test_ongoing_page_compacts_a_healthy_empty_snapshot_into_the_exposure_panel(monkeypatch, tmp_path) -> None:
+def test_ongoing_page_keeps_the_empty_position_state_in_the_right_panel(monkeypatch, tmp_path) -> None:
     database_path = tmp_path / "journal.db"
     repository = SQLiteJournalRepository(database_path)
     repository.initialize()
@@ -589,13 +590,14 @@ def test_ongoing_page_compacts_a_healthy_empty_snapshot_into_the_exposure_panel(
     assert not app.exception
     markup = "\n".join(item.value for item in app.markdown)
     assert ":green-badge[:material/check_circle: Within limit]" in markup
-    assert any("Known open risk is within the account limit" in item.value for item in app.caption)
+    assert not any("Known open risk is within the account limit" in item.value for item in app.caption)
     assert "No open positions in the latest live snapshot" in markup
     assert "The position table appears when MT5 reports an open trade" in markup
     assert "Risk buffer" in markup
     assert "1.00R" in markup
     assert "0% of limit used" in markup
-    assert "#### Current positions" not in markup
+    assert "#### Current positions" in markup
+    assert markup.index("Risk buffer") < markup.index("#### Current positions")
     assert not app.success
 
 
@@ -1879,6 +1881,11 @@ def test_reopening_review_after_upgrading_an_auto_review_does_not_crash(monkeypa
         for item in app.multiselect
         if item.label in {"Trading mistakes", "Hard-rule events"}
     ] == ["Trading mistakes", "Hard-rule events"]
+    mistake_selector = next(item for item in app.multiselect if item.label == "Trading mistakes")
+    assert mistake_selector.format_func("certainty_seeking") == "P · Needed certainty or tried to predict"
+    assert mistake_selector.format_func("position_size_too_large") == "R · Position size was too large"
+    assert mistake_selector.format_func("entry_timing") == "S · Entered too early or too late"
+    assert "emotional_sizing" not in mistake_selector.options
     assert any(item.label == "Actual risk amount (optional)" for item in app.text_input)
     context_selectboxes = {
         item.label: item

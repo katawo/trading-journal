@@ -106,11 +106,11 @@ VIOLATION_LABELS = {
     "drawdown_limit": "Drawdown limit issue",
     "open_exposure": "Open exposure issue",
 }
-MISTAKE_CATEGORIES = {
+MISTAKE_CATEGORY_PREFIXES = {
     code: {
-        "psychology": "Psychology and discipline",
-        "risk": "Risk management",
-        "system": "Setup and execution",
+        "psychology": "P",
+        "risk": "R",
+        "system": "S",
     }[pillar]
     for pillar, codes in REVIEW_MISTAKES_BY_PILLAR.items()
     for code in codes
@@ -1044,7 +1044,11 @@ def _render_post_trade_review_dialog(repo: SQLiteJournalRepository, account: Acc
         f"assessment-{trade.id}-action": (
             existing_manual.corrective_action if existing_manual and existing_manual.corrective_action else ""
         ),
-        f"assessment-{trade.id}-violations": list(existing_manual.violation_codes) if existing_manual else [],
+        f"assessment-{trade.id}-violations": (
+            [code for code in existing_manual.violation_codes if code in REVIEW_MISTAKE_CODES]
+            if existing_manual
+            else []
+        ),
         f"assessment-{trade.id}-hard-rules": list(existing_manual.hard_rule_codes) if existing_manual else [],
         f"assessment-{trade.id}-actual-risk": (
             existing_manual.declared_actual_risk_amount
@@ -1121,11 +1125,7 @@ def _render_post_trade_review_dialog(repo: SQLiteJournalRepository, account: Acc
                     key=f"assessment-{trade.id}-{criterion}",
                     help_text=CRITERION_HELP.get(criterion),
                 )
-    legacy_mistakes = tuple(
-        code for code in (existing_manual.violation_codes if existing_manual else ()) if code not in REVIEW_MISTAKE_CODES
-    )
-    mistake_options = REVIEW_MISTAKE_CODES + legacy_mistakes
-    reflection_column, evidence_column = st.columns([2, 1], gap="small")
+    reflection_column, evidence_column = st.columns([1.5, 1], gap="small")
     with reflection_column.container(border=True):
         st.markdown(f"##### {tr('Reflection and action')}")
         note = st.text_area(
@@ -1144,9 +1144,9 @@ def _render_post_trade_review_dialog(repo: SQLiteJournalRepository, account: Acc
         st.markdown(f"##### {tr('Mistakes and rule breaches')}")
         violation_codes = st.multiselect(
             tr("Trading mistakes"),
-            options=mistake_options,
+            options=REVIEW_MISTAKE_CODES,
             key=f"assessment-{trade.id}-violations",
-            format_func=lambda code: f"{tr(MISTAKE_CATEGORIES.get(code, 'Earlier review'))} · {tr(VIOLATION_LABELS[code])}",
+            format_func=lambda code: f"{MISTAKE_CATEGORY_PREFIXES[code]} · {tr(VIOLATION_LABELS[code])}",
             placeholder=tr("Select any mistakes made"),
             help=tr("Choose all mistakes that affected this trade. Leave empty if the trade followed your plan."),
         )
@@ -1178,7 +1178,7 @@ def _render_post_trade_review_dialog(repo: SQLiteJournalRepository, account: Acc
             placeholder=tr("Enter a verified amount when automatic evidence is not sufficient"),
             help=tr("Overrides automatic evidence for this logical trade's policy comparison. It does not rewrite imported MT5 member positions or logical-trade account-limit monitoring."),
         )
-    with st.container(horizontal=True, horizontal_alignment="right"):
+    with st.container(horizontal=True, horizontal_alignment="left"):
         submitted = st.button(
             "Update assessment" if existing_manual else "Save assessment",
             key=f"assessment-{trade.id}-save",
