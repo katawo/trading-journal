@@ -879,14 +879,14 @@ def apply_application_style() -> None:
             margin-top: 0.3rem;
         }
         .ongoing-exposure-stack .dashboard-stat-label {
-            font-size: 0.68rem;
+            font-size: 0.82rem;
         }
         .ongoing-exposure-stack .dashboard-stat-value {
-            font-size: 1rem;
+            font-size: 1.2rem;
             text-align: right;
         }
         .ongoing-exposure-stack .dashboard-stat-note {
-            font-size: 0.72rem;
+            font-size: 0.86rem;
             grid-column: 1 / -1;
         }
         .ongoing-today-columns {

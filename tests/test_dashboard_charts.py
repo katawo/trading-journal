@@ -163,10 +163,10 @@ def test_ongoing_exposure_metrics_use_a_vertical_stack(monkeypatch) -> None:
     assert "border-bottom: 1px solid" in section_css
     assert "padding: 0.5rem 0;" in section_css
     assert "gap: 0.15rem 0.75rem;" in stat_css
-    assert "font-size: 0.68rem;" in label_css
-    assert "font-size: 1rem;" in value_css
+    assert "font-size: 0.82rem;" in label_css
+    assert "font-size: 1.2rem;" in value_css
     assert "text-align: right;" in value_css
-    assert "font-size: 0.72rem;" in note_css
+    assert "font-size: 0.86rem;" in note_css
     assert "grid-column: 1 / -1;" in note_css
 
 
