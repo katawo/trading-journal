@@ -95,6 +95,27 @@ def test_fresh_journal_settings_schema_excludes_monthly_target(tmp_path: Path) -
     assert not hasattr(repository.get_journal_settings(), "default_planned_risk_amount")
 
 
+def test_risk_policy_schema_drops_pretrade_balance_evidence_flag(tmp_path: Path) -> None:
+    database_path = tmp_path / "journal.db"
+    repository = SQLiteJournalRepository(database_path)
+    repository.initialize()
+    repository.close()
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "ALTER TABLE account_risk_policies "
+            "ADD COLUMN pretrade_balance_auto_evidence_enabled BOOLEAN NOT NULL DEFAULT 0"
+        )
+        connection.execute("PRAGMA user_version = 3")
+
+    migrated = SQLiteJournalRepository(database_path)
+    migrated.initialize()
+    migrated.close()
+    with sqlite3.connect(database_path) as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(account_risk_policies)")}
+
+    assert "pretrade_balance_auto_evidence_enabled" not in columns
+
+
 def test_account_policy_supplies_r_and_preserves_imported_policy_context(tmp_path: Path) -> None:
     repository = configured_repository(tmp_path, standard_risk_percent="10")
 

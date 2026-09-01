@@ -22,7 +22,7 @@ ASSESSMENT_GRADES = frozenset({"pass", "partial", "fail"})
 MONITORING_RESET_PERIODS = frozenset({"daily", "weekly", "monthly", "all_time"})
 CURRENT_RUBRIC_VERSION = "zone_v2"
 RUBRIC_VERSIONS = frozenset({CURRENT_RUBRIC_VERSION})
-CURRENT_SCHEMA_VERSION = 3
+CURRENT_SCHEMA_VERSION = 4
 _REMOVED_RUBRIC_VERSION = "legacy_v1"
 _REMOVED_PSYCHOLOGY_ROADMAP_ITEM_KEYS = ("triggers", "behaviour_rules", "practice")
 PSYCHOLOGY_CRITERIA = (
@@ -309,7 +309,6 @@ class AccountRiskPolicy(Base):
     loss_streak_reset_period: Mapped[str] = mapped_column(String(16), nullable=False, default="daily")
     minimum_rr: Mapped[str] = mapped_column(String, nullable=False)
     correlation_policy: Mapped[str | None] = mapped_column(String(500), nullable=True)
-    pretrade_balance_auto_evidence_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     server_utc_offset_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[str] = mapped_column(String(64), nullable=False)
 
@@ -651,7 +650,6 @@ class AccountRiskPolicyView:
     loss_streak_reset_period: str
     minimum_rr: str
     correlation_policy: str | None
-    pretrade_balance_auto_evidence_enabled: bool
     server_utc_offset_minutes: int | None
     created_at: str
 
@@ -1011,6 +1009,11 @@ class SQLiteJournalRepository:
                 )
             self._migrate_v1_framework_data(connection)
             risk_policy_columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(account_risk_policies)")}
+            if "pretrade_balance_auto_evidence_enabled" in risk_policy_columns:
+                connection.exec_driver_sql(
+                    "ALTER TABLE account_risk_policies DROP COLUMN pretrade_balance_auto_evidence_enabled"
+                )
+                risk_policy_columns.remove("pretrade_balance_auto_evidence_enabled")
             if risk_policy_columns and "drawdown_reset_period" not in risk_policy_columns:
                 connection.exec_driver_sql("ALTER TABLE account_risk_policies ADD COLUMN drawdown_reset_period VARCHAR(16) NOT NULL DEFAULT 'daily'")
             if risk_policy_columns and "loss_streak_reset_period" not in risk_policy_columns:
@@ -1348,7 +1351,6 @@ class SQLiteJournalRepository:
             "journal_settings": {"reporting_time_basis"},
             "mt5_accounts": {"latest_server_utc_offset_minutes", "strategy_profile_id"},
             "trades": {"server_utc_offset_minutes", "logical_trade_id", "pretrade_account_balance"},
-            "account_risk_policies": {"pretrade_balance_auto_evidence_enabled"},
             "logical_trades": {"mt5_account_id", "created_at"},
             "post_trade_assessments": {
                 "logical_trade_id",
@@ -1603,7 +1605,6 @@ class SQLiteJournalRepository:
                 loss_streak_reset_period=risk_inputs["loss_streak_reset_period"],
                 minimum_rr=risk_inputs["minimum_rr"],
                 correlation_policy=self._optional_text(correlation_policy),
-                pretrade_balance_auto_evidence_enabled=False,
                 server_utc_offset_minutes=account.latest_server_utc_offset_minutes,
                 created_at=datetime.now(timezone.utc).isoformat(),
             ))
@@ -2009,7 +2010,6 @@ class SQLiteJournalRepository:
         max_consecutive_losses: int,
         minimum_rr: str,
         correlation_policy: str | None,
-        pretrade_balance_auto_evidence_enabled: bool = False,
         starting_balance: str | None = None,
         drawdown_reset_period: str = "daily",
         loss_streak_reset_period: str = "daily",
@@ -2050,7 +2050,6 @@ class SQLiteJournalRepository:
                     risk_inputs,
                     max_consecutive_losses,
                     normalized_correlation,
-                    pretrade_balance_auto_evidence_enabled,
                     account.latest_server_utc_offset_minutes,
                 ):
                     return self._to_risk_policy_view(active)
@@ -2076,7 +2075,6 @@ class SQLiteJournalRepository:
                 loss_streak_reset_period=risk_inputs["loss_streak_reset_period"],
                 minimum_rr=risk_inputs["minimum_rr"],
                 correlation_policy=normalized_correlation,
-                pretrade_balance_auto_evidence_enabled=pretrade_balance_auto_evidence_enabled,
                 server_utc_offset_minutes=account.latest_server_utc_offset_minutes,
                 created_at=datetime.now(timezone.utc).isoformat(),
             )
@@ -2097,7 +2095,6 @@ class SQLiteJournalRepository:
         max_consecutive_losses: int,
         minimum_rr: str,
         correlation_policy: str | None,
-        pretrade_balance_auto_evidence_enabled: bool = False,
         drawdown_reset_period: str = "daily",
         loss_streak_reset_period: str = "daily",
     ) -> bool:
@@ -2128,7 +2125,6 @@ class SQLiteJournalRepository:
                 risk_inputs,
                 max_consecutive_losses,
                 self._optional_text(correlation_policy),
-                pretrade_balance_auto_evidence_enabled,
                 account.latest_server_utc_offset_minutes,
             )
 
@@ -2138,7 +2134,6 @@ class SQLiteJournalRepository:
         risk_inputs: Mapping[str, str],
         max_consecutive_losses: int,
         correlation_policy: str | None,
-        pretrade_balance_auto_evidence_enabled: bool,
         server_utc_offset_minutes: int | None,
     ) -> bool:
         return (
@@ -2151,7 +2146,6 @@ class SQLiteJournalRepository:
             and policy.max_consecutive_losses == max_consecutive_losses
             and Decimal(policy.minimum_rr) == Decimal(risk_inputs["minimum_rr"])
             and policy.correlation_policy == correlation_policy
-            and policy.pretrade_balance_auto_evidence_enabled == pretrade_balance_auto_evidence_enabled
             and policy.drawdown_reset_period == risk_inputs["drawdown_reset_period"]
             and policy.loss_streak_reset_period == risk_inputs["loss_streak_reset_period"]
             and policy.server_utc_offset_minutes == server_utc_offset_minutes
@@ -3517,7 +3511,6 @@ class SQLiteJournalRepository:
             policy.loss_streak_reset_period,
             policy.minimum_rr,
             policy.correlation_policy,
-            policy.pretrade_balance_auto_evidence_enabled,
             policy.server_utc_offset_minutes,
             policy.created_at,
         )

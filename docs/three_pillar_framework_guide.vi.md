@@ -70,7 +70,7 @@ Một giao dịch logic được tính một lần trong số lượng giao dị
 
 Số dư tài khoản, P&L thực hiện hằng ngày, drawdown, chuỗi kết quả và theo dõi giới hạn Rủi ro đều dùng thứ tự giao dịch logic hiện tại. Các dòng MT5 thành viên vẫn bất biến, còn việc gộp lại chủ động tính lại lịch sử tài khoản dẫn xuất.
 
-Với một nhóm, số tiền rủi ro tự động cộng các ước tính **SL thiết lập sẵn cụ thể** và **lỗ thực tế** theo từng vị thế. Phương án dự phòng **số dư trước giao dịch** khi được bật chỉ dùng số dư thực tế MT5 ghi lại ngay trước lần vào lệnh sớm nhất và áp dụng một lần cho giao dịch logic, không áp dụng cho từng vị thế thành viên. Nó chỉ mang tính tư vấn và thận trọng; không thay đổi SL thiếu trong MT5. Nếu MT5 không xác lập được số dư trước khi vào, việc tuân thủ chính sách chưa khả dụng cho đến khi người đánh giá nhập **Số tiền rủi ro thực tế** đã xác minh.
+Với một nhóm, số tiền rủi ro tự động cộng các ước tính **SL thiết lập sẵn cụ thể** và **lỗ thực tế** theo từng vị thế. Nếu bất kỳ vị thế thành viên nào thiếu cả hai nguồn, việc tuân thủ chính sách chưa khả dụng cho đến khi người đánh giá nhập **Số tiền rủi ro thực tế** đã xác minh.
 
 ## 1. Thiết lập bằng chứng trước khi đánh giá
 
@@ -80,7 +80,6 @@ Với một nhóm, số tiền rủi ro tự động cộng các ước tính **
    - rủi ro tối đa mỗi giao dịch để kiểm tra tuân thủ;
    - giới hạn lỗ ngày/tuần, drawdown tối đa, chuỗi lỗ tối đa và R:R tối thiểu;
    - chu kỳ đặt lại độc lập Hằng ngày, Hằng tuần, Hằng tháng hoặc Toàn thời gian cho drawdown và chuỗi lỗ. Cả hai mặc định Hằng ngày.
-   - có thể bật **Dùng số dư MT5 trước giao dịch làm bằng chứng rủi ro tư vấn khi không có SL**. Tùy chọn này mặc định tắt và không bao giờ dùng Funded capital hoặc số dư hiện tại thay thế.
 3. Tạo một hoặc nhiều **Chiến lược** trong **Cài đặt → Chiến lược**. Ghi quy tắc và bằng chứng backtest hiện có. Đánh giá đầy đủ cần một chiến lược được chọn để điểm Hệ thống có bằng chứng đánh giá.
 4. Trong **Cài đặt → Quy tắc đánh giá**, chọn sự kiện nghiêm trọng nào là lỗi cứng cho đánh giá mới hoặc được sửa. Các cài đặt chỉ ảnh hưởng điểm và cảnh báo của nhật ký; không điều khiển MT5.
 
@@ -103,7 +102,6 @@ Không bằng chứng rủi ro tự động nào tự nó được tính vào đ
 |---|---|---|
 | SL thiết lập sẵn cụ thể | Đã xác minh | Rủi ro ban đầu do MT5 tính có trong tệp xuất. |
 | Ước tính lỗ thực tế | Suy luận | `abs(P&L ròng)` của giao dịch lỗ không có rủi ro ban đầu đã tính. |
-| Ước tính số dư trước giao dịch | Thận trọng | Số dư MT5 thực tế ngay trước khi vị thế có lãi không-SL mở, lấy từ sổ cái lệnh MT5. Chỉ có khi bật trong Chính sách rủi ro tài khoản. |
 
 Ứng dụng so sánh số tiền khả dụng với chính sách rủi ro tối đa của tài khoản và gắn nhãn trong chính sách, vượt chính sách hoặc chưa khả dụng. Nhập **Số tiền rủi ro thực tế** đã xác minh khi số tiền tự động không phải bằng chứng tốt nhất. Nó thay thế số tiền tự động trong so sánh chính sách của giao dịch logic nhưng **không** viết lại các vị thế MT5 thành viên hoặc kết quả giao dịch logic tổng hợp dùng cho theo dõi giới hạn tài khoản.
 

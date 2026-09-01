@@ -647,6 +647,10 @@ def test_settings_skips_confirmation_for_an_unchanged_risk_policy(monkeypatch, t
 
     app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
     app.switch_page("app_pages/settings.py").run()
+    assert not any(
+        item.label == "Use MT5 pre-trade balance as advisory no-SL risk evidence"
+        for item in app.checkbox
+    )
     next(item for item in app.button if item.label == "Save risk policy").click().run()
 
     assert not app.exception
@@ -928,7 +932,6 @@ def test_improve_tab_shows_auto_detected_and_manual_roadmap_items(monkeypatch, t
         max_consecutive_losses=3,
         minimum_rr="1.5",
         correlation_policy=None,
-        pretrade_balance_auto_evidence_enabled=False,
     )
     strategy = repository.save_strategy_profile(
         name="Trend continuation",

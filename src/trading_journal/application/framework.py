@@ -133,7 +133,6 @@ class AutoRiskEvidence:
     detail: str
     specific_preset_sl_amount: str | None
     real_loss_sl_amount: str | None
-    pretrade_account_balance_sl_amount: str | None
     risk_basis: str
     confidence: str
     initial_reward_amount: str | None
@@ -144,10 +143,6 @@ class AutoRiskEvidence:
 
     @property
     def source_amount(self) -> str | None:
-        # The imported pre-trade balance is one account-level fallback. It
-        # is never added again for each position in a scaled trade.
-        if self.pretrade_account_balance_sl_amount is not None:
-            return self.pretrade_account_balance_sl_amount
         total = sum(
             (
                 Decimal(value)
@@ -1891,37 +1886,16 @@ class FrameworkService:
             return None
         return _decimal_text(-Decimal(trade.net_pnl)) if Decimal(trade.net_pnl) < 0 else None
 
-    @staticmethod
-    def _pretrade_account_balance_sl_amount(trade, policy: AccountRiskPolicyView | None) -> str | None:  # type: ignore[no-untyped-def]
-        if (
-            policy is None
-            or not policy.pretrade_balance_auto_evidence_enabled
-            or FrameworkService._specific_preset_sl_amount(trade) is not None
-            or trade.entry_stop_price is not None
-            or Decimal(trade.net_pnl) <= 0
-            or trade.pretrade_account_balance is None
-        ):
-            return None
-        amount = Decimal(trade.pretrade_account_balance)
-        return _decimal_text(amount) if amount > 0 else None
-
     def _auto_risk_evidence(self, trade, policies, funded, active_policy):  # type: ignore[no-untyped-def]
         members = trade.members
         member_sources: list[tuple[str, Decimal]] = []
         unavailable = 0
         specific_total = Decimal("0")
         real_loss_total = Decimal("0")
-        pretrade_balance_amount: Decimal | None = None
         reward_total = Decimal("0")
         all_specific = True
         all_rewards = True
         observed_stops: list[bool | None] = []
-        earliest_member = min(members, key=lambda item: (item.entry_time, item.id))
-        # The opt-in is read from the currently active policy, not the trade's original
-        # auto_risk_policy_id — otherwise a trade imported while the opt-in was off would
-        # never pick up a later policy version that turns it on.
-        group_pretrade = self._pretrade_account_balance_sl_amount(earliest_member, active_policy)
-        needs_group_pretrade = False
         for member in members:
             specific = self._specific_preset_sl_amount(member)
             real_loss = self._real_loss_sl_amount(member)
@@ -1943,46 +1917,31 @@ class FrameworkService:
             else:
                 all_specific = False
                 all_rewards = False
-                needs_group_pretrade = True
-        if needs_group_pretrade and group_pretrade is not None:
-            # A grouped idea has one opening balance: the snapshot captured for
-            # its earliest member. Never add it once for every scaled entry.
-            pretrade_balance_amount = Decimal(group_pretrade)
-            member_sources.append(("pretrade_account_balance_sl", pretrade_balance_amount))
-        elif needs_group_pretrade:
-            unavailable += 1
+                unavailable += 1
         specific = _decimal_text(specific_total) if specific_total > 0 else None
         real_loss = _decimal_text(real_loss_total) if real_loss_total > 0 else None
-        pretrade = None if pretrade_balance_amount is None else _decimal_text(pretrade_balance_amount)
-        amount = pretrade_balance_amount if pretrade_balance_amount is not None else specific_total + real_loss_total
+        amount = specific_total + real_loss_total
         bases = {basis for basis, _ in member_sources}
         basis = next(iter(bases)) if len(bases) == 1 else "mixed_sources" if bases else "unavailable"
-        confidence = "verified" if all_specific and member_sources else "conservative" if pretrade_balance_amount is not None else "inferred" if basis == "real_loss_sl" else "mixed" if bases else "unavailable"
+        confidence = "verified" if all_specific and member_sources else "inferred" if basis == "real_loss_sl" else "mixed" if bases else "unavailable"
         observed_stop = True if any(value is True for value in observed_stops) else False if observed_stops and all(value is False for value in observed_stops) else None
         initial_reward = _decimal_text(reward_total) if all_rewards and reward_total > 0 else None
         initial_rr = _decimal_text(reward_total / specific_total) if all_specific and all_rewards and specific_total > 0 else None
         policy = active_policy
         if not member_sources:
-            return AutoRiskEvidence("unavailable", "No usable automatic risk source is available.", specific, real_loss, pretrade, basis, confidence, initial_reward, initial_rr, observed_stop, None if policy is None else policy.version, None if policy is None else policy.id)
+            return AutoRiskEvidence("unavailable", "No usable automatic risk source is available.", specific, real_loss, basis, confidence, initial_reward, initial_rr, observed_stop, None if policy is None else policy.version, None if policy is None else policy.id)
         source_description = {
             "specific_preset_sl": "Specific preset SL",
             "real_loss_sl": "Real-loss estimate",
-            "pretrade_account_balance_sl": "Pre-trade-balance estimate",
             "mixed_sources": "Mixed automatic estimates",
         }[basis]
         amount_text = _decimal_text(amount)
-        pretrade_balance_note = (
-            " The pre-trade-balance fallback is applied once for the logical trade, not once per position."
-            if pretrade_balance_amount is not None and trade.position_count > 1
-            else ""
-        )
         if unavailable:
             return AutoRiskEvidence(
                 "unavailable",
-                f"{source_description} totals {amount_text} across {len(member_sources)} of {trade.position_count} position(s); policy compliance is unavailable until every member has risk evidence or you enter Actual risk.{pretrade_balance_note}",
+                f"{source_description} totals {amount_text} across {len(member_sources)} of {trade.position_count} position(s); policy compliance is unavailable until every member has risk evidence or you enter Actual risk.",
                 specific,
                 real_loss,
-                pretrade,
                 basis,
                 confidence,
                 initial_reward,
@@ -1992,10 +1951,10 @@ class FrameworkService:
                 None if policy is None else policy.id,
             )
         if policy is None or funded is None:
-            return AutoRiskEvidence("unavailable", f"{source_description} totals {amount_text}. Set funded capital and save a Risk policy to compare it.{pretrade_balance_note}", specific, real_loss, pretrade, basis, confidence, initial_reward, initial_rr, observed_stop, None if policy is None else policy.version, None if policy is None else policy.id)
+            return AutoRiskEvidence("unavailable", f"{source_description} totals {amount_text}. Set funded capital and save a Risk policy to compare it.", specific, real_loss, basis, confidence, initial_reward, initial_rr, observed_stop, None if policy is None else policy.version, None if policy is None else policy.id)
         limit = self._maximum_risk_amount(funded, policy)
         state = "within_policy" if amount <= limit else "over_policy"
-        return AutoRiskEvidence(state, f"{source_description} total {amount_text} is {'within' if state == 'within_policy' else 'over'} policy v{policy.version} limit {_decimal_text(limit)} across {trade.position_count} position(s).{pretrade_balance_note}", specific, real_loss, pretrade, basis, confidence, initial_reward, initial_rr, observed_stop, policy.version, policy.id)
+        return AutoRiskEvidence(state, f"{source_description} total {amount_text} is {'within' if state == 'within_policy' else 'over'} policy v{policy.version} limit {_decimal_text(limit)} across {trade.position_count} position(s).", specific, real_loss, basis, confidence, initial_reward, initial_rr, observed_stop, policy.version, policy.id)
 
     @staticmethod
     def _observed_stop_widened(trade) -> bool | None:  # type: ignore[no-untyped-def]

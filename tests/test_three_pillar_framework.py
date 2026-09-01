@@ -261,7 +261,6 @@ def _policy(
     repository: SQLiteJournalRepository,
     account_id: int,
     *,
-    pretrade_balance_auto_evidence_enabled: bool = False,
     daily_loss_limit_r: str = "2",
     weekly_loss_limit_r: str = "4",
     max_drawdown_percent: str = "10",
@@ -282,7 +281,6 @@ def _policy(
         max_consecutive_losses=max_consecutive_losses,
         minimum_rr="1.5",
         correlation_policy=None,
-        pretrade_balance_auto_evidence_enabled=pretrade_balance_auto_evidence_enabled,
         drawdown_reset_period=drawdown_reset_period,
         loss_streak_reset_period=loss_streak_reset_period,
         expected_active_policy_id=None if active is None else active.id,
@@ -1340,18 +1338,18 @@ def test_real_loss_and_disabled_pretrade_balance_leave_no_profitable_no_sl_evide
     assert scores[winner].auto_risk.risk_basis == "unavailable"
 
 
-def test_enabled_pretrade_balance_is_advisory_no_sl_risk_evidence(tmp_path) -> None:
+def test_imported_pretrade_balance_is_not_used_as_no_sl_risk_evidence(tmp_path) -> None:
     repository, account_id = _repository(tmp_path)
-    _policy(repository, account_id, pretrade_balance_auto_evidence_enabled=True)
+    _policy(repository, account_id)
     winner = _import_position(repository, account_id, position_id="win", net_pnl="8", pretrade_account_balance="900")
 
     score = next(item for item in FrameworkService(repository).trade_process_scores(account_id) if item.trade_id == winner)
 
     assert score.assessment_state == "not_scored"
     assert score.review_kind == "needs_approval"
-    assert score.auto_risk.risk_basis == "pretrade_account_balance_sl"
-    assert score.auto_risk.source_amount == "900"
-    assert score.auto_risk.confidence == "conservative"
+    assert score.auto_risk.risk_basis == "unavailable"
+    assert score.auto_risk.source_amount is None
+    assert score.auto_risk.confidence == "unavailable"
 
 
 def test_approval_needed_auto_review_can_be_approved_and_then_replaced_by_full_review(tmp_path) -> None:
@@ -2101,38 +2099,6 @@ def test_group_rejects_positions_with_different_imported_risk_policy_versions(tm
 
     with pytest.raises(ValueError, match="Risk-policy version"):
         repository.create_logical_trade_group(account_id=account_id, logical_trade_ids=(first, second), display_label=None)
-
-
-def test_group_pretrade_balance_risk_is_one_account_level_fallback(tmp_path) -> None:
-    repository, account_id = _repository(tmp_path)
-    _policy(repository, account_id, pretrade_balance_auto_evidence_enabled=True)
-    winning = _import_position(repository, account_id, position_id="win", net_pnl="8", entry_time="2026-08-10T07:00:00+00:00", pretrade_account_balance="1000")
-    losing = _import_position(repository, account_id, position_id="loss", net_pnl="-8")
-    group_id = repository.create_logical_trade_group(account_id=account_id, logical_trade_ids=(losing, winning), display_label=None)
-
-    score = FrameworkService(repository).trade_process_scores(account_id)[0]
-
-    assert score.trade_id == group_id
-    assert score.auto_risk.risk_basis == "mixed_sources"
-    assert score.auto_risk.confidence == "conservative"
-    assert score.auto_risk.source_amount == "1000"
-    assert score.auto_risk.state == "over_policy"
-    assert _auto_risk_label(score) == "Mixed estimates · Over policy"
-    assert "applied once for the logical trade" in score.auto_risk.detail
-
-
-def test_grouped_winners_do_not_multiply_the_pretrade_balance_fallback(tmp_path) -> None:
-    repository, account_id = _repository(tmp_path)
-    _policy(repository, account_id, pretrade_balance_auto_evidence_enabled=True)
-    first = _import_position(repository, account_id, position_id="win-1", net_pnl="8", pretrade_account_balance="1000")
-    second = _import_position(repository, account_id, position_id="win-2", net_pnl="6", pretrade_account_balance="1000")
-    repository.create_logical_trade_group(account_id=account_id, logical_trade_ids=(first, second), display_label=None)
-
-    score = FrameworkService(repository).trade_process_scores(account_id)[0]
-
-    assert score.auto_risk.risk_basis == "pretrade_account_balance_sl"
-    assert score.auto_risk.source_amount == "1000"
-    assert score.auto_risk.state == "over_policy"
 
 
 def test_logical_grouping_recalculates_account_balance_history_at_final_close(tmp_path) -> None:

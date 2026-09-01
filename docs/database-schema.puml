@@ -198,7 +198,6 @@ entity "account_risk_policies" as account_risk_policies {
   loss_streak_reset_period : VARCHAR(16)
   minimum_rr : VARCHAR <<decimal-text>>
   correlation_policy : VARCHAR(500)?
-  pretrade_balance_auto_evidence_enabled : BOOLEAN
   server_utc_offset_minutes : INTEGER?
   created_at : VARCHAR(64)
   --

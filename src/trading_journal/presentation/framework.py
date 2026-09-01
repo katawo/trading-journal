@@ -283,7 +283,6 @@ def _auto_risk_label(score: TradeProcessScore) -> str:
     source = {
         "specific_preset_sl": "Preset SL",
         "real_loss_sl": "Real-loss estimate",
-        "pretrade_account_balance_sl": "Pre-trade-balance estimate",
         "mixed_sources": "Mixed estimates",
         "unavailable": "No source",
     }.get(evidence.risk_basis, "No source")
@@ -2596,11 +2595,6 @@ def _render_risk_policy(repo: SQLiteJournalRepository, account: AccountListItem)
             open_risk = st.number_input("Maximum open risk (R)", min_value=0.01, value=float(policy.max_open_risk_r) if policy else 1.0, step=0.25)
             correlation = st.text_area("Correlation / exposure policy", value=policy.correlation_policy if policy and policy.correlation_policy else "")
             st.caption("The closed-trade MT5 exporter cannot verify open risk or correlation exposure automatically.")
-        pretrade_balance_evidence = st.checkbox(
-            "Use MT5 pre-trade balance as advisory no-SL risk evidence",
-            value=policy.pretrade_balance_auto_evidence_enabled if policy else False,
-            help="Uses only the balance captured by MT5 immediately before entry. It does not create a post-trade review or modify the imported stop loss.",
-        )
         submitted = st.form_submit_button("Save risk policy", type="primary")
     if submitted:
         policy_values = {
@@ -2614,7 +2608,6 @@ def _render_risk_policy(repo: SQLiteJournalRepository, account: AccountListItem)
             "max_consecutive_losses": int(streak),
             "minimum_rr": str(minimum_rr),
             "correlation_policy": correlation,
-            "pretrade_balance_auto_evidence_enabled": pretrade_balance_evidence,
             "drawdown_reset_period": reset_period_options[drawdown_reset_label],
             "loss_streak_reset_period": reset_period_options[streak_reset_label],
         }

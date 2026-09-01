@@ -72,7 +72,7 @@ A logical trade counts once in dashboard logical-trade count, win rate, expectan
 
 Account balance, daily realized P&L, drawdown, streaks, and Risk-limit monitoring all use the current logical-trade chronology. Imported MT5 member rows remain immutable, while regrouping intentionally recalculates the derived account history.
 
-For a group, the automatic risk amount sums its per-position **specific preset SL** and **real-loss** estimates. An enabled **pre-trade-balance** fallback uses only the actual balance captured by MT5 immediately before the earliest entry and applies once to the logical trade, never once per member position. It is advisory and conservative; it never changes a missing MT5 SL. If MT5 could not establish the pre-entry balance, policy compliance is unavailable until the reviewer supplies a verified **Actual risk amount**.
+For a group, the automatic risk amount sums its per-position **specific preset SL** and **real-loss** estimates. If any member lacks either source, policy compliance is unavailable until the reviewer supplies a verified **Actual risk amount**.
 
 ## 1. Set up the evidence before reviewing
 
@@ -82,7 +82,6 @@ For a group, the automatic risk amount sums its per-position **specific preset S
    - maximum risk per trade for compliance;
    - daily and weekly loss limits, maximum drawdown, maximum loss streak, and minimum R:R;
    - independent Daily, Weekly, Monthly, or All-time reset cadences for drawdown and losing streak. Both default to Daily.
-   - optionally enable **Use MT5 pre-trade balance as advisory no-SL risk evidence**. It defaults off and never uses funded capital or the current account balance as a substitute.
 3. Create one or more **Strategies** in **Settings → Strategies**. Record the rules and available backtest evidence. A full review needs a selected strategy so the System score has evidence to assess.
 4. In **Settings → Review rules**, choose which critical events are hard failures for new or corrected assessments. These settings affect journal scores and alerts only; they never control MT5.
 
@@ -105,7 +104,6 @@ Automatic risk evidence enters the Psychology, Risk management, and Trading syst
 |---|---|---|
 | Specific preset SL | Verified | MT5-calculated initial risk was present in the export. |
 | Real-loss estimate | Inferred | `abs(net P&L)` for a losing trade without a calculated initial risk. |
-| Pre-trade-balance estimate | Conservative | The actual MT5 balance immediately before a profitable no-SL position opened, captured from the MT5 deal ledger. It is available only when enabled in the account Risk policy. |
 
 The app compares the available amount with the account's maximum-risk policy and labels it within policy, over policy, or unavailable. Enter a verified **Actual risk amount** during review when the automatic amount is not the best evidence. It replaces the automatic amount for that logical trade's policy comparison, but it does **not** rewrite imported member positions or the aggregate logical-trade outcome used for account-limit monitoring.
 
