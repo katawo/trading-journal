@@ -41,9 +41,8 @@ services:
       start_period: 30s
 
   ingestion:
-    build:
-      context: ..
-      dockerfile: deploy/Dockerfile
+    # Reuse the image built by `web`; defining the same build twice makes
+    # Compose export and unpack identical images for both services.
     image: trade-compass-web:latest
     command:
       - uvicorn

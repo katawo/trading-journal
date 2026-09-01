@@ -83,7 +83,8 @@ deploy-systemd-down: ## Stop and disable the systemd web services (data is prese
 
 deploy-docker: ## Deploy the multi-user web app + ingestion API + Caddy with Docker. Reads deploy/.env.
 	@test -f deploy/.env || { echo "Create deploy/.env from deploy/.env.example and set TRADING_JOURNAL_MULTIUSER_COOKIE_KEY (openssl rand -hex 32)."; exit 2; }
-	$(COMPOSE) --env-file deploy/.env up -d --build
+	$(COMPOSE) --env-file deploy/.env build web
+	$(COMPOSE) --env-file deploy/.env up -d --no-build
 	@echo "Started. Create accounts with: $(COMPOSE) run --rm web python scripts/add_web_user.py alice --name Alice --email a@example.com"
 
 deploy-docker-no-cache: ## Rebuild all Python packages without Docker or pip caches, then deploy.
