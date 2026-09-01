@@ -917,7 +917,7 @@ class RiskPolicyChangePreview:
 class SQLiteJournalRepository:
     def __init__(self, database_path: str | Path) -> None:
         self._database_path = Path(database_path)
-        # The desktop sync worker and the Streamlit UI are separate local
+        # Streamlit and the optional ingestion API can be separate writer
         # processes. WAL keeps reads responsive; the timeout lets short form
         # saves wait for an import transaction instead of failing immediately.
         self._engine = create_engine(f"sqlite:///{self._database_path}", connect_args={"timeout": 10})

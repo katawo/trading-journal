@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import os
 from html import escape
-from importlib.metadata import PackageNotFoundError, version
+from importlib.metadata import version
 import tomllib
-from uuid import uuid4
 from decimal import Decimal
 from datetime import date
 from pathlib import Path
@@ -21,7 +20,6 @@ from trading_journal.application.framework import FrameworkService
 from trading_journal.application.display_time import format_relative_time
 from trading_journal.application.import_mt5 import SUPPORTED_SCHEMA_VERSIONS
 from trading_journal.application.mt5_paths import default_mt5_export_path, find_mt5_common_files
-from trading_journal.desktop import DesktopSyncControl, DesktopSyncStatusStore, desktop_runtime_paths, is_desktop_mode
 from trading_journal.infrastructure.sqlite_repository import AccountListItem, JournalDatabaseResetRequiredError, SQLiteJournalRepository
 from trading_journal.presentation.framework import (
     _render_framework_rules,
@@ -34,7 +32,6 @@ from trading_journal.presentation.branding import TRADE_COMPASS_ICON, render_tra
 from trading_journal.presentation.global_alert_bubble import GlobalAlertItem, render_global_alert_bubble
 from trading_journal.presentation.connection_recovery import render_connection_recovery
 from trading_journal.presentation.multiuser_auth import current_username, is_multiuser_mode, render_login_gate, render_logout_control, user_database_path
-from trading_journal.presentation.desktop_reset_restart import render_desktop_reset_restart_bridge
 from trading_journal.presentation.i18n import (
     LANGUAGES,
     format_relative_time_localized,
@@ -67,7 +64,7 @@ _DashboardMetricTone = Literal["positive", "negative", "warning", "info", "neutr
 
 
 def application_version() -> str:
-    """Return the installed application version, including in desktop bundles."""
+    """Return the installed application version."""
     source_manifest = Path(__file__).with_name("pyproject.toml")
     if source_manifest.is_file():
         with source_manifest.open("rb") as handle:
@@ -1094,7 +1091,7 @@ def render_global_framework_alert_bubble(repo: SQLiteJournalRepository) -> None:
 
 
 # Bounds how many distinct SQLite engines (one per multiuser database_path) stay
-# open at once; irrelevant for desktop/single-user web mode, which only ever hit
+# open at once; irrelevant for single-user mode, which only ever hits
 # one path, but multiuser mode would otherwise keep growing this forever as more
 # users log in over the life of the process.
 _REPOSITORY_CACHE_MAX_ENTRIES = 64
@@ -1166,24 +1163,10 @@ def _monitor_local_mt5_exports(repo: SQLiteJournalRepository) -> None:
         st.rerun()
 
 
-@st.fragment(run_every=_FRESHNESS_INTERVAL_SECONDS)
-def _monitor_desktop_mt5_exports() -> None:
-    paths = desktop_runtime_paths()
-    status = DesktopSyncStatusStore(paths.sync_status_path)
-    results = status.results()
-    if _render_sync_results(results, notice_key=status.last_import_at().isoformat() if status.last_import_at() else None):
-        st.rerun()
-    if error := status.worker_error():
-        st.error(f"MT5 desktop sync needs attention: {error}")
-
-
 def monitor_mt5_exports(repo: SQLiteJournalRepository) -> None:
-    """Render live MT5 state without giving desktop mode a second importer."""
+    """Import configured local MT5 exports and render their live state."""
 
-    if is_desktop_mode():
-        _monitor_desktop_mt5_exports()
-    else:
-        _monitor_local_mt5_exports(repo)
+    _monitor_local_mt5_exports(repo)
 
 
 def render_auto_sync_notice() -> None:
@@ -1228,18 +1211,13 @@ def render_manual_sync_button(repo: SQLiteJournalRepository, *, key: str) -> Non
     sync_requested = actions.button("Sync MT5 now", key=key, icon=":material/sync:")
     results = st.session_state.get("auto_sync_results", [])
     if sync_requested:
-        if is_desktop_mode():
-            paths = desktop_runtime_paths()
-            DesktopSyncControl(paths.sync_request_path, paths.shutdown_request_path).request_sync()
-            st.info(tr("Desktop sync requested. The local worker will check every configured export within one second."))
-        else:
-            with st.spinner(tr("Syncing MT5 now…")):
-                results = MT5AutoSyncService(repo).sync_configured_exports()
-            st.session_state["auto_sync_results"] = results
-            st.toast(tr("MT5 sync complete."), icon=":material/sync:")
+        with st.spinner(tr("Syncing MT5 now…")):
+            results = MT5AutoSyncService(repo).sync_configured_exports()
+        st.session_state["auto_sync_results"] = results
+        st.toast(tr("MT5 sync complete."), icon=":material/sync:")
     with actions:
         render_live_sync_freshness(include_sync_hint=True)
-    if not sync_requested or is_desktop_mode():
+    if not sync_requested:
         return
 
     imported = [item for item in results if item.status == "imported"]
@@ -1793,64 +1771,6 @@ def render_settings(repo: SQLiteJournalRepository) -> None:
             st.info(tr("Save an MT5 account before configuring review rules."))
         else:
             _render_framework_rules(repo, account)
-    if is_desktop_mode():
-        st.divider()
-        with st.container(border=True):
-            st.markdown("##### Desktop application")
-            st.caption("The journal, MT5 sync worker, and your data are running locally on this computer. Closing this desktop application stops automatic MT5 imports.")
-            if st.button("Quit desktop journal", icon=":material/power_settings_new:", type="primary"):
-                paths = desktop_runtime_paths()
-                DesktopSyncControl(paths.sync_request_path, paths.shutdown_request_path, paths.reset_request_path).request_shutdown()
-                st.success(tr("Closing the local Trade Compass…"))
-        render_desktop_database_reset()
-
-
-def render_desktop_database_reset() -> None:
-    """Request a supervisor-owned reset; the browser never deletes SQLite files."""
-
-    pending_reset_id = st.session_state.get("desktop-database-reset-pending")
-    if pending_reset_id:
-        st.info("Restarting Trade Compass. This page will reload automatically when the clean journal is ready.")
-        ready_reset_id = render_desktop_reset_restart_bridge(pending_reset_id)
-        if ready_reset_id == pending_reset_id and st.session_state.get("desktop-database-reset-dispatched") != pending_reset_id:
-            request_desktop_database_reset()
-            st.session_state["desktop-database-reset-dispatched"] = pending_reset_id
-        return
-
-    with st.container(border=True):
-        st.markdown("##### Reset local database")
-        st.warning("This permanently removes all local accounts, imports, reviews, policies, strategies, and framework evidence. MT5 export files and desktop logs are kept.")
-        confirmation = st.text_input("Type RESET to confirm", key="desktop-database-reset-confirmation")
-        if st.button(
-            "Reset local database",
-            icon=":material/delete_forever:",
-            type="primary",
-            disabled=confirmation.strip() != "RESET",
-            key="desktop-database-reset",
-        ):
-            st.session_state["desktop-database-reset-pending"] = uuid4().hex
-            st.session_state.pop("desktop-database-reset-dispatched", None)
-            st.rerun()
-
-
-def request_desktop_database_reset() -> None:
-    """Send the reset signal only after the browser restart bridge is ready."""
-
-    paths = desktop_runtime_paths()
-    DesktopSyncControl(paths.sync_request_path, paths.shutdown_request_path, paths.reset_request_path).request_reset()
-
-
-def render_desktop_database_diagnostic(error: Exception) -> None:
-    """Keep unexpected local database failures in the browser, without resetting data."""
-
-    st.set_page_config(page_title="Trade Compass recovery", page_icon=TRADE_COMPASS_ICON, layout="wide")
-    st.title("Trade Compass recovery")
-    st.error("Trade Compass could not open its local database.")
-    st.caption("No data was changed. Inspect desktop.log in the Trade Compass data directory before taking further action.")
-    st.code(str(error), language="text")
-    print("Trade Compass diagnostic recovery screen active.", flush=True)
-
-
 def render_review_context_settings(repo: SQLiteJournalRepository) -> None:
     st.subheader("Review context")
     st.caption("Maintain short reusable lists so setup, session, and regime reports stay comparable. Context is optional on Deep Reviews.")
@@ -2401,22 +2321,9 @@ def main() -> None:
     try:
         repo = repository()
     except JournalDatabaseResetRequiredError as error:
-        if is_desktop_mode():
-            st.set_page_config(page_title="Trade Compass recovery", page_icon=TRADE_COMPASS_ICON, layout="wide")
-            st.title(tr("Trade Compass recovery"))
-            st.error(str(error))
-            st.caption(tr("Reset the local database to start a clean journal. This cannot be undone."))
-            render_desktop_database_reset()
-            print("Trade Compass reset recovery screen active.", flush=True)
-            return
         st.error(str(error))
         st.code("make reset-db CONFIRM_RESET=yes", language="bash")
         return
-    except Exception as error:
-        if is_desktop_mode():
-            render_desktop_database_diagnostic(error)
-            return
-        raise
     settings = repo.get_journal_settings()
     st.session_state.setdefault("display_language", settings.display_language)
     install_streamlit_translations()

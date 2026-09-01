@@ -2,6 +2,7 @@
 # secrets out of the image layers.
 .git
 .gitignore
+legacy/
 
 # Local databases, credentials, ingestion tokens, sync state — never bake these in.
 data/
@@ -17,7 +18,7 @@ data/
 .mypy_cache/
 .ruff_cache/
 
-# Desktop/PyInstaller build outputs (irrelevant to the web image)
+# Historical build outputs (irrelevant to the web image)
 build/
 dist/
 release/

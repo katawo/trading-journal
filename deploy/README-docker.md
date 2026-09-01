@@ -3,7 +3,6 @@
 A containerised alternative to the systemd + host-Caddy setup in
 `docs/multiuser_web_deploy.md`. Pick **one** of the two — they deploy the same
 two processes (Streamlit web app + FastAPI ingestion endpoint) behind Caddy.
-The desktop app is not containerised.
 
 ## What runs
 
@@ -16,13 +15,12 @@ The desktop app is not containerised.
 | `caddy`     | HTTPS reverse proxy                       | yes — `80`, `443` |
 
 Only Caddy is reachable from the host/network; `web` and `ingestion` are on the
-internal compose network only (the container equivalent of the desktop
-loopback-only rule). Caddy routes `/ingest` and `/health` to `ingestion`,
+internal compose network only. Caddy routes `/ingest` and `/health` to `ingestion`,
 everything else to `web`.
 
 Both `web` and `ingestion` mount the **same** `tc-data` volume at `/data` and
 read/write the same per-user SQLite files (`/data/users/<username>/trading_journal.db`).
-That volume is the only durable state — back it up like the desktop data dir.
+That volume is the only durable state — back it up regularly.
 
 ## Prerequisites
 
@@ -71,8 +69,7 @@ one-time MT5 `WebRequest` URL whitelist step is unchanged — see
   the VM's disk. Never back it with NFS/network storage — SQLite file locking is
   unsafe there, and here two containers write the same files.
 - **WAL:** because two processes write one SQLite file, the app must run the
-  per-user databases in WAL mode. This is a property of multi-user web mode, not
-  of desktop mode (which stays single-writer).
+  per-user databases in WAL mode. Local single-user mode stays single-writer.
 - **`.[dev]` is intentionally not installed in the image.** If you add a test
   stage, pin `httpx` (not `httpx2`) first — see the note in `pyproject.toml`.
 - **Health:** `docker compose ps` shows healthchecks; `curl https://<domain>/health`

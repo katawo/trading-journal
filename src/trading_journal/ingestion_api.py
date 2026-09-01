@@ -1,5 +1,5 @@
 """FastAPI ingestion endpoint: the MT5 EA pushes closed positions here directly,
-instead of (or in addition to) writing a local CSV for the desktop app to read.
+instead of (or in addition to) writing a local CSV for the Streamlit app to read.
 
 Optional dependency - install with the "ingestion" extra. Run locally with:
     .venv/bin/uvicorn trading_journal.ingestion_api:app --host 127.0.0.1 --port 8600
@@ -95,7 +95,7 @@ def ingest(request: IngestRequest, authorization: str | None = Header(default=No
         raise HTTPException(status_code=422, detail=str(error)) from error
     except (IntegrityError, OperationalError) as error:
         # Two overlapping pushes for the same account can both pass the upsert's
-        # lookup before either commits; unlike the desktop path's single-writer
+        # lookup before either commits; unlike the local path's single-writer
         # guarantee, this endpoint can be hit concurrently - surface it as a
         # retryable conflict rather than a raw 500.
         raise HTTPException(status_code=409, detail="Conflicting concurrent import for this account, retry") from error

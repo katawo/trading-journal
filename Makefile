@@ -16,7 +16,7 @@ COMPOSE := docker compose -f deploy/docker-compose.yml
 
 .DEFAULT_GOAL := help
 
-.PHONY: help venv setup run desktop bundle test test-desktop check reset-db \
+.PHONY: help venv setup run test check reset-db \
         deploy-systemd deploy-systemd-down deploy-docker deploy-docker-down \
         web-user web-token docker-user docker-token \
         docker-logs docker-shell docker-status \
@@ -38,19 +38,8 @@ setup: venv ## Install the application and development dependencies.
 run: venv ## Start Streamlit with automatic reruns when source files are saved.
 	$(STREAMLIT) run $(APP) --server.runOnSave true
 
-desktop: venv ## Start the local desktop launcher, MT5 sync worker, and desktop UI.
-	$(VENV_PYTHON) -m pip install -e '.[desktop]'
-	$(VENV_PYTHON) -m trading_journal.desktop
-
-bundle: venv ## Build a portable desktop bundle for the current operating system.
-	$(VENV_PYTHON) -m pip install -e '.[desktop]'
-	$(VENV_PYTHON) scripts/build_desktop.py
-
 test: venv ## Run the automated test suite.
 	$(VENV_PYTHON) -m pytest -q
-
-test-desktop: venv ## Run the paused desktop-specific tests explicitly.
-	$(VENV_PYTHON) -m pytest -q -m desktop
 
 check: test ## Compile the application after the tests pass.
 	$(VENV_PYTHON) -m compileall -q $(APP) src

@@ -1,8 +1,7 @@
 """Optional multi-user web mode: one SQLite file per logged-in user.
 
-This is a third deployment mode alongside desktop mode and today's single-user
-web mode (see trading_journal.desktop.is_desktop_mode) - it is off unless
-TRADING_JOURNAL_MULTIUSER_MODE=1 is set, and touches nothing when it is off.
+This mode is off unless TRADING_JOURNAL_MULTIUSER_MODE=1 is set and touches
+nothing when it is off.
 Login is handled by streamlit-authenticator (an optional dependency, see the
 "multiuser" extra in pyproject.toml) against a small YAML credentials file;
 accounts are created with scripts/add_web_user.py, not self-serve signup.

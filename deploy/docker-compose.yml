@@ -5,8 +5,7 @@
 #   docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d --build
 #
 # Only Caddy publishes host ports; the app services are reachable solely on the
-# internal compose network (the container equivalent of the desktop loopback
-# rule). See deploy/README-docker.md.
+# internal compose network. See deploy/README-docker.md.
 
 services:
   web:

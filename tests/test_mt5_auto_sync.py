@@ -303,7 +303,7 @@ def ingestion_row(position_id: str = "9001") -> dict:
 def test_auto_sync_reports_unconfigured_for_a_blank_export_path_outside_multiuser_mode(
     monkeypatch, tmp_path: Path
 ) -> None:
-    """Regression guard: a desktop/single-user-web account that simply hasn't configured
+    """Regression guard: a local account that simply hasn't configured
     a local export path yet must keep showing "unconfigured", not be mistaken for an
     ingestion-fed account just because TRADING_JOURNAL_MULTIUSER_MODE happens to be unset.
     """
@@ -331,7 +331,7 @@ def test_auto_sync_uses_the_ingestion_status_in_multiuser_mode_even_with_a_stale
     """The account-settings UI always fills export_file_path with a computed default when a
     user leaves the "custom export path" field blank (app.py resolves an empty input to
     default_mt5_export_path(login)), so a real multiuser account never actually has a blank
-    export_file_path - it's whatever the desktop/local default would be, which is meaningless
+    export_file_path - it is whatever the local default would be, which is meaningless
     on a Docker web container that never has access to that filesystem. Multiuser mode must
     use the ingestion status regardless of what's stored there, not only when it's blank.
     """

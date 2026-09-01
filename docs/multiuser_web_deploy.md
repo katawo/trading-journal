@@ -1,6 +1,6 @@
 # Multi-user web deployment (optional)
 
-An optional third deployment mode, alongside the desktop app and the plain single-user hosted web app: several people share one server, each with their own completely isolated journal, and their MT5 terminals push closed trades directly to that server instead of a desktop app reading a local CSV. This is for a VPS-hosted MT5 terminal (or any setup with no desktop app nearby) — it changes nothing about the existing desktop or single-user web modes.
+This optional deployment mode lets several people share one server, each with a completely isolated journal. Their MT5 terminals push closed trades directly to that server instead of relying on a local CSV that a remote host cannot read.
 
 Recommended host: an Oracle Cloud "Always Free" VM (a real always-on box, no sleep/cold-start, genuinely free). Any Linux VM with a public IP works the same way.
 
@@ -13,7 +13,7 @@ Two processes run on the VM, both reading/writing the same per-user SQLite files
 
 Caddy sits in front of both, terminating HTTPS and routing `/ingest` and `/health` to the ingestion service, everything else to Streamlit.
 
-Each user gets their own SQLite file (`<data dir>/users/<username>/trading_journal.db`) — nothing is shared between users, and no code path needs a `user_id` column, since this reuses the same one-database-per-install design the desktop app already has.
+Each user gets their own SQLite file (`<data dir>/users/<username>/trading_journal.db`) — nothing is shared between users, and no code path needs a `user_id` column.
 
 ## Two ways to run it — pick one
 
@@ -22,7 +22,7 @@ Both deploy the same two processes behind Caddy; choose the one you'd rather ope
 - **systemd (recommended)** — runs the app straight on the host from a venv, managed by systemd, with Caddy installed as a normal package. Fewer moving parts on a single always-on VM. `make deploy-systemd`.
 - **Docker** — the same processes in containers via `docker compose`, useful if you value reproducible builds or expect to move hosts. `make deploy-docker`. Details in `deploy/README-docker.md`.
 
-Neither changes the desktop or single-user web modes. The desktop app is never containerised.
+Neither option changes the local single-user source-development mode.
 
 ## Shared prerequisites (both options)
 
@@ -71,7 +71,7 @@ To stop (data volume is preserved): `make deploy-docker-down`. See `deploy/READM
 
 ## MT5 EA configuration
 
-1. Compile and attach `mql5/TradingJournalSync.mq5` as usual (see `docs/desktop_app.md`'s MT5 sync section — the local CSV export still happens exactly as before; this is additive).
+1. Compile and attach `mql5/TradingJournalSync.mq5` in MetaEditor. The local CSV export remains available; remote ingestion is additive.
 2. Set the EA's `BackendUrl` input to `https://your-domain.example.com/ingest` and `ApiToken` to the token issued when you created the account (`make web-token` / the `add_ingestion_token.py` run above).
 3. In MT5, go to **Tools → Options → Expert Advisors → Allow WebRequest for listed URL** and add `https://your-domain.example.com`. This is a one-time, manual step per terminal — MT5 gives no way to do it programmatically, and `WebRequest` calls to a non-whitelisted URL always fail.
 4. The EA's on-chart status comment shows local closed/open status, terminal connection, and remote retry state. Closed positions push on `InpSafetyExportSeconds` (default 60s), while temporary live snapshots push independently on `InpLiveExportSeconds` (default 10s). Network calls are synchronous but timer-only, limited to three seconds, batched for completed positions, and exponentially backed off after failures. They can delay this read-only exporter's own event queue, but not a separate trading EA.
@@ -81,5 +81,5 @@ To stop (data volume is preserved): `make deploy-docker-down`. See `deploy/READM
 
 - Log in as the admin-created user at your domain; the login screen is deliberately in a fixed language (no per-user preference is known yet at that point) — everything after login still respects each user's own language setting as normal.
 - Losing the ingestion token means re-running `make web-token USER_NAME=<user>` (systemd) or the `add_ingestion_token.py` compose command (Docker); the old token keeps working until you revoke it (not automated today — remove its entry from `ingestion_tokens.yaml` by hand if needed).
-- **Back up the data directory** the same way you would the desktop app's (see `docs/desktop_app.md`) — it holds `users.yaml` (login credentials), `ingestion_tokens.yaml`, and every user's own SQLite file. On systemd that is `DATA_DIR` (default `/var/lib/trade-compass`); on Docker it is the `tc-data` named volume (`docker run --rm -v tc-data:/data -v "$PWD":/backup alpine tar czf /backup/tc-data.tgz -C /data .`).
-- **SQLite concurrency:** in this mode two processes (web + ingestion) write the same per-user database, so the app runs those databases in WAL mode. Keep the data directory / volume on **local disk** — never NFS or other network storage, where SQLite's file locking is unsafe. (This is specific to multi-user web mode; the desktop app stays single-writer.)
+- **Back up the data directory** — it holds `users.yaml` (login credentials), `ingestion_tokens.yaml`, and every user's own SQLite file. On systemd that is `DATA_DIR` (default `/var/lib/trade-compass`); on Docker it is the `tc-data` named volume (`docker run --rm -v tc-data:/data -v "$PWD":/backup alpine tar czf /backup/tc-data.tgz -C /data .`).
+- **SQLite concurrency:** in this mode two processes (web + ingestion) write the same per-user database, so the app runs those databases in WAL mode. Keep the data directory / volume on **local disk** — never NFS or other network storage, where SQLite's file locking is unsafe.

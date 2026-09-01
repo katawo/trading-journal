@@ -1,8 +1,7 @@
 # Container image for the optional multi-user web deployment.
 #
 # One image runs BOTH web-facing processes — the Streamlit app and the FastAPI
-# ingestion endpoint — selected by the compose `command`. The desktop app is NOT
-# containerised; it stays a PyInstaller bundle (see docs/desktop_app.md).
+# ingestion endpoint — selected by the compose `command`.
 #
 # python:3.12-slim satisfies requires-python>=3.12 and is multi-arch, so this
 # builds natively on an Oracle Cloud Ampere (arm64) VM as well as on x86_64.
@@ -16,7 +15,7 @@ RUN apt-get update \
 WORKDIR /app
 
 # Install dependencies first (better layer caching), then the app itself. Only
-# the web-relevant extras — never [desktop] (PyInstaller/pywebview) or [dev]
+# the web-relevant extras — never [dev]
 # (test-only, and see the httpx pin note in deploy/README-docker.md).
 COPY pyproject.toml ./
 COPY src ./src

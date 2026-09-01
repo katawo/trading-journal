@@ -4,17 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repo is
 
-Trade Compass (package name `trade-compass`, module `trading_journal`): a local-first trading journal — a Streamlit app that ships three ways: as a single-user desktop app (Windows/Linux), as a source-development server, and as an optional multi-user web deployment (Docker or systemd, one SQLite database per user). Its only connection to MetaTrader 5 is read-only: an MQL5 EA exports completed positions (and, separately, live open-position snapshots) to CSV or pushes them to an HTTP ingestion endpoint; the app never sends orders and never stores an MT5 password. This is a sibling project inside the larger `forex-ea` MQL5 EA collection, but it is an independent Python/Streamlit codebase (its own `pyproject.toml`, venv, tests).
+Trade Compass (package name `trade-compass`, module `trading_journal`): a local-first trading journal — a Streamlit app that runs as a source-development server or an optional multi-user web deployment (Docker or systemd, one SQLite database per user). Its only connection to MetaTrader 5 is read-only: an MQL5 EA exports completed positions (and, separately, live open-position snapshots) to CSV or pushes them to an HTTP ingestion endpoint; the app never sends orders and never stores an MT5 password. The retired desktop application is archived under `legacy/desktop/` and is outside normal maintenance scope.
 
 ## Build / run / test
 
 ```bash
 make setup     # create .venv and install the app + dev deps (editable)
 make run       # streamlit run app.py --server.runOnSave true
-make desktop   # local desktop experience: loopback-only server + background MT5 sync worker
-make bundle    # build a portable PyInstaller desktop bundle for the current OS
-make test      # pytest -q (desktop-marked tests are excluded by default, see pyproject.toml addopts)
-make test-desktop   # run only the tests marked `desktop` (paused/frozen-app workflow)
+make test      # pytest -q; legacy/ is outside the configured test path
 make check     # test, then `python -m compileall` on app.py and src/
 make reset-db CONFIRM_RESET=yes   # delete the local dev database (data/trading_journal.db*)
 ```
@@ -26,7 +23,7 @@ Run a single test file or test:
 .venv/bin/python -m pytest tests/test_mt5_import.py::test_imports_closed_position_and_waits_for_planned_risk -q
 ```
 
-`TRADING_JOURNAL_DB` selects the database path for source development (defaults to `data/trading_journal.db`). The desktop bundle instead stores its database under the OS user-data directory (see `desktop_data_directory()` in `src/trading_journal/desktop.py`) so app updates can't overwrite it.
+`TRADING_JOURNAL_DB` selects the database path for source development (defaults to `data/trading_journal.db`).
 
 There is no `alembic` migration path wired up even though it's a listed dependency. In its place, `SQLiteJournalRepository.initialize()` (`infrastructure/sqlite_repository.py`) hand-rolls in-place migration for additive changes: after `Base.metadata.create_all()` (which only creates brand-new tables), it runs a series of `PRAGMA table_info(...)` + `ALTER TABLE ... ADD COLUMN` blocks that add any newly-declared *nullable* column to an existing table, preserving all existing rows/data. **When adding a new nullable column to an existing table, add its migration block there** rather than assuming a reset is required — grep that method for the existing per-table blocks (e.g. `post_trade_assessments`, `account_risk_policies`) and follow the same pattern. `_require_clean_framework_schema()` (called first, before `create_all()`) is the harder fallback: it only forces `make reset-db` for schema changes this simple migrator can't handle safely — a genuinely pre-framework database, or (in principle) a new *required* column with no default. Don't add a new column's name to that guard's `expected_columns` sets unless it truly can't be auto-migrated; doing so bypasses the migrator and forces an unnecessary reset (a real bug fixed in this session — see git history on `post_trade_assessment_revisions`).
 
@@ -34,7 +31,7 @@ No linter/formatter is configured (no ruff/black config) — match the surroundi
 
 ### Optional multi-user web deployment
 
-`make deploy-systemd` / `make deploy-docker` stand up a separate deployment mode (see `docs/multiuser_web_deploy.md`): `TRADING_JOURNAL_MULTIUSER_MODE=1` switches the Streamlit app into a login-gated multi-tenant server, and `trading_journal.ingestion_api` (FastAPI, optional `ingestion` extra) gives the MT5 EA an HTTPS push target as an alternative to writing a local CSV. `make web-user`/`make web-token` (systemd) and `make docker-user`/`make docker-token` (Docker) create accounts and issue MT5 ingestion bearer tokens; `make docker-logs`/`docker-status`/`docker-shell`/`docker-restart*` are Docker operational helpers. This mode is independent of the desktop app — don't couple desktop-only assumptions (single local DB, loopback binding) into it, or vice versa.
+`make deploy-systemd` / `make deploy-docker` stand up the optional hosted deployment (see `docs/multiuser_web_deploy.md`): `TRADING_JOURNAL_MULTIUSER_MODE=1` switches the Streamlit app into a login-gated multi-tenant server, and `trading_journal.ingestion_api` (FastAPI, optional `ingestion` extra) gives the MT5 EA an HTTPS push target as an alternative to writing a local CSV. `make web-user`/`make web-token` (systemd) and `make docker-user`/`make docker-token` (Docker) create accounts and issue MT5 ingestion bearer tokens; `make docker-logs`/`docker-status`/`docker-shell`/`docker-restart*` are Docker operational helpers.
 
 ## Architecture
 
@@ -43,9 +40,9 @@ No linter/formatter is configured (no ruff/black config) — match the surroundi
 - `domain/review_taxonomy.py` — the controlled post-trade mistake-tag vocabulary (`REVIEW_MISTAKES_BY_PILLAR`, one tuple per Psychology/Risk/System pillar) shared by the Framework application/presentation layers and the DB layer's legacy-code migration.
 - `application/` — use-case services, framework-agnostic: `import_mt5.py` (closed-position import/idempotency logic), `live_positions.py` (`LivePositionImportService` — isolated live open-position monitoring; explicitly never writes to the post-trade journal), `dashboard.py` (`DashboardService`), `framework.py` (`FrameworkService` — the three-pillar review logic, ~1900 lines), `auto_sync.py` (`MT5AutoSyncService`, polls configured export paths for both closed and live snapshots), `mt5_paths.py` (locates MT5 `Common/Files` on native Windows and Wine/Linux), `reporting_time.py` / `display_time.py` (server/UTC/local timezone normalization for reports), `multiuser.py` (framework-agnostic helpers for multi-user mode: username validation, per-user DB path, ingestion-token hashing — shared by the Streamlit login UI and the FastAPI ingestion endpoint so neither depends on the other).
 - `infrastructure/sqlite_repository.py` — the only persistence adapter (SQLAlchemy models + `SQLiteJournalRepository`), ~3400 lines. All tables (including `StrategyProfile`/`StrategySetup`, the per-account reusable-system definitions), view/DTO dataclasses, and query logic for the app live here; there is no separate ORM-model-vs-repository split beyond this one file.
-- `presentation/` — Streamlit-facing helpers usable outside `app.py` directly: `framework.py` (renders the Framework page and sub-views — "Bearings" in the UI, see below; ~2300 lines), `ongoing.py` (renders the live-position "Ongoing" page), `i18n.py` (`tr()` translation helper + `LANGUAGES`, English source strings with a Vietnamese table, `install_streamlit_translations()`), `multiuser_auth.py` (the login gate for multi-user mode), `connection_recovery.py`, `global_alert_bubble.py`, `desktop_reset_restart.py`, `branding.py`, `browser_timezone.py`, `trade_tags.py`, `formatting.py`.
+- `presentation/` — Streamlit-facing helpers usable outside `app.py` directly: `framework.py` (renders the Framework page and sub-views — "Bearings" in the UI, see below; ~2300 lines), `ongoing.py` (renders the live-position "Ongoing" page), `i18n.py` (`tr()` translation helper + `LANGUAGES`, English source strings with a Vietnamese table, `install_streamlit_translations()`), `multiuser_auth.py` (the login gate for multi-user mode), `connection_recovery.py`, `global_alert_bubble.py`, `branding.py`, `browser_timezone.py`, `trade_tags.py`, `formatting.py`.
 - `ingestion_api.py` — the optional FastAPI app for the multi-user HTTP ingestion path; imports and reuses `application/import_mt5.py` and `application/live_positions.py` rather than duplicating validation logic, and resolves the bearer token to a user before writing only into that user's own SQLite file.
-- `desktop.py` — the desktop runtime: resolves per-OS data directories, supervises the Streamlit server + MT5 sync worker as child processes, an instance lock, a JSON-file-based sync-status/control channel between the worker and the Streamlit UI, and the PyInstaller/pywebview entrypoints. Read this file before changing anything about desktop startup, shutdown, or the reset flow — it's a small state machine, not just a launcher script.
+- `legacy/desktop/` — unsupported historical desktop code. Ignore it in routine testing, compilation, packaging, documentation work, and refactors unless a task explicitly targets the archive.
 
 **`app.py`** (~2100 lines) is the Streamlit entrypoint. It holds formatting/chart-styling helpers, the recovery UI shown when the database schema is incompatible, `repository()`/auto-sync-notice plumbing shared by every page, *and* — for historical reasons — the full render functions for several pages themselves (`render_dashboard`, `render_settings`, `render_mt5_account_settings`, `render_strategy_settings`, `render_strategy_analytics`), plus `main()`, which wires `st.navigation()` across `app_pages/*.py`. Newer pages (Ongoing, the three Bearings pages) instead put their real logic in a `presentation/` module and keep `app.py` untouched. **Don't grow `app.py` further for new pages** — follow the `presentation/<name>.py` + thin `app_pages/<name>.py` shim pattern (see `.claude/commands/new-page.md`) even though older pages don't yet follow it.
 
@@ -64,7 +61,7 @@ No linter/formatter is configured (no ruff/black config) — match the surroundi
 - **Corrections version, they don't overwrite**: Framework assessment edits create a new revision (`PostTradeAssessmentRevision`) and keep prior evidence auditable, rather than mutating the original row.
 - **Logical trades are the reporting unit**: Dashboard P&L/balance/drawdown/streaks and completed-trade Risk monitoring (limit replay against time-effective policies) use mutable logical trades in final-close order. Regrouping recalculates derived history while imported MT5 member positions remain immutable and auditable. (`.claude/commands/framework-review.md` currently states the opposite — that monitoring uses raw positions, not logical trades; that predates the logical-trade replay work and is stale, flag it if you're relying on that file.)
 - **Live positions never touch the post-trade journal**: `application/live_positions.py`/the Ongoing page are an isolated real-time view over MT5's live snapshot export; only fully closed positions ever become journal/Dashboard/Framework data.
-- **Desktop is loopback-only; multi-user web is a separate, isolated mode**: the desktop server binds `127.0.0.1` and is never exposed to the network. Multi-user web mode isolates tenants with one SQLite file per user and one ingestion token per user (`application/multiuser.py`) — don't change either networking model without flagging it as a security-relevant change.
+- **Multi-user isolation**: hosted mode isolates tenants with one SQLite file per user and one ingestion token per user (`application/multiuser.py`). Treat changes to this networking or tenancy model as security-relevant.
 
 ## Quality approach (from README)
 
@@ -76,7 +73,6 @@ No linter/formatter is configured (no ruff/black config) — match the surroundi
 
 - `docs/three_pillar_framework_guide.md` (and `.vi.md`) — the single source of truth for the three-pillar (Psychology/Risk/Trading System) scoring and workflow rules; `README.md`'s "Trading framework" section is a summary of this.
 - `docs/database-schema.puml` / `docs/review-state-machine.puml` — schema and Framework review-state diagrams.
-- `docs/desktop_app.md` — desktop install/backup/release details.
 - `docs/multiuser_web_deploy.md` — systemd vs. Docker deployment, account/token provisioning, operating notes for the optional web mode.
 - `docs/mt5-import-scale-audit.md` — import-path scale/performance notes.
 
