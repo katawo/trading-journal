@@ -835,6 +835,9 @@ def apply_application_style() -> None:
             line-height: 1.25;
             margin-top: 0.1rem;
         }
+        .dashboard-stat-note.dashboard-stat-tone-positive { color: var(--st-green-color, #0e9163); }
+        .dashboard-stat-note.dashboard-stat-tone-negative { color: var(--st-red-color, #c73545); }
+        .dashboard-stat-note.dashboard-stat-tone-warning { color: var(--st-orange-color, #a65f00); }
         .ongoing-exposure-columns {
             display: grid;
             grid-template-columns: repeat(4, minmax(0, 1fr));

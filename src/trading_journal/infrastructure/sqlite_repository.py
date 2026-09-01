@@ -8,7 +8,8 @@ from pathlib import Path
 import sqlite3
 from typing import Mapping
 
-from sqlalchemy import Boolean, CheckConstraint, ForeignKey, ForeignKeyConstraint, Index, Integer, String, Text, UniqueConstraint, create_engine, delete, event, func, select, text
+from sqlalchemy import Boolean, CheckConstraint, ForeignKey, ForeignKeyConstraint, Index, Integer, String, Text, UniqueConstraint, create_engine, delete, event, func, select, text, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
 
 from trading_journal.application.reporting_time import REPORTING_TIME_BASES, normalize_server_timestamp, reporting_date
@@ -794,6 +795,10 @@ class PostTradeAssessmentView:
     created_at: str
     updated_at: str
     version: int
+
+
+class PostTradeAssessmentConflictError(ValueError):
+    """The assessment changed after an editor loaded its draft."""
 
 
 @dataclass(frozen=True)
@@ -2685,6 +2690,7 @@ class SQLiteJournalRepository:
         declared_actual_risk_amount: str | None,
         post_review_note: str,
         corrective_action: str | None,
+        expected_version: int | None = None,
         review_context: ReviewContextSelection | None = None,
     ) -> PostTradeAssessmentView:
         """Create or correct the review for one already-imported logical trade."""
@@ -2703,6 +2709,10 @@ class SQLiteJournalRepository:
             self._required_decimal(declared_actual_risk_amount, "Actual risk", minimum=Decimal("0.00000001"))
         )
         review_note = self._required_text(post_review_note, "Post-trade review")
+        normalized_action = self._optional_text(corrective_action)
+        grades_json = json.dumps(normalized_grades, sort_keys=True)
+        violations_json = json.dumps(normalized_violations)
+        hard_rules_json = json.dumps(normalized_hard_rules)
         context = review_context or ReviewContextSelection()
         now = datetime.now(timezone.utc).isoformat()
         with self._sessions.begin() as session:
@@ -2732,6 +2742,7 @@ class SQLiteJournalRepository:
             setup_snapshot = self._context_setup_snapshot(session, strategy.id, context.strategy_setup_id)
             session_snapshot = self._context_tag_snapshot(session, "session", context.session_tag_id)
             regime_snapshot = self._context_tag_snapshot(session, "regime", context.regime_tag_id)
+            strategy_snapshot = self._strategy_snapshot_json(strategy)
             row = session.scalar(
                 select(PostTradeAssessment).where(
                     PostTradeAssessment.logical_trade_id == trade_id,
@@ -2751,6 +2762,32 @@ class SQLiteJournalRepository:
             disabled_hard_rules = set(normalized_hard_rules) - enabled_hard_rules - existing_hard_rules
             if disabled_hard_rules:
                 raise ValueError("Enable a hard-rule event in Settings → Review rules before recording it on a new assessment")
+            if row is not None and all(
+                (
+                    row.method == "manual",
+                    row.rubric_version == CURRENT_RUBRIC_VERSION,
+                    row.risk_policy_id == risk_policy_id,
+                    row.risk_evidence_source is None,
+                    row.risk_policy_state is None,
+                    row.strategy_profile_id == strategy_profile_id,
+                    row.strategy_snapshot == strategy_snapshot,
+                    row.setup_snapshot == setup_snapshot,
+                    row.session_snapshot == session_snapshot,
+                    row.regime_snapshot == regime_snapshot,
+                    row.criterion_grades == grades_json,
+                    row.violation_codes == violations_json,
+                    row.hard_rule_codes == hard_rules_json,
+                    row.declared_actual_risk_amount == actual_risk,
+                    row.post_review_note == review_note,
+                    row.corrective_action == normalized_action,
+                )
+            ):
+                return self._to_post_trade_assessment_view(row)
+            if expected_version is not None and (
+                (row is None and expected_version != 0)
+                or (row is not None and row.version != expected_version)
+            ):
+                raise PostTradeAssessmentConflictError("This assessment changed in another session")
             if row is None:
                 assessed_position_ids, assessed_trade_label = self._assessment_trade_snapshot(session, trade)
                 row = PostTradeAssessment(
@@ -2760,16 +2797,16 @@ class SQLiteJournalRepository:
                     rubric_version=CURRENT_RUBRIC_VERSION,
                     risk_policy_id=risk_policy_id,
                     strategy_profile_id=strategy_profile_id,
-                    strategy_snapshot=self._strategy_snapshot_json(strategy),
+                    strategy_snapshot=strategy_snapshot,
                     setup_snapshot=setup_snapshot,
                     session_snapshot=session_snapshot,
                     regime_snapshot=regime_snapshot,
-                    criterion_grades=json.dumps(normalized_grades, sort_keys=True),
-                    violation_codes=json.dumps(normalized_violations),
-                    hard_rule_codes=json.dumps(normalized_hard_rules),
+                    criterion_grades=grades_json,
+                    violation_codes=violations_json,
+                    hard_rule_codes=hard_rules_json,
                     declared_actual_risk_amount=actual_risk,
                     post_review_note=review_note,
-                    corrective_action=self._optional_text(corrective_action),
+                    corrective_action=normalized_action,
                     assessed_position_ids=assessed_position_ids,
                     assessed_trade_label=assessed_trade_label,
                     superseded_at=None,
@@ -2782,50 +2819,68 @@ class SQLiteJournalRepository:
             else:
                 # A prior "auto" row is upgraded in place rather than superseded-and-recreated,
                 # so its automatic-evidence snapshot is preserved in revision history too.
-                session.add(
-                    PostTradeAssessmentRevision(
-                        post_trade_assessment_id=row.id,
-                        version=row.version,
-                        method=row.method,
-                        rubric_version=row.rubric_version,
-                        risk_policy_id=row.risk_policy_id,
-                        risk_evidence_source=row.risk_evidence_source,
-                        risk_policy_state=row.risk_policy_state,
-                        strategy_profile_id=row.strategy_profile_id,
-                        strategy_snapshot=row.strategy_snapshot,
-                        setup_snapshot=row.setup_snapshot,
-                        session_snapshot=row.session_snapshot,
-                        regime_snapshot=row.regime_snapshot,
-                        criterion_grades=row.criterion_grades,
-                        violation_codes=row.violation_codes,
-                        hard_rule_codes=row.hard_rule_codes,
-                        declared_actual_risk_amount=row.declared_actual_risk_amount,
-                        post_review_note=row.post_review_note,
-                        corrective_action=row.corrective_action,
-                        assessed_position_ids=row.assessed_position_ids,
-                        assessed_trade_label=row.assessed_trade_label,
-                        archived_at=now,
-                    )
+                revision = PostTradeAssessmentRevision(
+                    post_trade_assessment_id=row.id,
+                    version=row.version,
+                    method=row.method,
+                    rubric_version=row.rubric_version,
+                    risk_policy_id=row.risk_policy_id,
+                    risk_evidence_source=row.risk_evidence_source,
+                    risk_policy_state=row.risk_policy_state,
+                    strategy_profile_id=row.strategy_profile_id,
+                    strategy_snapshot=row.strategy_snapshot,
+                    setup_snapshot=row.setup_snapshot,
+                    session_snapshot=row.session_snapshot,
+                    regime_snapshot=row.regime_snapshot,
+                    criterion_grades=row.criterion_grades,
+                    violation_codes=row.violation_codes,
+                    hard_rule_codes=row.hard_rule_codes,
+                    declared_actual_risk_amount=row.declared_actual_risk_amount,
+                    post_review_note=row.post_review_note,
+                    corrective_action=row.corrective_action,
+                    assessed_position_ids=row.assessed_position_ids,
+                    assessed_trade_label=row.assessed_trade_label,
+                    archived_at=now,
                 )
-                row.method = "manual"
-                row.rubric_version = CURRENT_RUBRIC_VERSION
-                row.risk_evidence_source = None
-                row.risk_policy_state = None
-                row.risk_policy_id = risk_policy_id
-                row.strategy_profile_id = strategy_profile_id
-                row.strategy_snapshot = self._strategy_snapshot_json(strategy)
-                row.setup_snapshot = setup_snapshot
-                row.session_snapshot = session_snapshot
-                row.regime_snapshot = regime_snapshot
-                row.criterion_grades = json.dumps(normalized_grades, sort_keys=True)
-                row.violation_codes = json.dumps(normalized_violations)
-                row.hard_rule_codes = json.dumps(normalized_hard_rules)
-                row.declared_actual_risk_amount = actual_risk
-                row.post_review_note = review_note
-                row.corrective_action = self._optional_text(corrective_action)
-                row.updated_at = now
-                row.version += 1
-            session.flush()
+                write_result = session.execute(
+                    update(PostTradeAssessment)
+                    .where(
+                        PostTradeAssessment.id == row.id,
+                        PostTradeAssessment.version == row.version,
+                        PostTradeAssessment.superseded_at.is_(None),
+                    )
+                    .values(
+                        method="manual",
+                        rubric_version=CURRENT_RUBRIC_VERSION,
+                        risk_evidence_source=None,
+                        risk_policy_state=None,
+                        risk_policy_id=risk_policy_id,
+                        strategy_profile_id=strategy_profile_id,
+                        strategy_snapshot=strategy_snapshot,
+                        setup_snapshot=setup_snapshot,
+                        session_snapshot=session_snapshot,
+                        regime_snapshot=regime_snapshot,
+                        criterion_grades=grades_json,
+                        violation_codes=violations_json,
+                        hard_rule_codes=hard_rules_json,
+                        declared_actual_risk_amount=actual_risk,
+                        post_review_note=review_note,
+                        corrective_action=normalized_action,
+                        updated_at=now,
+                        version=row.version + 1,
+                    )
+                    .execution_options(synchronize_session=False)
+                )
+                if write_result.rowcount != 1:
+                    raise PostTradeAssessmentConflictError("This assessment changed in another session")
+                session.add(revision)
+                session.expire(row)
+            try:
+                session.flush()
+            except IntegrityError as error:
+                if expected_version == 0 and "post_trade_assessments.logical_trade_id" in str(error.orig):
+                    raise PostTradeAssessmentConflictError("This assessment changed in another session") from error
+                raise
             return self._to_post_trade_assessment_view(row)
 
     @staticmethod

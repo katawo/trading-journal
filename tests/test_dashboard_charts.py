@@ -169,6 +169,18 @@ def test_ongoing_exposure_metrics_use_four_compact_desktop_columns(monkeypatch) 
     assert "grid-template-columns: minmax(0, 1fr);" in mobile_css
 
 
+def test_ongoing_metric_notes_support_semantic_risk_tones(monkeypatch) -> None:
+    rendered: list[str] = []
+    monkeypatch.setattr(journal_app.st, "html", rendered.append)
+
+    journal_app.apply_application_style()
+
+    css = rendered[0]
+    assert ".dashboard-stat-note.dashboard-stat-tone-positive" in css
+    assert ".dashboard-stat-note.dashboard-stat-tone-negative" in css
+    assert ".dashboard-stat-note.dashboard-stat-tone-warning" in css
+
+
 def test_dashboard_metric_tones_only_color_clear_performance_signals() -> None:
     assert journal_app._signed_metric_tone("12.5") == "positive"
     assert journal_app._signed_metric_tone(Decimal("-0.01")) == "negative"

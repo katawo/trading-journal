@@ -100,13 +100,20 @@ def _render_header(account: AccountListItem | None) -> None:
     st.caption(tr("Live exposure is read-only and separate from closed-trade reporting, reviews, and framework scores."))
 
 
-def _compact_stat_html(item: tuple[str, str | None, str, str | None]) -> str:
+def _compact_stat_html(
+    item: tuple[str, str | None, str, str | None],
+    *,
+    note_tone: str | None = None,
+) -> str:
     label, value, tone, detail = item
+    note_classes = "dashboard-stat-note"
+    if note_tone is not None:
+        note_classes += f" dashboard-stat-tone-{note_tone}"
     return (
         '<div class="dashboard-stat">'
         f'<div class="dashboard-stat-label">{escape(label)}</div>'
         f'<div class="dashboard-stat-value dashboard-stat-tone-{tone}">{escape(value or "—")}</div>'
-        + ("" if detail is None else f'<div class="dashboard-stat-note">{escape(detail)}</div>')
+        + ("" if detail is None else f'<div class="{note_classes}">{escape(detail)}</div>')
         + "</div>"
     )
 
@@ -121,7 +128,7 @@ def _render_compact_columns(
     pnl = "".join(_compact_stat_html(item) for item in pnl_items)
     positions = "".join(_compact_stat_html(item) for item in position_items)
     risk = _compact_stat_html(risk_item)
-    buffer = _compact_stat_html(buffer_item)
+    buffer = _compact_stat_html(buffer_item, note_tone=buffer_item[2])
     st.markdown(
         '<div class="ongoing-exposure-columns">'
         f'<div class="ongoing-exposure-column dashboard-stat-list">{pnl}</div>'

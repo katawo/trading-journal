@@ -6,6 +6,7 @@ import json
 import sqlite3
 
 import pytest
+from sqlalchemy import event
 
 import streamlit as st
 
@@ -37,6 +38,9 @@ from trading_journal.presentation.framework import (
     _daily_r_metric,
     _drawdown_metric,
     _focus_metric_text,
+    _grade_summary,
+    _initialize_assessment_draft,
+    _initialize_assessment_grades,
     _process_failure_detail,
     _readiness_metric,
     _risk_evidence_detail,
@@ -164,6 +168,23 @@ def test_marking_all_criteria_as_pass_sets_every_criterion() -> None:
     _set_pillar_grades_to_pass(42, ASSESSMENT_CRITERIA, state)
 
     assert state == {f"assessment-42-{criterion}": "Pass" for criterion in ASSESSMENT_CRITERIA}
+
+
+def test_assessment_grades_are_initialized_before_progress_is_calculated() -> None:
+    state: dict[str, object] = {}
+
+    _initialize_assessment_grades(42, None, "within_policy", state)
+
+    assert state["assessment-42-policy_adherence"] == "Pass"
+    assert _grade_summary(42, ASSESSMENT_CRITERIA, state) == (1, 0)
+
+
+def test_assessment_draft_keeps_the_version_from_when_editing_started() -> None:
+    state: dict[str, object] = {"assessment-42-base-version": 1}
+
+    _initialize_assessment_draft({"assessment-42-base-version": 2}, state)
+
+    assert state["assessment-42-base-version"] == 1
 
 
 def test_default_policy_adherence_grade_matches_within_policy_state() -> None:
@@ -339,6 +360,7 @@ def _review(
     hard_rules: tuple[str, ...] = (),
     actual_risk: str | None = "10",
     action: str | None = None,
+    expected_version: int | None = None,
 ):
     return repository.save_post_trade_assessment(
         account_id=account_id,
@@ -351,6 +373,7 @@ def _review(
         declared_actual_risk_amount=actual_risk,
         post_review_note="Reviewed independently of trade P&L.",
         corrective_action=action,
+        expected_version=expected_version,
     )
 
 
@@ -2994,6 +3017,181 @@ def test_corrections_archive_complete_prior_assessment(tmp_path) -> None:
     assert first.version == 1
     assert corrected.version == 2
     assert history[0].criterion_grades["edge_execution"] == "pass"
+
+
+def test_identical_manual_assessment_save_is_a_no_op(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    trade_id = _import_position(repository, account_id)
+
+    first = _review(repository, account_id, trade_id, policy, strategy)
+    repeated = _review(
+        repository,
+        account_id,
+        trade_id,
+        policy,
+        strategy,
+        expected_version=first.version,
+    )
+
+    assert repeated.id == first.id
+    assert repeated.version == first.version
+    assert repository.list_post_trade_assessment_revisions(trade_id) == []
+
+
+def test_changed_manual_assessment_rejects_a_stale_expected_version(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    trade_id = _import_position(repository, account_id)
+    first = _review(repository, account_id, trade_id, policy, strategy)
+    corrected = _review(
+        repository,
+        account_id,
+        trade_id,
+        policy,
+        strategy,
+        grades={**ALL_PASS, "edge_execution": "partial"},
+        tags=("fomo_or_chase",),
+        action="Wait for the setup.",
+        expected_version=first.version,
+    )
+
+    with pytest.raises(ValueError, match="changed in another session"):
+        _review(
+            repository,
+            account_id,
+            trade_id,
+            policy,
+            strategy,
+            grades={**ALL_PASS, "risk_acceptance": "partial"},
+            tags=("risk_not_accepted",),
+            action="Accept the predefined risk.",
+            expected_version=first.version,
+        )
+
+    assert corrected.version == 2
+    assert len(repository.list_post_trade_assessment_revisions(trade_id)) == 1
+
+
+def test_overlapping_assessment_update_cannot_pass_the_version_check(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    trade_id = _import_position(repository, account_id)
+    first = _review(repository, account_id, trade_id, policy, strategy)
+    competing_repository = SQLiteJournalRepository(repository.database_path)
+    competing_write_started = False
+
+    def save_competing_version(_connection, _cursor, statement, _parameters, _context, _many) -> None:
+        nonlocal competing_write_started
+        if competing_write_started or not statement.lstrip().startswith("UPDATE post_trade_assessments"):
+            return
+        competing_write_started = True
+        _review(
+            competing_repository,
+            account_id,
+            trade_id,
+            policy,
+            strategy,
+            grades={**ALL_PASS, "edge_execution": "partial"},
+            tags=("fomo_or_chase",),
+            action="Wait for the setup.",
+            expected_version=first.version,
+        )
+
+    event.listen(repository._engine, "before_cursor_execute", save_competing_version)
+    try:
+        with pytest.raises(ValueError, match="changed in another session"):
+            _review(
+                repository,
+                account_id,
+                trade_id,
+                policy,
+                strategy,
+                grades={**ALL_PASS, "risk_acceptance": "partial"},
+                tags=("risk_not_accepted",),
+                action="Accept the predefined risk.",
+                expected_version=first.version,
+            )
+    finally:
+        event.remove(repository._engine, "before_cursor_execute", save_competing_version)
+        competing_repository.close()
+
+    latest = repository.get_post_trade_assessment_for_trade(trade_id)
+    assert latest is not None
+    assert latest.version == 2
+    assert latest.criterion_grades["edge_execution"] == "partial"
+    assert latest.criterion_grades["risk_acceptance"] == "pass"
+
+
+def test_new_assessment_draft_rejects_a_review_created_in_another_session(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    trade_id = _import_position(repository, account_id)
+    _review(repository, account_id, trade_id, policy, strategy)
+
+    with pytest.raises(ValueError, match="changed in another session"):
+        _review(
+            repository,
+            account_id,
+            trade_id,
+            policy,
+            strategy,
+            grades={**ALL_PASS, "edge_execution": "partial"},
+            tags=("fomo_or_chase",),
+            action="Wait for the setup.",
+            expected_version=0,
+        )
+
+
+def test_overlapping_new_assessment_insert_becomes_a_reload_conflict(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    with sqlite3.connect(repository.database_path) as connection:
+        connection.execute(
+            "UPDATE mt5_accounts SET strategy_profile_id = ? WHERE id = ?",
+            (strategy.id, account_id),
+        )
+    trade_id = _import_position(repository, account_id)
+    repository.get_framework_rule_settings(account_id)
+    competing_repository = SQLiteJournalRepository(repository.database_path)
+    competing_write_started = False
+
+    def save_competing_review(_connection, _cursor, statement, _parameters, _context, _many) -> None:
+        nonlocal competing_write_started
+        if competing_write_started or not statement.lstrip().startswith("INSERT INTO post_trade_assessments"):
+            return
+        competing_write_started = True
+        _review(
+            competing_repository,
+            account_id,
+            trade_id,
+            policy,
+            strategy,
+            expected_version=0,
+        )
+
+    event.listen(repository._engine, "before_cursor_execute", save_competing_review)
+    try:
+        with pytest.raises(ValueError, match="changed in another session"):
+            _review(
+                repository,
+                account_id,
+                trade_id,
+                policy,
+                strategy,
+                grades={**ALL_PASS, "edge_execution": "partial"},
+                tags=("fomo_or_chase",),
+                action="Wait for the setup.",
+                expected_version=0,
+            )
+    finally:
+        event.remove(repository._engine, "before_cursor_execute", save_competing_review)
+        competing_repository.close()
+
+    latest = repository.get_post_trade_assessment_for_trade(trade_id)
+    assert latest is not None
+    assert latest.version == 1
+    assert latest.criterion_grades == ALL_PASS
 
 
 def test_corrections_archive_the_prior_context_snapshot(tmp_path) -> None:

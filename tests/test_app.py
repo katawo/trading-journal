@@ -1817,13 +1817,12 @@ def test_reopening_review_after_upgrading_an_auto_review_does_not_crash(monkeypa
     next(item for item in app.button if item.label == "Review").click().run()
     assert not app.exception
     markdown_values = [item.value for item in app.markdown]
-    assert [
-        value for value in markdown_values if value.startswith("###### :") and " · 0/4" in value
-    ] == [
+    assert [value for value in markdown_values if value.startswith("###### :")] == [
         "###### :blue[Psychology] · 0/4",
-        "###### :orange[Risk management] · 0/4",
+        "###### :orange[Risk management] · 1/4",
         "###### :violet[Trading system] · 0/4",
     ]
+    assert any("1 of 12 criteria graded" in item.value for item in app.caption)
     criterion_labels = {
         "Edge execution *",
         "Risk acceptance *",
@@ -1875,7 +1874,11 @@ def test_reopening_review_after_upgrading_an_auto_review_does_not_crash(monkeypa
     context_selectboxes["Setup (optional)"].select("London pullback").run()
     context_selectboxes["Session (optional)"].select("London").run()
     context_selectboxes["Market regime (optional)"].select("Trending").run()
+    next(item for item in app.segmented_control if item.label == "Edge execution *").select("Partial").run()
+    assert any("2 of 12 criteria graded · 1 exception" in item.value for item in app.caption)
     next(item for item in app.button if item.label == "Mark all criteria as Pass").click().run()
+    assert all(item.value == "Pass" for item in app.segmented_control if item.label in criterion_labels)
+    assert any("12 of 12 criteria graded" in item.value for item in app.caption)
     note = next(item for item in app.text_area if item.label == "What happened and what did you learn? *")
     note.set_value("Upgraded from an auto review.").run()
     next(item for item in app.button if item.label == "Save assessment").click().run()
@@ -1895,6 +1898,102 @@ def test_reopening_review_after_upgrading_an_auto_review_does_not_crash(monkeypa
         "Session (optional)": "London",
         "Market regime (optional)": "Trending",
     }
+
+
+def test_stale_assessment_draft_warns_and_reloads_the_latest_review(monkeypatch, tmp_path):
+    monkeypatch.setattr("trading_journal.presentation.global_alert_bubble.render_global_alert_bubble", lambda **kwargs: None)
+    database_path = tmp_path / "journal.db"
+    repository = SQLiteJournalRepository(database_path)
+    repository.initialize()
+    repository.configure_journal(reporting_time_basis="utc")
+    repository.register_mt5_account(
+        display_name="Primary",
+        login="123456",
+        broker_server="DemoBroker-Live",
+        account_currency="USD",
+        export_file_path="",
+    )
+    account = repository.find_active_mt5_account("123456", "DemoBroker-Live")
+    assert account is not None
+    policy = repository.save_account_risk_policy(
+        account_id=account.id,
+        standard_risk_per_trade_percent="1",
+        maximum_risk_per_trade_percent="1",
+        daily_loss_limit_r="2",
+        weekly_loss_limit_r="4",
+        max_drawdown_percent="10",
+        max_open_risk_r="1",
+        max_consecutive_losses=3,
+        minimum_rr="1.5",
+        correlation_policy=None,
+        starting_balance="1000",
+    )
+    strategy = repository.get_account_strategy(account.id)
+    repository.upsert_mt5_positions(
+        account.id,
+        [
+            MT5PositionExport(
+                schema_version=5,
+                account_login="123456",
+                broker_server="DemoBroker-Live",
+                account_currency="USD",
+                position_id="conflict-review",
+                symbol="XAUUSD",
+                direction="long",
+                entry_time="2026-08-10T08:00:00+00:00",
+                exit_time="2026-08-10T09:00:00+00:00",
+                entry_price="3300",
+                exit_price="3320",
+                volume="0.1",
+                gross_pnl="20",
+                commission="0",
+                swap="0",
+                fees="0",
+                net_pnl="20",
+                initial_risk_amount="5",
+                entry_stop_price="3280",
+            )
+        ],
+        "positions.csv",
+        "conflict-review-test",
+    )
+    trade = repository.list_closed_trades_for_review(account.id)[0]
+    monkeypatch.setenv("TRADING_JOURNAL_DB", str(database_path))
+
+    app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
+    app.switch_page("app_pages/bearings_review.py").run()
+    _set_review_filters(app, needs_approval=True, auto_reviewed=True, manual_reviewed=True)
+    next(item for item in app.button if item.label == "Review").click().run()
+    next(item for item in app.button if item.label == "Mark all criteria as Pass").click().run()
+    next(
+        item for item in app.text_area if item.label == "What happened and what did you learn? *"
+    ).set_value("My stale draft.").run()
+
+    repository.save_post_trade_assessment(
+        account_id=account.id,
+        trade_id=trade.id,
+        risk_policy_id=policy.id,
+        strategy_profile_id=strategy.id,
+        criterion_grades={
+            criterion: "partial" if criterion == "edge_execution" else "pass"
+            for criterion in ASSESSMENT_CRITERIA
+        },
+        violation_codes=("fomo_or_chase",),
+        hard_rule_codes=(),
+        declared_actual_risk_amount=None,
+        post_review_note="Latest review from another session.",
+        corrective_action="Wait for the setup.",
+        expected_version=0,
+    )
+
+    next(item for item in app.button if item.label == "Save assessment").click().run()
+
+    assert not app.exception
+    assert any("Your draft was discarded" in item.value for item in app.warning)
+    assert next(
+        item for item in app.text_area if item.label == "What happened and what did you learn? *"
+    ).value == "Latest review from another session."
+    assert next(item for item in app.segmented_control if item.label == "Edge execution *").value == "Partial"
 
 
 def test_save_and_review_next_skips_a_stale_queue_entry_instead_of_dropping_the_queue(monkeypatch, tmp_path):

@@ -10,6 +10,7 @@ from trading_journal.application.live_positions import LivePositionImportService
 from trading_journal.infrastructure.sqlite_repository import SQLiteJournalRepository
 from trading_journal.presentation.ongoing import (
     ONGOING_REFRESH_INTERVAL_SECONDS,
+    _compact_stat_html,
     _pnl_metric,
     _position_priority,
     _render_inline_position_state,
@@ -218,6 +219,18 @@ def test_risk_buffer_uses_displayed_utilization_for_threshold_tone() -> None:
 
     report.total_risk_r = Decimal("0.9996")
     assert _risk_buffer_metric(report) == ("0.00R", "100% of limit used", "negative")
+
+
+def test_risk_buffer_utilization_note_uses_the_metric_tone() -> None:
+    markup = _compact_stat_html(
+        ("Risk buffer", "0.00R", "negative", "152.8% of limit used"),
+        note_tone="negative",
+    )
+
+    assert (
+        '<div class="dashboard-stat-note dashboard-stat-tone-negative">'
+        "152.8% of limit used</div>"
+    ) in markup
 
 
 def test_stale_snapshot_withholds_risk_buffer_and_affirmative_empty_state(monkeypatch) -> None:
