@@ -394,6 +394,19 @@ class FrameworkService:
         account_scores, _ = self._account_trade_scores(account_id)
         return account_scores
 
+    def trade_process_evidence(
+        self,
+        account_id: int,
+    ) -> tuple[tuple[ClosedTradeReviewItem, TradeProcessScore], ...]:
+        """Return the logical-trade read model paired with its process evidence."""
+
+        scores, _ = self._account_trade_scores(account_id)
+        score_by_trade = {score.trade_id: score for score in scores}
+        return tuple(
+            (trade, score_by_trade[trade.id])
+            for trade in self._account_trade_cache[account_id]
+        )
+
     def pillar_scores(self, account_id: int, *, window: int = 20, as_of: date | None = None) -> tuple[PillarScore, ...]:
         cache_key = (account_id, window, as_of)
         if cache_key in self._pillar_score_cache:
@@ -2024,6 +2037,6 @@ class FrameworkService:
             local_zone=self._local_zone,
         ).date()
 
-    def today(self, account_id: int) -> date:
+    def today(self, account_id: int, *, now: datetime | None = None) -> date:
         """Current date in the account's configured reporting-time basis (server/UTC/local)."""
-        return self._current_report_date(datetime.now(timezone.utc), account_id)
+        return self._current_report_date(now or datetime.now(timezone.utc), account_id)

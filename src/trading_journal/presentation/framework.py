@@ -1851,6 +1851,18 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
             _clear_group_dialog()
     if st.session_state.get(_bulk_quick_review_key(account.id)) is not None:
         st.dialog(tr("Quick review selected trades"), width="large", on_dismiss=_dismiss_bulk_quick_review)(_render_bulk_quick_review_dialog)(repo, account, trades, scores)
+    _render_selected_post_trade_review_dialog(repo, account, ordered, scores, profiles)
+
+
+def _render_selected_post_trade_review_dialog(
+    repo: SQLiteJournalRepository,
+    account: AccountListItem,
+    ordered,
+    scores: dict[int, TradeProcessScore],
+    profiles,
+) -> None:  # type: ignore[no-untyped-def]
+    """Render the shared assessment dialog for the current session selection."""
+
     selected = st.session_state.get("post-trade-review-trade-id")
     if selected is None:
         return
@@ -1872,6 +1884,28 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
         _clear_review_dialog()
         return
     st.dialog(tr("Post-trade assessment"), width="large", on_dismiss=_clear_review_dialog)(_render_post_trade_review_dialog)(repo, account, item[0], item[1], profiles)
+
+
+def render_post_trade_review_dialog(
+    repo: SQLiteJournalRepository,
+    account: AccountListItem,
+    service: FrameworkService,
+) -> None:
+    """Render the selected assessment dialog using its workspace reporting calendar."""
+
+    if st.session_state.get("post-trade-review-trade-id") is None:
+        return
+    ordered = sorted(
+        repo.list_closed_trades_for_review(account.id),
+        key=lambda item: (item.exit_time, item.id),
+        reverse=True,
+    )
+    scores = {
+        item.trade_id: item
+        for item in service.trade_process_scores(account.id)
+    }
+    profiles = [repo.get_account_strategy(account.id)]
+    _render_selected_post_trade_review_dialog(repo, account, ordered, scores, profiles)
 
 
 def _render_monitor(repo: SQLiteJournalRepository, account: AccountListItem) -> None:
@@ -2241,6 +2275,16 @@ def render_dashboard_coaching_focus(repo: SQLiteJournalRepository, account: Acco
     scores = service.pillar_scores(account.id)
     with st.expander(tr("🎯 Current coaching focus"), expanded=False, key="dashboard-coaching-focus"):
         _render_framework_focus(repo, account, service, scores, compact=True, show_heading=False)
+
+
+def render_compact_framework_focus(
+    repo: SQLiteJournalRepository,
+    account: AccountListItem,
+    service: FrameworkService,
+) -> None:
+    """Render the shared coaching action card without page-specific history."""
+
+    _render_framework_focus(repo, account, service, (), compact=True, show_heading=False)
 
 
 def _render_period_reviews(repo: SQLiteJournalRepository, account: AccountListItem, service: FrameworkService) -> None:

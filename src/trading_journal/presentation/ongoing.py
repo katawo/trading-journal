@@ -1,18 +1,28 @@
-"""Live, read-only exposure workspace kept separate from post-trade analysis."""
+"""Ongoing workspace for live exposure and the current reporting day."""
 
 from __future__ import annotations
 
 from decimal import Decimal
+from datetime import datetime
 from html import escape
 
 import pandas as pd
 import streamlit as st
 
-from trading_journal.application.dashboard import DashboardService
+from trading_journal.application.framework import FrameworkService, PILLAR_NAMES
 from trading_journal.application.live_positions import LivePositionService
+from trading_journal.application.today import TodayOverview, TodayService, TodayTradeSummary
 from trading_journal.infrastructure.sqlite_repository import AccountListItem, SQLiteJournalRepository
-from trading_journal.presentation.formatting import format_currency, format_exposure_r, format_percent
+from trading_journal.presentation.browser_timezone import browser_timezone
+from trading_journal.presentation.formatting import format_currency, format_exposure_r, format_percent, format_r
+from trading_journal.presentation.framework import (
+    HARD_RULE_LABELS,
+    VIOLATION_LABELS,
+    render_compact_framework_focus,
+    render_post_trade_review_dialog,
+)
 from trading_journal.presentation.i18n import tr
+from trading_journal.presentation.trade_tags import direction_tag, outcome_tag
 
 
 ONGOING_REFRESH_INTERVAL_SECONDS = 5
@@ -25,13 +35,19 @@ _METRIC_COLOR_TO_TONE = {
 }
 
 
-@st.fragment(run_every=ONGOING_REFRESH_INTERVAL_SECONDS)
 def render_ongoing_positions_page(repo: SQLiteJournalRepository) -> None:
     account = repo.get_active_mt5_account()
     _render_header(account)
     if account is None:
         st.info(tr("Add and select an MT5 account in Settings to monitor live positions."))
         return
+    _render_live_positions(repo, account)
+    _render_today_action_center(repo, account)
+    _render_incidents(repo, account)
+
+
+@st.fragment(run_every=ONGOING_REFRESH_INTERVAL_SECONDS)
+def _render_live_positions(repo: SQLiteJournalRepository, account: AccountListItem) -> None:
     report = LivePositionService(repo).build_report(account.id)
     if report.status != "within":
         _render_status(report.status, report.detail)
@@ -46,9 +62,6 @@ def render_ongoing_positions_page(repo: SQLiteJournalRepository) -> None:
     risk_value, _, risk_color, risk_description = _risk_metric(report)
     unprotected_value, _, unprotected_color = _unprotected_metric(report)
     pnl_value, _, pnl_color = _pnl_metric(report, account.account_currency)
-    dashboard = DashboardService(repo)
-    today_pnl = dashboard.realized_pnl_on(dashboard.current_report_date(account.id), account.id)
-    today_pnl_color = _realized_pnl_color(today_pnl)
     risk_buffer_value, risk_buffer_detail, risk_buffer_tone = _risk_buffer_metric(report)
     with st.container(border=True, key="ongoing-exposure-snapshot"):
         header, status = st.columns([3, 2], vertical_alignment="center")
@@ -63,12 +76,6 @@ def render_ongoing_positions_page(repo: SQLiteJournalRepository) -> None:
         _render_compact_columns(
             pnl_items=[
                 (tr("Unrealized P&L"), pnl_value, _METRIC_COLOR_TO_TONE[pnl_color], None),
-                (
-                    tr("Today realized P&L"),
-                    format_currency(today_pnl, account.account_currency),
-                    _METRIC_COLOR_TO_TONE[today_pnl_color],
-                    None,
-                ),
             ],
             position_items=[
                 (
@@ -86,7 +93,6 @@ def render_ongoing_positions_page(repo: SQLiteJournalRepository) -> None:
             _render_inline_position_state(report)
     if report.positions:
         _render_positions(report, account)
-    _render_incidents(repo, account)
 
 
 def _render_header(account: AccountListItem | None) -> None:
@@ -94,10 +100,10 @@ def _render_header(account: AccountListItem | None) -> None:
         f'<div class="dashboard-kicker">{escape(tr("Live risk monitor"))}</div>',
         unsafe_allow_html=True,
     )
-    st.subheader(tr("Ongoing positions"))
+    st.subheader(tr("Ongoing workspace"))
     if account is not None:
         st.caption(f"{account.display_name} · {account.login} · {account.account_currency} · {account.broker_server}")
-    st.caption(tr("Live exposure is read-only and separate from closed-trade reporting, reviews, and framework scores."))
+    st.caption(tr("Live exposure and today's closed-trade workflow share one workspace. P&L remains separate from process quality."))
 
 
 def _compact_stat_html(
@@ -241,6 +247,200 @@ def _risk_buffer_metric(report) -> tuple[str | None, str, str]:
     return format_exposure_r(buffer), detail, tone
 
 
+def _reporting_basis_label(value: str) -> str:
+    return {
+        "server": tr("MT5 server time"),
+        "utc": "UTC",
+        "local": tr("local computer time"),
+    }[value]
+
+
+def _open_today_review(trade_id: int, queue: tuple[int, ...] = ()) -> None:
+    st.session_state["post-trade-review-trade-id"] = trade_id
+    st.session_state["post-trade-review-queue"] = queue
+
+
+def _render_today_metrics(overview: TodayOverview, account: AccountListItem) -> None:
+    pnl_tone = _METRIC_COLOR_TO_TONE[_realized_pnl_color(overview.realized_pnl)]
+    if overview.daily_r is None:
+        daily_r = (tr("Daily R"), None, "warning", tr("Risk unavailable"))
+    else:
+        daily_r_value = Decimal(overview.daily_r)
+        daily_r_tone = "positive" if daily_r_value > 0 else "negative" if daily_r_value < 0 else "neutral"
+        daily_r = (tr("Daily R"), format_r(overview.daily_r), daily_r_tone, tr("Risk-normalized outcome"))
+    review_tone = "neutral" if not overview.trades else "warning" if overview.pending_count else "positive"
+    review_detail = (
+        tr("No closed trades")
+        if not overview.trades
+        else tr("{count} pending", count=overview.pending_count)
+        if overview.pending_count
+        else tr("All reviewed")
+    )
+    metrics = (
+        (
+            tr("Today realized P&L"),
+            format_currency(overview.realized_pnl, account.account_currency),
+            pnl_tone,
+            tr("Outcome only"),
+        ),
+        daily_r,
+        (tr("Closed logical trades"), str(len(overview.trades)), "info" if overview.trades else "neutral", None),
+        (tr("Reviews"), f"{overview.reviewed_count}/{len(overview.trades)}", review_tone, review_detail),
+    )
+    st.markdown(
+        '<div class="ongoing-today-columns">'
+        + "".join(f'<div class="ongoing-today-column">{_compact_stat_html(item)}</div>' for item in metrics)
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def _review_label(item: TodayTradeSummary) -> tuple[str, str]:
+    return {
+        "needs_approval": (tr("Requires review"), "red"),
+        "auto_review": (tr("Awaiting approval"), "orange"),
+        "approved_auto_review": (tr("Auto"), "green"),
+        "manual_review": (tr("Manual"), "green"),
+    }.get(item.review_kind, (tr("Pending review"), "orange"))
+
+
+def _render_today_trades(overview: TodayOverview, account: AccountListItem) -> None:
+    st.markdown("##### " + tr("Today's trades"))
+    if not overview.trades:
+        st.caption(tr("No logical trades have closed in this reporting day."))
+        return
+    for item in overview.trades:
+        with st.container(border=True):
+            detail, action = st.columns([4, 1], vertical_alignment="center")
+            direction = direction_tag(item.direction)
+            outcome = outcome_tag(item.net_pnl)
+            review_label, review_color = _review_label(item)
+            with detail:
+                st.markdown(f"**LT-{item.trade_id} · {item.symbol}**")
+                closed_at = datetime.fromisoformat(item.closed_at).strftime("%H:%M")
+                st.caption(f"{tr('Closed')} {closed_at} · {item.display_label}")
+                with st.container(horizontal=True, vertical_alignment="center", gap="small"):
+                    st.badge(tr(direction.label), color=direction.color, icon=direction.icon)
+                    st.badge(format_currency(item.net_pnl, account.account_currency), color=outcome.color)
+                    st.badge(review_label, color=review_color)
+                    if item.classification is not None:
+                        classification_color = (
+                            "green" if item.classification.startswith("Good") else
+                            "red" if item.classification.startswith("Bad") else "orange"
+                        )
+                        st.badge(tr(item.classification), color=classification_color)
+                issue_labels = [tr(VIOLATION_LABELS.get(code, code)) for code in item.violation_codes]
+                hard_labels = [tr(HARD_RULE_LABELS.get(code, code)) for code in item.hard_rule_codes]
+                if issue_labels or hard_labels:
+                    st.caption(" · ".join((*issue_labels, *hard_labels)))
+            with action:
+                st.button(
+                    tr("Edit review") if item.reviewed else tr("Review"),
+                    key=f"ongoing-today-review-{account.id}-{item.trade_id}",
+                    type="secondary" if item.reviewed else "primary",
+                    icon=":material/edit:",
+                    width="stretch",
+                    on_click=_open_today_review,
+                    args=(item.trade_id, ()),
+                )
+
+
+def _render_today_issues(overview: TodayOverview) -> None:
+    st.markdown("##### " + tr("Today's reviewed issues"))
+    if not overview.trades:
+        st.caption(tr("No closed trades are available for review today."))
+        return
+    if overview.reviewed_count == 0:
+        st.info(tr("Reviews are still pending; no conclusion about mistakes is available yet."), icon=":material/pending_actions:")
+        return
+    issue_columns = st.columns(2, gap="small")
+    with issue_columns[0]:
+        st.markdown(f"**{tr('Mistakes')}**")
+        if overview.mistakes:
+            for issue in overview.mistakes:
+                st.badge(f"{tr(VIOLATION_LABELS.get(issue.code, issue.code))} · {issue.count}", color="orange")
+        else:
+            st.caption(tr("No reviewed mistakes were recorded for today's trades."))
+    with issue_columns[1]:
+        st.markdown(f"**{tr('Hard-rule events')}**")
+        if overview.hard_rules:
+            for issue in overview.hard_rules:
+                st.badge(f"{tr(HARD_RULE_LABELS.get(issue.code, issue.code))} · {issue.count}", color="red")
+        else:
+            st.caption(tr("No hard-rule events were recorded for today's trades."))
+    actions = [(item.trade_id, item.corrective_action) for item in overview.trades if item.corrective_action]
+    st.markdown(f"**{tr('Corrective actions')}**")
+    if actions:
+        for trade_id, action in actions:
+            st.markdown(f"**LT-{trade_id}**")
+            st.write(action)
+    else:
+        st.caption(tr("No corrective actions were recorded for today's trades."))
+
+
+def _render_today_coaching(
+    repo: SQLiteJournalRepository,
+    account: AccountListItem,
+    framework: FrameworkService,
+    overview: TodayOverview,
+) -> None:
+    st.markdown(f"##### {tr('Coaching today')}")
+    render_compact_framework_focus(repo, account, framework)
+    st.markdown(f"**{tr('Resolved today')}**")
+    if not overview.resolved_focuses:
+        st.caption(tr("No coaching focus was resolved today."))
+        return
+    for focus in overview.resolved_focuses:
+        with st.container(border=True):
+            status_color = "green" if focus.status == "completed" else "gray"
+            with st.container(horizontal=True, vertical_alignment="center", gap="small"):
+                st.badge(tr(focus.status.capitalize()), color=status_color)
+                st.badge(tr(PILLAR_NAMES[focus.pillar]), color="blue")
+            st.write(tr(focus.action_text))
+            if focus.resolution_note:
+                st.caption(focus.resolution_note)
+
+
+def _render_today_action_center(repo: SQLiteJournalRepository, account: AccountListItem) -> None:
+    settings = repo.get_journal_settings()
+    local_zone = browser_timezone() if settings.reporting_time_basis == "local" else None
+    framework = FrameworkService(repo, local_zone=local_zone)
+    framework.ensure_coaching_focus(account.id)
+    overview = TodayService(repo, local_zone=local_zone, framework=framework).build(account.id)
+    pending = tuple(item for item in reversed(overview.trades) if not item.reviewed)
+
+    with st.container(border=True, key="ongoing-today-action-center"):
+        heading, actions = st.columns([4, 1], vertical_alignment="center")
+        with heading:
+            st.markdown(f"#### {tr('Today action center')}")
+            st.caption(
+                tr(
+                    "{date} · {basis} reporting calendar",
+                    date=overview.report_date,
+                    basis=_reporting_basis_label(overview.reporting_time_basis),
+                )
+            )
+        with actions:
+            if pending:
+                st.button(
+                    tr("Review pending ({count})", count=len(pending)),
+                    key=f"ongoing-today-review-pending-{account.id}",
+                    type="primary",
+                    icon=":material/rate_review:",
+                    width="stretch",
+                    on_click=_open_today_review,
+                    args=(pending[0].trade_id, tuple(item.trade_id for item in pending[1:])),
+                )
+        _render_today_metrics(overview, account)
+        trade_column, coaching_column = st.columns([1.45, 1], gap="large")
+        with trade_column:
+            _render_today_trades(overview, account)
+            _render_today_issues(overview)
+        with coaching_column:
+            _render_today_coaching(repo, account, framework, overview)
+    render_post_trade_review_dialog(repo, account, framework)
+
+
 def _render_positions(report, account: AccountListItem) -> None:
     with st.container(border=True, key="ongoing-current-positions"):
         st.markdown(f"#### {tr('Current positions')}")
@@ -278,6 +478,7 @@ def _risk_label(protected: bool, risk_r) -> str:
     return "—" if risk_r is None else format_exposure_r(risk_r)
 
 
+@st.fragment(run_every=ONGOING_REFRESH_INTERVAL_SECONDS)
 def _render_incidents(repo: SQLiteJournalRepository, account: AccountListItem) -> None:
     incidents = repo.list_live_position_incidents(account.id)
     if not incidents:

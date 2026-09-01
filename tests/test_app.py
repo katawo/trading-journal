@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from streamlit.testing.v1 import AppTest
 
-from trading_journal.application.dashboard import DashboardService
+from trading_journal.application.framework import FrameworkService
 from trading_journal.application.display_time import format_relative_time
 from trading_journal.application.live_positions import LivePositionImportService
 from trading_journal.domain.models import MT5PositionExport
@@ -431,9 +431,9 @@ def test_ongoing_page_renders_its_auto_refreshing_workspace(monkeypatch, tmp_pat
     app.switch_page("app_pages/ongoing.py").run()
 
     assert not app.exception
-    assert [item.value for item in app.subheader] == ["Ongoing positions"]
+    assert [item.value for item in app.subheader] == ["Ongoing workspace"]
     assert any('class="dashboard-kicker">Live risk monitor<' in item.value for item in app.markdown)
-    assert any("separate from closed-trade reporting" in item.value for item in app.caption)
+    assert any("closed-trade workflow share one workspace" in item.value for item in app.caption)
     assert any("Add and select an MT5 account" in item.value for item in app.info)
 
 
@@ -504,7 +504,7 @@ def test_ongoing_page_displays_today_realized_pnl_separately_from_unrealized_pnl
         "test-hash",
     )
     monkeypatch.setenv("TRADING_JOURNAL_DB", str(database_path))
-    monkeypatch.setattr(DashboardService, "current_report_date", lambda self, account_id: date(2026, 8, 10))
+    monkeypatch.setattr(FrameworkService, "today", lambda self, account_id, now=None: date(2026, 8, 10))
 
     app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
     app.switch_page("app_pages/ongoing.py").run()
@@ -517,15 +517,31 @@ def test_ongoing_page_displays_today_realized_pnl_separately_from_unrealized_pnl
     ) in markup
     assert (
         markup.index("Unrealized P&amp;L")
-        < markup.index("Today realized P&amp;L")
         < markup.index("Open positions")
         < markup.index("Unprotected")
         < markup.index("Known open risk")
         < markup.index("Risk buffer")
+        < markup.index("Today realized P&amp;L")
     )
+    assert "#### Today action center" in markup
     assert markup.count('<div class="ongoing-exposure-column ') == 4
     assert 'class="ongoing-exposure-column ongoing-risk-column"' in markup
-    assert not app.metric
+    assert all(
+        metric.label not in {"Unrealized P&L", "Today realized P&L", "Open positions", "Known open risk"}
+        for metric in app.metric
+    )
+    assert any(
+        "Reviews are still pending; no conclusion about mistakes is available yet." in item.value
+        for item in app.info
+    )
+    assert "##### Coaching today" in markup
+    assert "**Resolved today**" in markup
+
+    next(button for button in app.button if button.label == "Review pending (1)").click()
+    app.run()
+
+    assert not app.exception
+    assert any(field.label == "What happened and what did you learn? *" for field in app.text_area)
 
 
 def test_ongoing_page_compacts_a_healthy_empty_snapshot_into_the_exposure_panel(monkeypatch, tmp_path) -> None:

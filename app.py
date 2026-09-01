@@ -864,6 +864,32 @@ def apply_application_style() -> None:
         .ongoing-exposure-columns .dashboard-stat-note {
             font-size: 0.86rem;
         }
+        .ongoing-today-columns {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            border-bottom: 1px solid var(--st-border-color, #c8d0c8);
+            border-top: 1px solid var(--st-border-color, #c8d0c8);
+            margin: 0.45rem 0 0.85rem;
+            padding: 0.85rem 0;
+        }
+        .ongoing-today-column {
+            padding: 0 1rem;
+        }
+        .ongoing-today-column:first-child {
+            padding-left: 0;
+        }
+        .ongoing-today-column + .ongoing-today-column {
+            border-left: 1px solid var(--st-border-color, #c8d0c8);
+        }
+        .ongoing-today-columns .dashboard-stat-label {
+            font-size: 0.82rem;
+        }
+        .ongoing-today-columns .dashboard-stat-value {
+            font-size: 1.2rem;
+        }
+        .ongoing-today-columns .dashboard-stat-note {
+            font-size: 0.86rem;
+        }
         .ongoing-risk-column .dashboard-stat {
             display: block;
         }
@@ -892,11 +918,23 @@ def apply_application_style() -> None:
             .ongoing-exposure-columns {
                 grid-template-columns: minmax(0, 1fr);
             }
+            .ongoing-today-columns {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
             .ongoing-exposure-column {
                 padding: 0.65rem 0;
             }
             .ongoing-exposure-column + .ongoing-exposure-column {
                 border-left: 0;
+                border-top: 1px solid var(--st-border-color, #c8d0c8);
+            }
+            .ongoing-today-column {
+                padding: 0.65rem;
+            }
+            .ongoing-today-column:nth-child(odd) {
+                border-left: 0;
+            }
+            .ongoing-today-column:nth-child(n + 3) {
                 border-top: 1px solid var(--st-border-color, #c8d0c8);
             }
             div.st-key-dashboard-account-risk-columns [data-testid="stColumn"] + [data-testid="stColumn"],

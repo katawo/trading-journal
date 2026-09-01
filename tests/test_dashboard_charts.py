@@ -169,6 +169,22 @@ def test_ongoing_exposure_metrics_use_four_compact_desktop_columns(monkeypatch) 
     assert "grid-template-columns: minmax(0, 1fr);" in mobile_css
 
 
+def test_ongoing_today_metrics_use_a_responsive_four_card_grid(monkeypatch) -> None:
+    rendered: list[str] = []
+    monkeypatch.setattr(journal_app.st, "html", rendered.append)
+
+    journal_app.apply_application_style()
+
+    css = rendered[0]
+    today_css = css.split(".ongoing-today-columns {", maxsplit=1)[1].split("}", maxsplit=1)[0]
+    today_divider_css = css.split(".ongoing-today-column + .ongoing-today-column {", maxsplit=1)[1].split("}", maxsplit=1)[0]
+    mobile_css = css.split("@media (max-width: 760px)", maxsplit=1)[1]
+
+    assert "grid-template-columns: repeat(4, minmax(0, 1fr));" in today_css
+    assert "border-left: 1px solid" in today_divider_css
+    assert "grid-template-columns: repeat(2, minmax(0, 1fr));" in mobile_css
+
+
 def test_ongoing_metric_notes_support_semantic_risk_tones(monkeypatch) -> None:
     rendered: list[str] = []
     monkeypatch.setattr(journal_app.st, "html", rendered.append)

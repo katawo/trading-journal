@@ -4,6 +4,7 @@ import csv
 from datetime import datetime, timezone
 from decimal import Decimal
 from io import StringIO
+from pathlib import Path
 from types import SimpleNamespace
 
 from trading_journal.application.live_positions import LivePositionImportService, LivePositionService
@@ -271,6 +272,14 @@ def test_ongoing_refresh_and_position_priority_are_action_first() -> None:
     ]
 
     assert [item.position.position_id for item in sorted(items, key=_position_priority)] == ["unprotected", "high", "low"]
+
+
+def test_live_refresh_is_isolated_from_the_editable_today_workspace() -> None:
+    source = (Path(__file__).parents[1] / "src/trading_journal/presentation/ongoing.py").read_text(encoding="utf-8")
+
+    assert "@st.fragment(run_every=ONGOING_REFRESH_INTERVAL_SECONDS)\ndef _render_live_positions" in source
+    assert "@st.fragment(run_every=ONGOING_REFRESH_INTERVAL_SECONDS)\ndef render_ongoing_positions_page" not in source
+    assert source.index("_render_live_positions(repo, account)") < source.index("_render_today_action_center(repo, account)")
 
 
 def test_live_risk_status_and_incidents_only_transition(tmp_path) -> None:

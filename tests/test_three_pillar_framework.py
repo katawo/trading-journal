@@ -20,6 +20,7 @@ from trading_journal.application.framework import (
     RiskSnapshot,
 )
 from trading_journal.application.dashboard import DashboardService
+from trading_journal.application.today import TodayService
 from trading_journal.domain.models import MT5PositionExport
 from trading_journal.infrastructure.sqlite_repository import (
     ASSESSMENT_CRITERIA,
@@ -46,6 +47,7 @@ from trading_journal.presentation.framework import (
     _risk_evidence_detail,
     _risk_state_metric,
     _set_pillar_grades_to_pass,
+    render_post_trade_review_dialog,
 )
 
 
@@ -108,6 +110,51 @@ def test_compact_help_popover_uses_one_question_mark(monkeypatch) -> None:
     presentation_framework._render_help_popover("Explanation")
 
     assert calls == [("?", {"width": "content"})]
+
+
+def test_shared_review_dialog_reuses_the_callers_reporting_calendar_service(monkeypatch, tmp_path) -> None:
+    from types import SimpleNamespace
+    from trading_journal.presentation import framework as presentation_framework
+
+    repository, account_id = _repository(tmp_path)
+    account = repository.get_active_mt5_account()
+    assert account is not None
+    trade_id = _import_position(
+        repository,
+        account_id,
+        position_id="shared-calendar",
+        exit_time="2026-08-10T18:00:00+00:00",
+    )
+    service = FrameworkService(repository, local_zone=timezone(timedelta(hours=7)))
+    expected_score = SimpleNamespace(trade_id=trade_id)
+    calls: list[int] = []
+    captured: dict[str, object] = {}
+
+    def trade_process_scores(requested_account_id: int):  # type: ignore[no-untyped-def]
+        calls.append(requested_account_id)
+        return (expected_score,)
+
+    def capture_dialog(repo, selected_account, ordered, scores, profiles):  # type: ignore[no-untyped-def]
+        captured.update(
+            repo=repo,
+            account=selected_account,
+            ordered=ordered,
+            scores=scores,
+            profiles=profiles,
+        )
+
+    monkeypatch.setattr(service, "trade_process_scores", trade_process_scores)
+    monkeypatch.setattr(presentation_framework, "_render_selected_post_trade_review_dialog", capture_dialog)
+    st.session_state["post-trade-review-trade-id"] = trade_id
+    try:
+        render_post_trade_review_dialog(repository, account, service)
+    finally:
+        _clear_review_dialog()
+
+    assert calls == [account_id]
+    assert captured["repo"] is repository
+    assert captured["account"] == account
+    assert captured["scores"] == {trade_id: expected_score}
 
 
 def test_monitor_metrics_distinguish_unavailable_values_and_breached_drawdown() -> None:
@@ -2582,6 +2629,129 @@ def test_today_reflects_the_accounts_server_reporting_basis(monkeypatch, tmp_pat
     # 23:30 UTC + a 3-hour (180 min) server offset rolls over to the next server-clock day,
     # so a naive date.today() (still Aug 10 in UTC) would disagree with the reporting basis.
     assert FrameworkService(repository).today(account_id) == date(2026, 8, 11)
+
+
+def test_today_overview_attributes_review_evidence_to_the_trade_close_day(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    repository.configure_journal(reporting_time_basis="server")
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    today_trade = _import_position(
+        repository,
+        account_id,
+        position_id="today-reviewed",
+        net_pnl="25",
+        entry_time="2026-08-10T22:00:00+00:00",
+        exit_time="2026-08-10T23:00:00+00:00",
+        server_utc_offset_minutes=180,
+    )
+    _import_position(
+        repository,
+        account_id,
+        position_id="prior-day",
+        net_pnl="100",
+        exit_time="2026-08-10T18:00:00+00:00",
+        server_utc_offset_minutes=180,
+    )
+    _review(
+        repository,
+        account_id,
+        today_trade,
+        policy,
+        strategy,
+        tags=("entry_timing",),
+        hard_rules=("stop_widened",),
+        action="Wait for the documented trigger and keep the original stop.",
+    )
+
+    overview = TodayService(repository).build(
+        account_id,
+        now=datetime(2026, 8, 10, 23, 30, tzinfo=timezone.utc),
+    )
+
+    assert overview.report_date == "2026-08-11"
+    assert overview.realized_pnl == "25"
+    assert [(item.trade_id, item.reviewed) for item in overview.trades] == [(today_trade, True)]
+    assert [(item.code, item.count) for item in overview.mistakes] == [("entry_timing", 1)]
+    assert [(item.code, item.count) for item in overview.hard_rules] == [("stop_widened", 1)]
+    assert overview.trades[0].corrective_action == "Wait for the documented trigger and keep the original stop."
+
+
+def test_today_overview_does_not_treat_pending_reviews_as_mistake_free(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    repository.configure_journal(reporting_time_basis="utc")
+    _policy(repository, account_id)
+    trade_id = _import_position(
+        repository,
+        account_id,
+        position_id="today-pending",
+        exit_time="2026-08-10T09:00:00+00:00",
+    )
+
+    overview = TodayService(repository).build(
+        account_id,
+        now=datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert [item.trade_id for item in overview.trades] == [trade_id]
+    assert overview.reviewed_count == 0
+    assert overview.pending_count == 1
+    assert overview.mistakes == ()
+    assert overview.hard_rules == ()
+
+
+def test_today_overview_filters_coaching_resolutions_by_resolution_day(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    repository.configure_journal(reporting_time_basis="utc")
+    first = repository.save_framework_focus(
+        account_id=account_id,
+        pillar="psychology",
+        metric_kind="manual_evidence",
+        metric_code=None,
+        hypothesis="Reviewing creates useful evidence.",
+        action_text="Review each completed trade.",
+        baseline_value="0",
+        target_value="5",
+        target_reviews=5,
+        starting_manual_reviews=0,
+    )
+    repository.resolve_framework_focus(
+        focus_id=first.id,
+        outcome="completed",
+        resolution_note="The review routine is now consistent.",
+    )
+    second = repository.save_framework_focus(
+        account_id=account_id,
+        pillar="system",
+        metric_kind="manual_evidence",
+        metric_code=None,
+        hypothesis="A second sample is needed.",
+        action_text="Collect another sample.",
+        baseline_value="0",
+        target_value="5",
+        target_reviews=5,
+        starting_manual_reviews=0,
+    )
+    repository.resolve_framework_focus(
+        focus_id=second.id,
+        outcome="abandoned",
+        resolution_note="The experiment was replaced.",
+    )
+    with sqlite3.connect(repository.database_path) as connection:
+        connection.execute(
+            "UPDATE framework_focuses SET resolved_at = ? WHERE id = ?",
+            ("2026-08-09T20:00:00+00:00", first.id),
+        )
+        connection.execute(
+            "UPDATE framework_focuses SET resolved_at = ? WHERE id = ?",
+            ("2026-08-10T10:00:00+00:00", second.id),
+        )
+
+    overview = TodayService(repository).build(
+        account_id,
+        now=datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert [(item.id, item.status) for item in overview.resolved_focuses] == [(second.id, "abandoned")]
 
 
 def test_local_reporting_calendar_uses_the_browser_zone_at_week_rollover(tmp_path) -> None:
