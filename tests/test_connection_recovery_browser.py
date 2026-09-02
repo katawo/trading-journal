@@ -133,6 +133,19 @@ def test_websocket_disconnect_blocks_stale_ui_until_user_reloads() -> None:
             playwright.expect(page.get_by_text("fresh session", exact=False)).to_be_visible()
             playwright.expect(page.get_by_role("button", name="Retry now")).to_be_hidden()
             playwright.expect(page.get_by_role("button", name="Reload page")).to_be_focused()
+            assert dialog.evaluate("element => element.open") is True
+            reload_button = page.get_by_role("button", name="Reload page")
+            assert reload_button.evaluate(
+                """
+                element => {
+                  const bounds = element.getBoundingClientRect()
+                  return document.elementFromPoint(
+                    bounds.left + bounds.width / 2,
+                    bounds.top + bounds.height / 2,
+                  ) === element
+                }
+                """
+            ) is True
             assert page.locator('[data-testid="stAppViewContainer"]').evaluate("element => element.inert") is True
             page.wait_for_timeout(300)
             assert page.evaluate("window.__connectionRecoveryReloading") is False

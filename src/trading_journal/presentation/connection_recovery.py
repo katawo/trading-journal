@@ -15,10 +15,12 @@ _CONNECTION_RECOVERY_CSS = """
     #tj-connection-recovery-anchor { display: none; }
     #tj-connection-recovery-overlay {
       align-items: center; background: color-mix(in srgb, var(--st-background-color, #0b0f0e) 78%, transparent);
-      box-sizing: border-box; display: flex; inset: 0; justify-content: center; padding: 1rem;
-      position: fixed; z-index: 2147483000;
+      border: 0; box-sizing: border-box; display: flex; height: 100dvh; inset: 0; justify-content: center;
+      margin: 0; max-height: none; max-width: none; padding: 1rem; pointer-events: auto; position: fixed;
+      width: 100vw; z-index: 2147483647;
     }
     #tj-connection-recovery-overlay[hidden] { display: none; }
+    #tj-connection-recovery-overlay::backdrop { background: transparent; }
     #tj-connection-recovery-overlay .tj-connection-card {
       background: var(--st-secondary-background-color, #ffffff); border: 1px solid var(--st-red-color, #c73545);
       border-radius: var(--st-base-radius, 0.65rem); box-shadow: 0 18px 55px color-mix(in srgb, #000000 45%, transparent);
@@ -66,7 +68,7 @@ _CONNECTION_RECOVERY_JS = """
       anchor._cleanup?.()
 
       document.getElementById('tj-connection-recovery-overlay')?.remove()
-      const overlay = document.createElement('div')
+      const overlay = document.createElement('dialog')
       overlay.id = 'tj-connection-recovery-overlay'
       overlay.hidden = true
       overlay.setAttribute('role', 'alertdialog')
@@ -141,6 +143,7 @@ _CONNECTION_RECOVERY_JS = """
         if (!state.visible) {
           state.visible = true
           overlay.hidden = false
+          if (!overlay.open) overlay.showModal()
           if (appRoot) appRoot.inert = true
         }
         window.setTimeout(() => focusTarget.focus(), 0)
@@ -278,6 +281,7 @@ _CONNECTION_RECOVERY_JS = """
         retryButton.removeEventListener('click', onRetry)
         reloadButton.removeEventListener('click', onReload)
         if (appRoot) appRoot.inert = appWasInert
+        if (overlay.open) overlay.close()
         overlay.remove()
       }
       return anchor._cleanup
