@@ -990,6 +990,7 @@ _PHRASES: dict[str, str] = {
     "No active saved assessment is affected. Dashboard reporting will recalculate from the new grouping.": "Không có đánh giá đang hoạt động nào bị ảnh hưởng. Báo cáo Dashboard sẽ tính lại theo cách gộp mới.",
     "No hard-rule events are enabled. Enable one in Settings → Review rules to record it on a new assessment.": "Chưa bật hard-rule event nào. Hãy bật một event trong Cài đặt → Quy tắc review để ghi nhận trong đánh giá mới.",
     "Select at least one review status filter above to see trades.": "Hãy chọn ít nhất một bộ lọc trạng thái review ở trên để xem giao dịch.",
+    "Select at least one direction filter above to see trades.": "Hãy chọn ít nhất một bộ lọc hướng ở trên để xem giao dịch.",
     "Oversized revenge trade is a hard Psychology and Risk failure": "Revenge trade quá lớn là lỗi hard rule của Psychology và Risk",
     "Post-trade assessment": "Đánh giá sau giao dịch",
     "Reason tags": "Thẻ lý do",

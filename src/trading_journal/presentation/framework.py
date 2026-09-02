@@ -1537,18 +1537,33 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
         "manual_reviewed": "Reviewed",
     }
     filter_labels = {key: f"{tr(filter_names[key])} ({len(items)})" for key, items in groups.items()}
-    with st.container(horizontal=True, gap="small"):
-        checked_by_key = {
-            key: st.checkbox(
-                filter_labels[key],
-                value=(key == "needs_approval"),
-                key=f"review-filter-{key}-{account.id}",
-            )
-            for key in filter_order
-        }
+    with st.container(horizontal=True, gap="small", vertical_alignment="top"):
+        with st.container(border=True, width="content"):
+            st.caption(tr("Status"))
+            with st.container(horizontal=True, gap="small"):
+                checked_by_key = {
+                    key: st.checkbox(
+                        filter_labels[key],
+                        value=(key == "needs_approval"),
+                        key=f"review-filter-{key}-{account.id}",
+                    )
+                    for key in filter_order
+                }
+        with st.container(border=True, width="content"):
+            st.caption(tr("Direction"))
+            with st.container(horizontal=True, gap="small"):
+                direction_checked = {
+                    direction: st.checkbox(
+                        tr(direction.capitalize()),
+                        value=True,
+                        key=f"review-filter-direction-{direction}-{account.id}",
+                    )
+                    for direction in ("long", "short")
+                }
     selected_keys = tuple(key for key in filter_order if checked_by_key[key])
+    selected_directions = tuple(direction for direction, checked in direction_checked.items() if checked)
     filter_key = f"logical-trade-selection-filter-{account.id}"
-    current_filter = selected_keys
+    current_filter = (selected_keys, selected_directions)
     previous_filter = st.session_state.get(filter_key)
     if previous_filter is not None and previous_filter != current_filter:
         _clear_logical_trade_selection(account.id)
@@ -1559,6 +1574,7 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
         (trade, scores[trade.id])
         for trade in ordered
         if review_kind_to_filter_key.get(scores[trade.id].review_kind) in selected_keys_set
+        and trade.direction.casefold() in selected_directions
     ]
     visible_by_id = {trade.id: trade for trade, _ in visible}
     selected_logical_trade_ids = tuple(
@@ -1684,6 +1700,8 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
     if not visible:
         if not selected_keys:
             st.info(tr("Select at least one review status filter above to see trades."))
+        elif not selected_directions:
+            st.info(tr("Select at least one direction filter above to see trades."))
         else:
             status_text = " / ".join(tr(filter_names[key]).casefold() for key in selected_keys)
             st.info(tr("No {status} trades for this account.", status=status_text))
@@ -1743,7 +1761,8 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
                             st.write(trade.custom_label)
                 positions_column.badge(
                     position_label,
-                    color="gray",
+                    color="blue" if position_count > 1 else "gray",
+                    icon=":material/layers:" if position_count > 1 else None,
                     help=", ".join(f"#{position_id}" for position_id in trade.position_ids),
                 )
                 pnl_column.badge(format_currency(trade.net_pnl, account.account_currency), color=outcome.color)

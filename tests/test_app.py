@@ -41,6 +41,8 @@ def _review_filter_checkboxes(app):
         "needs_approval": next(item for item in app.checkbox if item.label.startswith("Requires review")),
         "auto_reviewed": next(item for item in app.checkbox if item.label.startswith("Auto-reviewed")),
         "manual_reviewed": next(item for item in app.checkbox if item.label.startswith("Reviewed (")),
+        "long": next(item for item in app.checkbox if item.label == "Long"),
+        "short": next(item for item in app.checkbox if item.label == "Short"),
     }
 
 
@@ -1438,6 +1440,9 @@ def test_framework_renders_a_filtered_review_register(monkeypatch, tmp_path):
     assert review_filters["auto_reviewed"].label == "Auto-reviewed (0)"
     assert review_filters["manual_reviewed"].value is False
     assert review_filters["manual_reviewed"].label == "Reviewed (0)"
+    assert review_filters["long"].value is True
+    assert review_filters["short"].value is True
+    assert {"Status", "Direction"} <= {item.value for item in app.caption}
     assert not any(item.label == "Show failed only" for item in app.checkbox)
     assert any(item.label == "Check all" for item in app.checkbox)
     assert any(item.label.startswith("Select LT-") for item in app.checkbox)
@@ -1450,6 +1455,14 @@ def test_framework_renders_a_filtered_review_register(monkeypatch, tmp_path):
     assert any("Automatic risk evidence only counts toward scores once approved" in item.value for item in app.caption)
     assert not any(item.label == "Closed MT5 position" for item in app.selectbox)
     assert not any(item.label == "Save review" for item in app.button)
+
+    review_filters["long"].set_value(False).run()
+    assert any("No requires review trades" in item.value for item in app.info)
+    review_filters = _review_filter_checkboxes(app)
+    review_filters["short"].set_value(False).run()
+    assert any("Select at least one direction filter" in item.value for item in app.info)
+    review_filters = _review_filter_checkboxes(app)
+    review_filters["long"].set_value(True).run()
 
     _set_review_filters(app, needs_approval=False, manual_reviewed=True)
 
@@ -2056,6 +2069,8 @@ def test_framework_groups_positions_through_a_confirmation_step(monkeypatch, tmp
     assert any(item.label == "What happened and what did you learn? *" for item in app.text_area)
     app.session_state["post-trade-review-trade-id"] = None
     app.run()
+    assert any(item.value == ":blue-badge[:material/layers: 2 pos]" for item in app.markdown)
+    assert any(item.value == ":gray-badge[1 pos]" for item in app.markdown)
 
     next(item for item in app.checkbox if item.label == f"Select LT-{source_group.id}").set_value(True).run()
     next(item for item in app.checkbox if item.label == f"Select LT-{standalone.id}").set_value(True).run()
