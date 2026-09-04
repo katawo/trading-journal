@@ -16,7 +16,7 @@ import streamlit as st
 
 from trading_journal.application.auto_sync import MT5AutoSyncResult, MT5AutoSyncService
 from trading_journal.application.dashboard import DashboardReport, DashboardService, PerformanceBreakdown
-from trading_journal.application.framework import FrameworkService
+from trading_journal.application.framework import AccountFrameworkSnapshot, FrameworkService
 from trading_journal.application.display_time import format_relative_time
 from trading_journal.application.import_mt5 import SUPPORTED_SCHEMA_VERSIONS
 from trading_journal.application.mt5_paths import default_mt5_export_path, find_mt5_common_files
@@ -1005,33 +1005,20 @@ def render_build_info() -> None:
     )
 
 
-@st.cache_data(ttl=_ANALYTICS_CACHE_TTL_SECONDS, max_entries=32, show_spinner=False)
-def _cached_global_framework_alerts(database_path: str, database_change_token: tuple[int, int, int, int]) -> tuple[tuple[AccountListItem, object], ...]:
-    """Cache cross-account analytics until the local database changes."""
+@st.cache_data(ttl=_ANALYTICS_CACHE_TTL_SECONDS, max_entries=128, show_spinner=False)
+def _cached_account_framework_snapshot(
+    database_path: str,
+    database_change_token: tuple[int, int, int, int],
+    account_id: int,
+) -> AccountFrameworkSnapshot:
+    """Cache framework analytics without ever combining account histories."""
+
     del database_change_token
     repo = SQLiteJournalRepository(database_path)
-    return tuple(
-        (account, alert)
-        for account in repo.list_mt5_accounts()
-        for alert in FrameworkService(repo).framework_alerts(account.id)
-    )
-
-
-@st.cache_data(ttl=_ANALYTICS_CACHE_TTL_SECONDS, max_entries=32, show_spinner=False)
-def _cached_review_queue_count(database_path: str, database_change_token: tuple[int, int, int, int], account_id: int) -> int:
-    """Cache the active account's pending-review count until the local database changes."""
-    del database_change_token
-    repo = SQLiteJournalRepository(database_path)
-    return sum(score.review_kind == "needs_approval" for score in FrameworkService(repo).trade_process_scores(account_id))
-
-
-@st.cache_data(ttl=_ANALYTICS_CACHE_TTL_SECONDS, max_entries=32, show_spinner=False)
-def _cached_focus_ready_to_evaluate(database_path: str, database_change_token: tuple[int, int, int, int], account_id: int) -> bool:
-    """Cache whether the active account's coaching focus is ready to resolve."""
-    del database_change_token
-    repo = SQLiteJournalRepository(database_path)
-    _, progress = FrameworkService(repo).focus_progress(account_id)
-    return bool(progress and progress.ready_to_evaluate)
+    try:
+        return FrameworkService(repo).account_snapshot(account_id)
+    finally:
+        repo.close()
 
 
 def _database_change_token(database_path: Path) -> tuple[int, int, int, int]:
@@ -1048,24 +1035,34 @@ def _database_change_token(database_path: Path) -> tuple[int, int, int, int]:
     return values[0], values[1], values[2], values[3]
 
 
-def render_global_framework_alert_bubble(repo: SQLiteJournalRepository) -> None:
-    """Persistent cross-account warning/critical alert entry point."""
-    severity_order = {"critical": 0, "warning": 1}
-    database_path = getattr(repo, "database_path", None)
-    source = (
-        _cached_global_framework_alerts(str(database_path), _database_change_token(database_path))
-        if database_path is not None
-        else tuple(
-            (account, alert)
-            for account in repo.list_mt5_accounts()
-            for alert in FrameworkService(repo).framework_alerts(account.id)
-        )
+def build_account_framework_snapshot(
+    repo: SQLiteJournalRepository,
+    *,
+    account_id: int,
+) -> AccountFrameworkSnapshot:
+    return _cached_account_framework_snapshot(
+        str(repo.database_path),
+        _database_change_token(repo.database_path),
+        account_id,
     )
-    alerts = [(account, alert) for account, alert in source if alert.severity in severity_order]
+
+
+def render_account_framework_alert_bubble(
+    account: AccountListItem,
+    snapshot: AccountFrameworkSnapshot,
+) -> None:
+    """Persistent warning/critical alert entry point for the active account only."""
+
+    if snapshot.account_id != account.id:
+        raise ValueError(
+            f"Framework snapshot account {snapshot.account_id} does not match active account {account.id}."
+        )
+    severity_order = {"critical": 0, "warning": 1}
+    alerts = [alert for alert in snapshot.alerts if alert.severity in severity_order]
     if not alerts:
         return
-    alerts.sort(key=lambda item: (severity_order[item[1].severity], item[0].display_name, item[1].code))
-    critical = sum(alert.severity == "critical" for _, alert in alerts)
+    alerts.sort(key=lambda alert: (severity_order[alert.severity], alert.code))
+    critical = sum(alert.severity == "critical" for alert in alerts)
     warnings = len(alerts) - critical
     label = (
         tr("{critical} critical · {warnings} warning{plural}", critical=critical, warnings=warnings, plural="s" if warnings != 1 else "")
@@ -1079,7 +1076,7 @@ def render_global_framework_alert_bubble(repo: SQLiteJournalRepository) -> None:
             "message": framework_alert_message(alert.code, alert.message),
             "severity": alert.severity,
         }
-        for account, alert in alerts
+        for alert in alerts
     ]
     render_global_alert_bubble(
         alerts=bubble_alerts,
@@ -2020,6 +2017,7 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
         st.page_link("app_pages/settings.py", label=tr("Go to Settings"), icon=":material/settings:")
         return
 
+    framework_snapshot = build_account_framework_snapshot(repo, account_id=account.id)
     render_dashboard_coaching_focus(repo, account)
     dashboard_title, dashboard_sync = st.columns([3, 2], vertical_alignment="center")
     with dashboard_title:
@@ -2269,7 +2267,7 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
                 height=min(300, 42 + max(1, len(trade_table)) * 35),
             )
 
-    render_framework_dashboard(repo, account)
+    render_framework_dashboard(repo, account, framework_snapshot)
 
     return account
 
@@ -2367,20 +2365,16 @@ def main() -> None:
         st.title(tr("Trade Compass"))
     render_trade_doctrine(tr("Survival · Consistency · Discipline"))
 
-    review_count = 0
-    monitor_alert_count = 0
-    focus_ready = False
+    framework_snapshot: AccountFrameworkSnapshot | None = None
     active_account = repo.get_active_mt5_account()
     ongoing_count = 0 if active_account is None else len(repo.list_live_positions(active_account.id))
-    database_path = getattr(repo, "database_path", None)
-    if active_account is not None and database_path is not None:
-        change_token = _database_change_token(database_path)
-        review_count = _cached_review_queue_count(str(database_path), change_token, active_account.id)
-        monitor_alert_count = sum(
-            account.id == active_account.id and alert.severity in {"critical", "warning"}
-            for account, alert in _cached_global_framework_alerts(str(database_path), change_token)
-        )
-        focus_ready = _cached_focus_ready_to_evaluate(str(database_path), change_token, active_account.id)
+    if active_account is not None:
+        framework_snapshot = build_account_framework_snapshot(repo, account_id=active_account.id)
+    review_count = 0 if framework_snapshot is None else framework_snapshot.review_queue_count
+    monitor_alert_count = 0 if framework_snapshot is None else sum(
+        alert.severity in {"critical", "warning"} for alert in framework_snapshot.alerts
+    )
+    focus_ready = bool(framework_snapshot and framework_snapshot.focus_ready_to_evaluate)
     review_title = f"{tr('Review')} ({review_count})" if review_count else tr("Review")
     # focus_ready's "(1)" lands on Monitor, not Improve: the coaching-focus resolve UI it
     # signals only renders on the Monitor tab / Dashboard widget, never on Improve's roadmap
@@ -2407,7 +2401,8 @@ def main() -> None:
         position="sidebar",
     )
     page.run()
-    render_global_framework_alert_bubble(repo)
+    if active_account is not None and framework_snapshot is not None:
+        render_account_framework_alert_bubble(active_account, framework_snapshot)
 
 
 if __name__ == "__main__":

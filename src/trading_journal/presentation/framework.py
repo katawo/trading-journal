@@ -14,6 +14,8 @@ import streamlit as st
 import altair as alt
 
 from trading_journal.application.framework import (
+    AccountFrameworkSnapshot,
+    FrameworkAlert,
     PILLAR_NAMES,
     ROADMAP_LEVEL_NAMES,
     FrameworkService,
@@ -522,22 +524,34 @@ def _render_framework_stat_grid(items: list[tuple[str, str, str, str]]) -> None:
 
 def _render_risk_configuration_notice(service: FrameworkService, account_id: int) -> None:
     """Keep the setup-only risk notice visible without duplicating global alerts."""
-    notice = next((alert for alert in service.framework_alerts(account_id) if alert.code == "risk_unconfigured"), None)
+    _render_risk_configuration_notice_from_alerts(service.framework_alerts(account_id))
+
+
+def _render_risk_configuration_notice_from_alerts(alerts: tuple[FrameworkAlert, ...]) -> None:
+    """Keep the setup-only risk notice visible without duplicating global alerts."""
+    notice = next((alert for alert in alerts if alert.code == "risk_unconfigured"), None)
     if notice is not None:
         st.info(notice.message, icon=":material/info:")
 
 
-def render_framework_dashboard(repo: SQLiteJournalRepository, account: AccountListItem) -> None:
+def render_framework_dashboard(
+    repo: SQLiteJournalRepository,
+    account: AccountListItem,
+    snapshot: AccountFrameworkSnapshot,
+) -> None:
     """Compact monitoring inside the main performance dashboard."""
-    service = FrameworkService(repo)
-    snapshot = service.risk_snapshot(account.id)
-    scores = service.pillar_scores(account.id)
-    readiness = service.readiness(account.id)
+    if snapshot.account_id != account.id:
+        raise ValueError(
+            f"Framework snapshot account {snapshot.account_id} does not match dashboard account {account.id}."
+        )
+    risk = snapshot.risk
+    scores = snapshot.pillar_scores
+    readiness = snapshot.readiness
     policy = repo.get_active_risk_policy(account.id)
     readiness_value, readiness_delta, readiness_color = _readiness_metric(readiness)
-    state_value, state_delta, state_color = _risk_state_metric(snapshot)
-    daily_value, daily_delta, daily_color = _daily_r_metric(snapshot.daily_r)
-    drawdown_value, drawdown_delta, drawdown_color = _drawdown_metric(snapshot.max_drawdown_percent)
+    state_value, state_delta, state_color = _risk_state_metric(risk)
+    daily_value, daily_delta, daily_color = _daily_r_metric(risk.daily_r)
+    drawdown_value, drawdown_delta, drawdown_color = _drawdown_metric(risk.max_drawdown_percent)
     tone_by_delta_color = {"green": "positive", "red": "negative", "orange": "warning", "gray": "neutral"}
     with st.container(border=True):
         with st.container(horizontal=True, vertical_alignment="center", gap="small", width="content"):
@@ -548,7 +562,7 @@ def render_framework_dashboard(repo: SQLiteJournalRepository, account: AccountLi
                 tr("Outcome profitability does not increase readiness. Risk status follows the active account policy and its reset rules."),
             )
         st.caption(tr("Fixed 20-trade process window · outcome performance does not determine readiness."))
-        _render_risk_configuration_notice(service, account.id)
+        _render_risk_configuration_notice_from_alerts(snapshot.alerts)
         process_risk_columns = st.container(key="dashboard-process-risk-columns")
         stats, pillars = process_risk_columns.columns([1, 1.45], gap="large")
         with stats:
@@ -579,8 +593,8 @@ def render_framework_dashboard(repo: SQLiteJournalRepository, account: AccountLi
                         tr(drawdown_delta)
                         + (
                             ""
-                            if not snapshot.configured
-                            else f" · {tr('Resets {period}', period=_reset_period_label(snapshot.drawdown_reset_period).lower())}"
+                            if not risk.configured
+                            else f" · {tr('Resets {period}', period=_reset_period_label(risk.drawdown_reset_period).lower())}"
                         ),
                         tone_by_delta_color[drawdown_color],
                     ),
@@ -2243,8 +2257,18 @@ def _render_framework_focus_resolution_dialog(
         st.rerun()
 
 
-def _render_framework_focus(repo: SQLiteJournalRepository, account: AccountListItem, service: FrameworkService, scores: tuple[PillarScore, ...], *, compact: bool = False, show_heading: bool = True) -> None:
-    service.ensure_coaching_focus(account.id)
+def _render_framework_focus(
+    repo: SQLiteJournalRepository,
+    account: AccountListItem,
+    service: FrameworkService,
+    scores: tuple[PillarScore, ...],
+    *,
+    compact: bool = False,
+    show_heading: bool = True,
+    ensure_focus: bool = True,
+) -> None:
+    if ensure_focus:
+        service.ensure_coaching_focus(account.id)
     focus, progress = service.focus_progress(account.id)
     if show_heading:
         heading = tr("🎯 Current coaching focus") if compact else tr("Coaching focus")
@@ -2338,9 +2362,27 @@ def render_dashboard_coaching_focus(repo: SQLiteJournalRepository, account: Acco
         unsafe_allow_html=True,
     )
     service = FrameworkService(repo)
-    scores = service.pillar_scores(account.id)
-    with st.expander(tr("🎯 Current coaching focus"), expanded=False, key="dashboard-coaching-focus"):
-        _render_framework_focus(repo, account, service, scores, compact=True, show_heading=False)
+    # Creating or superseding a recommendation is durable coaching behavior, not
+    # rendering work. Keep it independent of whether the detail panel is open.
+    service.ensure_coaching_focus(account.id)
+    expander = st.expander(
+        tr("🎯 Current coaching focus"),
+        expanded=False,
+        key="dashboard-coaching-focus",
+        on_change="rerun",
+    )
+    if expander.open:
+        with expander:
+            scores = service.pillar_scores(account.id)
+            _render_framework_focus(
+                repo,
+                account,
+                service,
+                scores,
+                compact=True,
+                show_heading=False,
+                ensure_focus=False,
+            )
 
 
 def render_compact_framework_focus(

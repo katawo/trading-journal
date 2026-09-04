@@ -328,6 +328,24 @@ class FrameworkAlert:
 
 
 @dataclass(frozen=True)
+class AccountFrameworkSnapshot:
+    """Immutable framework read model for exactly one MT5 account."""
+
+    account_id: int
+    alerts: tuple[FrameworkAlert, ...]
+    review_queue_count: int
+    focus: FrameworkFocusView | None
+    focus_progress: FrameworkFocusProgress | None
+    risk: RiskSnapshot
+    pillar_scores: tuple[PillarScore, ...]
+    readiness: ReadinessAssessment
+
+    @property
+    def focus_ready_to_evaluate(self) -> bool:
+        return bool(self.focus_progress and self.focus_progress.ready_to_evaluate)
+
+
+@dataclass(frozen=True)
 class PeriodReviewStatus:
     cadence: str
     period_start: str
@@ -381,6 +399,7 @@ class FrameworkService:
         self._account_score_cache: dict[int, tuple[tuple[TradeProcessScore, ...], dict[int, dict[str, object]]]] = {}
         self._account_trade_cache: dict[int, tuple[ClosedTradeReviewItem, ...]] = {}
         self._risk_event_cache: dict[int, dict[int, dict[str, object]]] = {}
+        self._risk_snapshot_cache: dict[tuple[int, datetime | None], RiskSnapshot] = {}
         self._pillar_score_cache: dict[tuple[int, int, date | None], tuple[PillarScore, ...]] = {}
         self._reporting_time_basis_cache: str | None = None
         self._framework_rule_settings_cache: dict[int, FrameworkRuleSettingsView] = {}
@@ -462,6 +481,31 @@ class FrameworkService:
                 if due is not None:
                     alerts.append(FrameworkAlert("warning", f"{cadence}_review_due", f"{cadence.capitalize()} review due for {due.period_start} to {due.period_end}."))
         return tuple(alerts)
+
+    def account_snapshot(self, account_id: int) -> AccountFrameworkSnapshot:
+        """Build the shared navigation/dashboard read model for one account.
+
+        FrameworkService is deliberately short-lived. Its internal caches make
+        all derived values below share one closed-trade history load while the
+        returned frozen dataclass remains safe for Streamlit's data cache.
+        """
+
+        scores = self.trade_process_scores(account_id)
+        risk = self.risk_snapshot(account_id)
+        pillar_scores = self.pillar_scores(account_id)
+        readiness = self.readiness(account_id)
+        alerts = self.framework_alerts(account_id)
+        focus, focus_progress = self.focus_progress(account_id)
+        return AccountFrameworkSnapshot(
+            account_id=account_id,
+            alerts=alerts,
+            review_queue_count=sum(score.review_kind == "needs_approval" for score in scores),
+            focus=focus,
+            focus_progress=focus_progress,
+            risk=risk,
+            pillar_scores=pillar_scores,
+            readiness=readiness,
+        )
 
     def period_review_status(self, account_id: int, cadence: str, *, now: datetime | None = None) -> PeriodReviewStatus:
         current = self._current_report_date(now or datetime.now(timezone.utc), account_id)
@@ -1165,6 +1209,12 @@ class FrameworkService:
         return False
 
     def risk_snapshot(self, account_id: int, *, now: datetime | None = None) -> RiskSnapshot:
+        cache_key = (account_id, now)
+        if cache_key not in self._risk_snapshot_cache:
+            self._risk_snapshot_cache[cache_key] = self._build_risk_snapshot(account_id, now=now)
+        return self._risk_snapshot_cache[cache_key]
+
+    def _build_risk_snapshot(self, account_id: int, *, now: datetime | None = None) -> RiskSnapshot:
         policy = self._repository.get_active_risk_policy(account_id)
         funded = self._repository.get_account_funded_capital(account_id)
         if policy is None or funded is None:
@@ -1586,9 +1636,8 @@ class FrameworkService:
     ) -> dict[int, dict[str, object]]:
         if account_id in self._risk_event_cache:
             return self._risk_event_cache[account_id]
-        trades = trades or tuple(
-            self._repository.list_closed_trades_for_review(account_id)
-        )
+        if trades is None:
+            trades = tuple(self._repository.list_closed_trades_for_review(account_id))
         events, _ = self._risk_timeline(account_id, trades=trades)
         self._risk_event_cache[account_id] = events
         return events

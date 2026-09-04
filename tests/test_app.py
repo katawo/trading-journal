@@ -198,7 +198,9 @@ def test_review_save_immediately_invalidates_the_menu_badge_count(monkeypatch, t
     )
     trade = repository.list_closed_trades_for_review(account.id)[0]
     before = journal_app._database_change_token(database_path)
-    assert journal_app._cached_review_queue_count(str(database_path), before, account.id) == 1
+    assert journal_app._cached_account_framework_snapshot(
+        str(database_path), before, account.id
+    ).review_queue_count == 1
 
     repository.save_post_trade_assessment(
         account_id=account.id,
@@ -215,7 +217,9 @@ def test_review_save_immediately_invalidates_the_menu_badge_count(monkeypatch, t
 
     after = journal_app._database_change_token(database_path)
     assert after != before
-    assert journal_app._cached_review_queue_count(str(database_path), after, account.id) == 0
+    assert journal_app._cached_account_framework_snapshot(
+        str(database_path), after, account.id
+    ).review_queue_count == 0
 
 
 def test_format_relative_time_uses_compact_human_readable_durations():
@@ -235,37 +239,79 @@ def test_currency_caption_escapes_markdown_math_delimiters():
     assert journal_app.format_currency_caption("1000", "USD") == "+\\$1,000.00"
 
 
-def test_global_framework_alert_bubble_combines_and_orders_cross_account_alerts(monkeypatch):
+def test_framework_alert_bubble_only_renders_the_active_account_snapshot(monkeypatch):
     import app as journal_app
 
-    accounts = [
-        SimpleNamespace(id=1, display_name="Zulu"),
-        SimpleNamespace(id=2, display_name="Alpha"),
-    ]
-    alerts_by_account = {
-        1: [SimpleNamespace(severity="warning", code="review_due", message="Review is due")],
-        2: [SimpleNamespace(severity="critical", code="risk_stop", message="Daily risk stop reached")],
-    }
+    account = SimpleNamespace(id=2, display_name="Alpha")
+    snapshot = SimpleNamespace(
+        account_id=2,
+        alerts=(
+            SimpleNamespace(severity="warning", code="review_due", message="Review is due"),
+            SimpleNamespace(severity="critical", code="risk_stop", message="Daily risk stop reached"),
+            SimpleNamespace(severity="info", code="risk_unconfigured", message="Configure risk"),
+        ),
+    )
     captured = {}
 
-    class StubFrameworkService:
-        def __init__(self, repo):
-            pass
-
-        def framework_alerts(self, account_id):
-            return alerts_by_account[account_id]
-
-    monkeypatch.setattr(journal_app, "FrameworkService", StubFrameworkService)
     monkeypatch.setattr(journal_app, "render_global_alert_bubble", lambda **kwargs: captured.update(kwargs))
 
-    journal_app.render_global_framework_alert_bubble(SimpleNamespace(list_mt5_accounts=lambda: accounts))
+    journal_app.render_account_framework_alert_bubble(account, snapshot)
 
     assert captured["label"] == "1 critical · 1 warning"
     assert captured["has_critical"] is True
     assert captured["alerts"] == [
         {"account_name": "Alpha", "code": "risk_stop", "message": "Daily risk stop reached", "severity": "critical"},
-        {"account_name": "Zulu", "code": "review_due", "message": "Review is due", "severity": "warning"},
+        {"account_name": "Alpha", "code": "review_due", "message": "Review is due", "severity": "warning"},
     ]
+
+
+def test_framework_alert_bubble_rejects_a_snapshot_from_another_account():
+    import app as journal_app
+
+    account = SimpleNamespace(id=1, display_name="Primary")
+    snapshot = SimpleNamespace(account_id=2, alerts=())
+
+    with pytest.raises(ValueError, match="does not match active account"):
+        journal_app.render_account_framework_alert_bubble(account, snapshot)
+
+
+def test_framework_dashboard_rejects_a_snapshot_from_another_account():
+    from trading_journal.presentation.framework import render_framework_dashboard
+
+    account = SimpleNamespace(id=1)
+    snapshot = SimpleNamespace(account_id=2)
+
+    with pytest.raises(ValueError, match="does not match dashboard account"):
+        render_framework_dashboard(SimpleNamespace(), account, snapshot)
+
+
+def test_dashboard_coaching_focus_is_ensured_while_details_are_collapsed(monkeypatch):
+    from trading_journal.presentation import framework as framework_presentation
+
+    ensured_accounts = []
+
+    class StubFrameworkService:
+        def __init__(self, repo):
+            pass
+
+        def ensure_coaching_focus(self, account_id):
+            ensured_accounts.append(account_id)
+
+    fake_streamlit = SimpleNamespace(
+        context=SimpleNamespace(theme=SimpleNamespace(type="light")),
+        get_option=lambda key: "#ffffff",
+        markdown=lambda *args, **kwargs: None,
+        expander=lambda *args, **kwargs: SimpleNamespace(open=False),
+    )
+    monkeypatch.setattr(framework_presentation, "FrameworkService", StubFrameworkService)
+    monkeypatch.setattr(framework_presentation, "st", fake_streamlit)
+
+    framework_presentation.render_dashboard_coaching_focus(
+        SimpleNamespace(),
+        SimpleNamespace(id=7),
+    )
+
+    assert ensured_accounts == [7]
 
 
 def test_framework_alert_codes_render_in_vietnamese_without_parsing_english(monkeypatch):
@@ -1291,7 +1337,7 @@ def test_monitor_tab_shows_early_estimate_not_incomplete_for_a_partial_sample(mo
 
 def test_monitor_tab_explains_why_a_pillar_is_capped(monkeypatch, tmp_path):
     # This scenario deliberately scores a pillar below 70, which triggers the
-    # cross-account alert bubble's real bidi-component render path — a path
+    # active-account alert bubble's real bidi-component render path — a path
     # AppTest's bare execution mode doesn't support outside of a live session.
     # This test is about the Monitor tab's own caption, not the alert bubble.
     monkeypatch.setattr("trading_journal.presentation.global_alert_bubble.render_global_alert_bubble", lambda **kwargs: None)
@@ -1374,7 +1420,7 @@ def test_monitor_tab_explains_why_a_pillar_is_capped(monkeypatch, tmp_path):
 
 
 def test_register_flags_the_specific_hard_blocked_pillar(monkeypatch, tmp_path):
-    # A hard-rule failure triggers a real cross-account alert, which needs a live
+    # A hard-rule failure triggers a real active-account alert, which needs a live
     # session for its bidi component — see the identical note above.
     monkeypatch.setattr("trading_journal.presentation.global_alert_bubble.render_global_alert_bubble", lambda **kwargs: None)
     database_path = tmp_path / "journal.db"
