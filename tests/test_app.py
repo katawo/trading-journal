@@ -1868,11 +1868,15 @@ def test_reopening_review_after_upgrading_an_auto_review_does_not_crash(monkeypa
     assert mistake_selector.format_func("position_size_too_large") == "R · Position size was too large"
     assert mistake_selector.format_func("entry_timing") == "S · Entered too early or too late"
     assert "emotional_sizing" not in mistake_selector.options
-    assert any(item.label == "Actual risk amount (optional)" for item in app.text_input)
+    assert any(item.label == "Actual risk amount" for item in app.text_input)
+    # AppTest currently exposes icon-bearing expanders through its status collection.
+    disclosure_labels = [item.label for item in app.status]
+    assert "Add manual risk amount" in disclosure_labels
+    assert "Add trade context" in disclosure_labels
     context_selectboxes = {
         item.label: item
         for item in app.selectbox
-        if item.label in {"Setup (optional)", "Session (optional)", "Market regime (optional)"}
+        if item.label in {"Setup", "Session", "Market regime"}
     }
     assert all(item.value is None for item in context_selectboxes.values())
     assert all(item.format_func(None) == "" for item in context_selectboxes.values())
@@ -1882,11 +1886,11 @@ def test_reopening_review_after_upgrading_an_auto_review_does_not_crash(monkeypa
     context_selectboxes = {
         item.label: item
         for item in app.selectbox
-        if item.label in {"Setup (optional)", "Session (optional)", "Market regime (optional)"}
+        if item.label in {"Setup", "Session", "Market regime"}
     }
-    context_selectboxes["Setup (optional)"].select("London pullback")
-    context_selectboxes["Session (optional)"].select("London")
-    context_selectboxes["Market regime (optional)"].select("Trending")
+    context_selectboxes["Setup"].select("London pullback")
+    context_selectboxes["Session"].select("London")
+    context_selectboxes["Market regime"].select("Trending")
     note = next(item for item in app.text_area if item.label == "What happened and what did you learn? *")
     note.set_value("Upgraded from an auto review.")
     next(item for item in app.button if item.label == "Save assessment").click().run()
@@ -1899,12 +1903,12 @@ def test_reopening_review_after_upgrading_an_auto_review_does_not_crash(monkeypa
     reopened_context = {
         item.label: item.value.name
         for item in app.selectbox
-        if item.label in {"Setup (optional)", "Session (optional)", "Market regime (optional)"}
+        if item.label in {"Setup", "Session", "Market regime"}
     }
     assert reopened_context == {
-        "Setup (optional)": "London pullback",
-        "Session (optional)": "London",
-        "Market regime (optional)": "Trending",
+        "Setup": "London pullback",
+        "Session": "London",
+        "Market regime": "Trending",
     }
 
 
@@ -2134,6 +2138,11 @@ def test_framework_groups_positions_through_a_confirmation_step(monkeypatch, tmp
     next(item for item in app.button if item.label == "Create new logical trade").click().run()
 
     assert not app.exception
+    assert any(
+        item.value == "**Merge 2 selected logical trades into one new logical trade?**"
+        for item in app.markdown
+    )
+    assert not any("merge the selected logical trades" in item.value for item in app.warning)
     assert any(item.label == "Confirm & review" for item in app.button)
     next(item for item in app.button if item.label == "Confirm & review").click().run()
 
@@ -2148,7 +2157,7 @@ def test_framework_groups_positions_through_a_confirmation_step(monkeypatch, tmp
     assert not any(item.value == "No usable automatic risk source is available." for item in app.caption)
     member_table = next(item.value for item in app.dataframe if "Position" in item.value.columns)
     assert len(member_table) == 2
-    assert not any(item.label.startswith("Member positions") for item in app.expander)
+    assert any(item.label == "Member positions (2)" for item in app.expander)
     assert any(item.label == "Disband" for item in app.button)
     assert not any(item.label == "Manage positions" for item in app.button)
     assert not any("Changing member positions" in item.value for item in app.caption)

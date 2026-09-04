@@ -953,13 +953,10 @@ def _render_imported_execution(repo: SQLiteJournalRepository, account: AccountLi
                 st.caption(tr(risk_detail))
     if positions_column is not None:
         with positions_column:
-            with st.container(border=True):
-                with st.container(horizontal=True, vertical_alignment="center", gap="small"):
-                    st.markdown(f"**{tr('Member positions ({count})', count=trade.position_count)}**")
-                    disband_requested = st.form_submit_button(
-                        tr("Disband"),
-                        icon=":material/group_off:",
-                    )
+            with st.expander(
+                tr("Member positions ({count})", count=trade.position_count),
+                expanded=True,
+            ):
                 pnl_column = f"P&L ({account.account_currency})"
                 member_frame = pd.DataFrame(
                     [
@@ -977,6 +974,11 @@ def _render_imported_execution(repo: SQLiteJournalRepository, account: AccountLi
                     hide_index=True,
                     width="stretch",
                 )
+                with st.container(horizontal=True, horizontal_alignment="right"):
+                    disband_requested = st.form_submit_button(
+                        tr("Disband"),
+                        icon=":material/group_off:",
+                    )
     return disband_requested
 
 
@@ -1125,21 +1127,7 @@ def _render_post_trade_review_dialog(repo: SQLiteJournalRepository, account: Acc
             )
         st.markdown(tr("##### Assessment"))
         st.caption(f"Trading system: **{strategy.name}** (bound to this account)")
-        st.caption("\\* Required")
         st.caption(tr("Change any Partial or Fail exceptions, then save once."))
-        context_left, context_middle, context_right = st.columns(3)
-        selected_setup = context_left.selectbox(
-            "Setup (optional)", setup_options, format_func=_review_context_option_label,
-            key=f"assessment-{trade.id}-setup",
-        )
-        selected_session = context_middle.selectbox(
-            "Session (optional)", session_options, format_func=_review_context_option_label,
-            key=f"assessment-{trade.id}-session",
-        )
-        selected_regime = context_right.selectbox(
-            "Market regime (optional)", regime_options, format_func=_review_context_option_label,
-            key=f"assessment-{trade.id}-regime",
-        )
         grades: dict[str, str | None] = {}
         pillar_columns = st.columns(3, gap="small", border=True)
         for pillar_column, (title, criteria) in zip(pillar_columns, pillars, strict=True):
@@ -1152,7 +1140,7 @@ def _render_post_trade_review_dialog(repo: SQLiteJournalRepository, account: Acc
                         help_text=CRITERION_HELP.get(criterion),
                     )
         reflection_column, evidence_column = st.columns([1.5, 1], gap="small")
-        with reflection_column.container(border=True):
+        with reflection_column.container(border=True, height="stretch"):
             st.markdown(f"##### {tr('Reflection and action')}")
             note = st.text_area(
                 f"{tr('What happened and what did you learn?')} *",
@@ -1185,7 +1173,7 @@ def _render_post_trade_review_dialog(repo: SQLiteJournalRepository, account: Acc
             )
             if not available_hard_rules:
                 st.caption(tr("No hard-rule events are enabled. Enable one in Settings → Review rules to record it on a new assessment."))
-        with evidence_column.container(border=True):
+        with evidence_column.container(border=True, height="stretch"):
             st.markdown(f"##### {tr('Risk evidence')}")
             if policy is not None:
                 st.caption(
@@ -1198,11 +1186,52 @@ def _render_post_trade_review_dialog(repo: SQLiteJournalRepository, account: Acc
                 )
             else:
                 st.caption(tr("No active Risk policy is attached; the assessment still records your judgement, while automatic limit checks remain unavailable."))
-            actual_risk = st.text_input(
-                tr("Actual risk amount (optional)"),
-                key=f"assessment-{trade.id}-actual-risk",
-                placeholder=tr("Enter a verified amount when automatic evidence is not sufficient"),
-                help=tr("Overrides automatic evidence for this logical trade's policy comparison. It does not rewrite imported MT5 member positions or logical-trade account-limit monitoring."),
+            actual_risk_key = f"assessment-{trade.id}-actual-risk"
+            actual_risk_label = (
+                tr("Manual risk amount added")
+                if st.session_state.get(actual_risk_key)
+                else tr("Add manual risk amount")
+            )
+            with st.expander(
+                actual_risk_label,
+                icon=":material/edit_note:",
+                type="compact",
+            ):
+                actual_risk = st.text_input(
+                    tr("Actual risk amount"),
+                    key=actual_risk_key,
+                    placeholder=tr("Enter a verified amount when automatic evidence is not sufficient"),
+                    help=tr("Overrides automatic evidence for this logical trade's policy comparison. It does not rewrite imported MT5 member positions or logical-trade account-limit monitoring."),
+                )
+        context_keys = (
+            f"assessment-{trade.id}-setup",
+            f"assessment-{trade.id}-session",
+            f"assessment-{trade.id}-regime",
+        )
+        selected_context_count = sum(st.session_state.get(key) is not None for key in context_keys)
+        context_label = (
+            tr("Trade context · {count} selected", count=selected_context_count)
+            if selected_context_count
+            else tr("Add trade context")
+        )
+        with st.expander(
+            context_label,
+            icon=":material/tune:",
+            type="compact",
+        ):
+            st.caption(tr("Optional context supports later analysis. Leave it blank when it adds no value."))
+            context_left, context_middle, context_right = st.columns(3)
+            selected_setup = context_left.selectbox(
+                tr("Setup"), setup_options, format_func=_review_context_option_label,
+                key=context_keys[0],
+            )
+            selected_session = context_middle.selectbox(
+                tr("Session"), session_options, format_func=_review_context_option_label,
+                key=context_keys[1],
+            )
+            selected_regime = context_right.selectbox(
+                tr("Market regime"), regime_options, format_func=_review_context_option_label,
+                key=context_keys[2],
             )
         with st.container(horizontal=True, horizontal_alignment="left"):
             submitted = st.form_submit_button(
@@ -1406,9 +1435,12 @@ def _render_logical_trade_regroup_confirmation(repo: SQLiteJournalRepository, ac
             width="stretch",
         )
     elif confirmation["mode"] == "merge":
-        st.warning(tr("This will merge the selected logical trades into a new logical trade."))
+        source_count = len(confirmation.get("source_logical_trade_ids", ()))
+        st.markdown(
+            f"**{tr('Merge {count} selected logical trades into one new logical trade?', count=source_count)}**"
+        )
     else:
-        st.warning(tr("This will apply the selected current membership to the logical trade."))
+        st.markdown(f"**{tr('Apply the selected membership to this logical trade?')}**")
     if count:
         st.error(
             tr(
@@ -1422,20 +1454,22 @@ def _render_logical_trade_regroup_confirmation(repo: SQLiteJournalRepository, ac
         st.caption(
             tr("No saved assessment will be affected.")
             if is_disband
-            else "No active saved assessment is affected. Dashboard reporting will recalculate from the new grouping."
+            else tr("No active saved assessment is affected. Dashboard reporting will recalculate from the new grouping.")
         )
-    with st.container(horizontal=True, gap="small"):
+    with st.container(horizontal=True, horizontal_alignment="right", gap="small"):
+        secondary = st.button(
+            tr("Cancel") if is_disband else tr("Back"),
+            icon=":material/close:" if is_disband else ":material/arrow_back:",
+        )
         confirm = st.button(
-            {
-                "disband": "Confirm disband",
-                "merge": "Confirm & review",
-            }.get(confirmation["mode"], "Confirm & review"),
+            tr(
+                {
+                    "disband": "Confirm disband",
+                    "merge": "Confirm & review",
+                }.get(confirmation["mode"], "Confirm & review")
+            ),
             type="primary",
             icon=":material/check:",
-        )
-        secondary = st.button(
-            tr("Cancel") if is_disband else "Back",
-            icon=":material/close:" if is_disband else ":material/arrow_back:",
         )
     if secondary:
         if is_disband:
@@ -1861,8 +1895,14 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
         confirmation = st.session_state.get("logical-trade-regroup-confirmation")
         if confirmation is not None and confirmation.get("account_id") == account.id:
             group_dialog_active = True
-            title = "Disband logical trade" if confirmation.get("mode") == "disband" else "Group logical trades"
-            st.dialog(tr(title), width="large", on_dismiss=_dismiss_group_dialog)(_render_logical_trade_regroup_confirmation)(
+            is_disband = confirmation.get("mode") == "disband"
+            title = "Disband logical trade" if is_disband else "Group logical trades"
+            st.dialog(
+                tr(title),
+                width="medium" if is_disband else "small",
+                icon=":material/call_split:" if is_disband else ":material/group_work:",
+                on_dismiss=_dismiss_group_dialog,
+            )(_render_logical_trade_regroup_confirmation)(
                 repo, account, confirmation
             )
         elif group_editor.get("logical_trade_id") is None:
@@ -2664,7 +2704,11 @@ def _render_risk_policy(repo: SQLiteJournalRepository, account: AccountListItem)
         else:
             preview = repo.preview_risk_policy_change(account.id)
 
-            @st.dialog(tr("Confirm account-wide recalculation"), width="large")
+            @st.dialog(
+                tr("Confirm account-wide recalculation"),
+                width="small",
+                icon=":material/calculate:",
+            )
             def confirm_policy_change() -> None:
                 st.warning(
                     "This replaces the active analytical policy for this account and recalculates all derived historical Risk and R metrics.",
