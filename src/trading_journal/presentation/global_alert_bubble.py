@@ -9,7 +9,6 @@ import streamlit as st
 
 
 class GlobalAlertItem(TypedDict):
-    account_name: str
     code: str
     message: str
     severity: str
@@ -60,7 +59,6 @@ _ALERT_BUBBLE = st.components.v2.component(
       background: var(--st-red-background-color, #f8e4e5); border-left-color: var(--st-red-color, #c73545);
       box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--st-red-color, #c73545) 20%, transparent);
     }
-    #tj-global-framework-alert-bubble .tj-alert-account { display: block; font-size: 0.83rem; font-weight: 700; margin-bottom: 0.12rem; }
     #tj-global-framework-alert-bubble .tj-alert-message { font-size: 0.88rem; line-height: 1.35; }
     @keyframes tj-alert-pulse { 50% { box-shadow: 0 10px 34px color-mix(in srgb, var(--st-red-color) 52%, transparent); transform: translateY(-2px); } }
     """,
@@ -118,13 +116,10 @@ _ALERT_BUBBLE = st.components.v2.component(
       for (const alert of data.alerts ?? []) {
         const item = document.createElement('div')
         item.className = `tj-alert-item${alert.severity === 'critical' ? ' critical' : ''}`
-        const account = document.createElement('span')
-        account.className = 'tj-alert-account'
-        account.textContent = alert.account_name
         const message = document.createElement('div')
         message.className = 'tj-alert-message'
         message.textContent = alert.message
-        item.append(account, message)
+        item.append(message)
         panel.appendChild(item)
       }
       floating.append(button)

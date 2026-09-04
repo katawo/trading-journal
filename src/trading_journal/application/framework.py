@@ -313,6 +313,16 @@ class CoachingRecommendation:
 
 
 @dataclass(frozen=True)
+class CoachingFocusPlan:
+    """Cached decision for a later, explicit coaching-focus persistence step."""
+
+    account_id: int
+    recommendation: CoachingRecommendation
+    starting_manual_reviews: int
+    supersede_focus_id: int | None = None
+
+
+@dataclass(frozen=True)
 class ReadinessAssessment:
     score: str | None
     status: str
@@ -339,10 +349,28 @@ class AccountFrameworkSnapshot:
     risk: RiskSnapshot
     pillar_scores: tuple[PillarScore, ...]
     readiness: ReadinessAssessment
+    coaching_focus_plan: CoachingFocusPlan | None
+
+    def __post_init__(self) -> None:
+        if (
+            self.coaching_focus_plan is not None
+            and self.coaching_focus_plan.account_id != self.account_id
+        ):
+            raise ValueError(
+                "Coaching focus plan account "
+                f"{self.coaching_focus_plan.account_id} does not match framework snapshot "
+                f"account {self.account_id}."
+            )
 
     @property
     def focus_ready_to_evaluate(self) -> bool:
         return bool(self.focus_progress and self.focus_progress.ready_to_evaluate)
+
+    def require_account(self, account_id: int) -> None:
+        if self.account_id != account_id:
+            raise ValueError(
+                f"Framework snapshot account {self.account_id} does not match account {account_id}."
+            )
 
 
 @dataclass(frozen=True)
@@ -495,7 +523,9 @@ class FrameworkService:
         pillar_scores = self.pillar_scores(account_id)
         readiness = self.readiness(account_id)
         alerts = self.framework_alerts(account_id)
-        focus, focus_progress = self.focus_progress(account_id)
+        focus = self._repository.get_active_framework_focus(account_id)
+        focus_progress = self._focus_progress(account_id, focus)
+        coaching_focus_plan = self._coaching_focus_plan(account_id, focus)
         return AccountFrameworkSnapshot(
             account_id=account_id,
             alerts=alerts,
@@ -505,6 +535,7 @@ class FrameworkService:
             risk=risk,
             pillar_scores=pillar_scores,
             readiness=readiness,
+            coaching_focus_plan=coaching_focus_plan,
         )
 
     def period_review_status(self, account_id: int, cadence: str, *, now: datetime | None = None) -> PeriodReviewStatus:
@@ -921,8 +952,15 @@ class FrameworkService:
 
     def focus_progress(self, account_id: int) -> tuple[FrameworkFocusView | None, FrameworkFocusProgress | None]:
         focus = self._repository.get_active_framework_focus(account_id)
+        return focus, self._focus_progress(account_id, focus)
+
+    def _focus_progress(
+        self,
+        account_id: int,
+        focus: FrameworkFocusView | None,
+    ) -> FrameworkFocusProgress | None:
         if focus is None:
-            return None, None
+            return None
         reviewed = [
             item
             for item in self.trade_process_scores(account_id)
@@ -946,7 +984,7 @@ class FrameworkService:
                 {item.trade_id: Decimal(item.net_pnl) for item in sample},
             )
             current = next((_decimal_text(value) for name, value in components if name == COMPONENT_CODES.get(focus.metric_code) and value is not None), None)
-        return focus, FrameworkFocusProgress(focus.id, completed, focus.target_reviews, current, completed >= focus.target_reviews)
+        return FrameworkFocusProgress(focus.id, completed, focus.target_reviews, current, completed >= focus.target_reviews)
 
     def coaching_recommendation(self, account_id: int) -> CoachingRecommendation | None:
         """Choose one auditable, post-trade coaching experiment from current evidence."""
@@ -1030,32 +1068,68 @@ class FrameworkService:
 
     def ensure_coaching_focus(self, account_id: int) -> FrameworkFocusView | None:
         active = self._repository.get_active_framework_focus(account_id)
+        plan = self._coaching_focus_plan(account_id, active)
+        if plan is None:
+            return active
+        self.apply_coaching_focus_plan(plan)
+        return self._repository.get_active_framework_focus(account_id)
+
+    def _coaching_focus_plan(
+        self,
+        account_id: int,
+        active: FrameworkFocusView | None,
+    ) -> CoachingFocusPlan | None:
         recommendation = self.coaching_recommendation(account_id)
         if active is not None and not (recommendation and recommendation.safety):
-            return active
+            return None
         if active is not None and recommendation is not None and active.metric_kind == recommendation.metric_kind and active.metric_code == recommendation.metric_code:
-            return active
+            return None
         if active is None and recommendation is not None and self._recently_resolved_same_recommendation(account_id, recommendation) is not None:
             return None
-        if active is not None and recommendation is not None:
-            self._repository.resolve_framework_focus(
-                focus_id=active.id, outcome="superseded",
-                resolution_note=f"Superseded by safety coaching: {recommendation.reason}",
-            )
         if recommendation is None:
             return None
+        starting_manual_reviews = next(
+            item.reviewed_total
+            for item in self.pillar_scores(account_id)
+            if item.pillar == recommendation.pillar
+        )
+        return CoachingFocusPlan(
+            account_id=account_id,
+            recommendation=recommendation,
+            starting_manual_reviews=starting_manual_reviews,
+            supersede_focus_id=None if active is None else active.id,
+        )
+
+    def apply_coaching_focus_plan(self, plan: CoachingFocusPlan) -> bool:
+        """Persist a cached coaching decision, returning whether journal state changed."""
+
+        active = self._repository.get_active_framework_focus(plan.account_id)
+        changed = False
+        if plan.supersede_focus_id is not None:
+            if active is None or active.id != plan.supersede_focus_id:
+                return False
+            self._repository.resolve_framework_focus(
+                focus_id=active.id,
+                outcome="superseded",
+                resolution_note=f"Superseded by safety coaching: {plan.recommendation.reason}",
+            )
+            changed = True
+        elif active is not None:
+            return False
+        recommendation = plan.recommendation
         try:
-            return self._repository.save_framework_focus(
-                account_id=account_id,
+            self._repository.save_framework_focus(
+                account_id=plan.account_id,
                 pillar=recommendation.pillar, metric_kind=recommendation.metric_kind, metric_code=recommendation.metric_code,
                 hypothesis=recommendation.hypothesis, action_text=recommendation.action_text,
                 baseline_value=recommendation.baseline_value, target_value=recommendation.target_value,
                 target_reviews=recommendation.target_reviews,
-                starting_manual_reviews=next(item.reviewed_total for item in self.pillar_scores(account_id) if item.pillar == recommendation.pillar),
+                starting_manual_reviews=plan.starting_manual_reviews,
                 source="coach", coach_reason=recommendation.reason,
             )
         except ValueError:
-            return self._repository.get_active_framework_focus(account_id)
+            return changed
+        return True
 
     @staticmethod
     def _coaching_recommendation(

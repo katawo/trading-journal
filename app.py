@@ -56,6 +56,7 @@ from trading_journal.presentation.trade_tags import direction_tag, outcome_tag
 _AUTO_SYNC_INTERVAL_SECONDS = 5
 _FRESHNESS_INTERVAL_SECONDS = 5
 _ANALYTICS_CACHE_TTL_SECONDS = 15
+_ACTIVE_FRAMEWORK_SNAPSHOT_KEY = "_active_framework_snapshot"
 _CHART_POSITIVE = "#0e9163"
 _CHART_NEGATIVE = "#c73545"
 _CHART_NEUTRAL = "#7a828e"
@@ -1047,16 +1048,26 @@ def build_account_framework_snapshot(
     )
 
 
+def _dashboard_framework_snapshot(
+    repo: SQLiteJournalRepository,
+    *,
+    account_id: int,
+) -> AccountFrameworkSnapshot:
+    """Reuse the entrypoint snapshot during this rerun, with a standalone-page fallback."""
+
+    snapshot = st.session_state.get(_ACTIVE_FRAMEWORK_SNAPSHOT_KEY)
+    if isinstance(snapshot, AccountFrameworkSnapshot) and snapshot.account_id == account_id:
+        return snapshot
+    return build_account_framework_snapshot(repo, account_id=account_id)
+
+
 def render_account_framework_alert_bubble(
     account: AccountListItem,
     snapshot: AccountFrameworkSnapshot,
 ) -> None:
     """Persistent warning/critical alert entry point for the active account only."""
 
-    if snapshot.account_id != account.id:
-        raise ValueError(
-            f"Framework snapshot account {snapshot.account_id} does not match active account {account.id}."
-        )
+    snapshot.require_account(account.id)
     severity_order = {"critical": 0, "warning": 1}
     alerts = [alert for alert in snapshot.alerts if alert.severity in severity_order]
     if not alerts:
@@ -1071,7 +1082,6 @@ def render_account_framework_alert_bubble(
     )
     bubble_alerts: list[GlobalAlertItem] = [
         {
-            "account_name": account.display_name,
             "code": alert.code,
             "message": framework_alert_message(alert.code, alert.message),
             "severity": alert.severity,
@@ -1082,7 +1092,7 @@ def render_account_framework_alert_bubble(
         alerts=bubble_alerts,
         label=label,
         has_critical=bool(critical),
-        panel_title=tr("Active alerts"),
+        panel_title=f"{tr('Active alerts')} · {account.display_name}",
         drag_hint=tr("Drag to move. Click to view active alerts."),
     )
 
@@ -1120,7 +1130,11 @@ def _cached_dashboard_report(
     account_id: int,
 ):
     del database_change_token
-    return DashboardService(SQLiteJournalRepository(database_path)).build_report(account_id=account_id)
+    repo = SQLiteJournalRepository(database_path)
+    try:
+        return DashboardService(repo).build_report(account_id=account_id)
+    finally:
+        repo.close()
 
 
 def build_dashboard_report(repo: SQLiteJournalRepository, *, account_id: int):
@@ -2017,8 +2031,8 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
         st.page_link("app_pages/settings.py", label=tr("Go to Settings"), icon=":material/settings:")
         return
 
-    framework_snapshot = build_account_framework_snapshot(repo, account_id=account.id)
-    render_dashboard_coaching_focus(repo, account)
+    framework_snapshot = _dashboard_framework_snapshot(repo, account_id=account.id)
+    render_dashboard_coaching_focus(repo, account, framework_snapshot)
     dashboard_title, dashboard_sync = st.columns([3, 2], vertical_alignment="center")
     with dashboard_title:
         render_title()
@@ -2370,6 +2384,9 @@ def main() -> None:
     ongoing_count = 0 if active_account is None else len(repo.list_live_positions(active_account.id))
     if active_account is not None:
         framework_snapshot = build_account_framework_snapshot(repo, account_id=active_account.id)
+        st.session_state[_ACTIVE_FRAMEWORK_SNAPSHOT_KEY] = framework_snapshot
+    else:
+        st.session_state.pop(_ACTIVE_FRAMEWORK_SNAPSHOT_KEY, None)
     review_count = 0 if framework_snapshot is None else framework_snapshot.review_queue_count
     monitor_alert_count = 0 if framework_snapshot is None else sum(
         alert.severity in {"critical", "warning"} for alert in framework_snapshot.alerts

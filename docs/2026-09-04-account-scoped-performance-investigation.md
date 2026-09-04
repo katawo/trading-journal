@@ -10,34 +10,30 @@
 
 The implementation is safe to continue with: no blocking correctness defect or observed cross-account data leak remains. It replaces several independently computed framework values with one immutable, account-keyed snapshot and reuses that snapshot for navigation, alerts, and the Dashboard framework panel.
 
-On a copy of the current local database, the final code reduced a cold AppTest render from approximately **3.14 s to 2.55 s** and a stable rerender from approximately **0.52-0.58 s to a 0.424 s median**. The snapshot itself took **68.8 ms and 24 SELECT statements**. Restoring automatic coaching-focus creation adds a separate **47.7 ms and 16 SELECT statements** on Dashboard renders; that is now the clearest remaining framework-specific optimization target.
+On a copy of the current local database, the final code reduced a cold AppTest render from approximately **3.14 s to 2.54 s** and a stable rerender from approximately **0.52-0.58 s to a 0.362 s median**. The snapshot itself took **69.3 ms and 24 SELECT statements**. Coaching maintenance is now decided inside that cached read and applied separately only when persistence is required; a collapsed Dashboard with no plan performs no additional framework query.
 
 The account identity is part of the cache key, and both alert and Dashboard rendering reject a snapshot whose `account_id` differs from the supplied account. Database-wide invalidation remains conservative: unrelated writes can cause extra computation, but cannot cause account data to be shared.
 
-## Review findings
+## Review follow-up
 
-### 1. Medium: coaching maintenance bypasses the cached snapshot
+### Resolved: coaching maintenance bypassed the cached snapshot
 
-`render_dashboard_coaching_focus()` creates a new `FrameworkService` and calls `ensure_coaching_focus(account.id)` on every Dashboard render, even while the detail expander is collapsed.
+`AccountFrameworkSnapshot` now carries a pure `CoachingFocusPlan` when focus creation or safety supersession is required. `render_dashboard_coaching_focus()` performs no framework-service work while collapsed when that plan is empty. When a plan exists, it applies the explicit persistence action outside `st.cache_data`.
 
-- Evidence: `src/trading_journal/presentation/framework.py:2364-2367`
-- Measured cost on the copied current database: **47.7 ms, 16 SELECT statements**.
-- Impact: the behavior regression is fixed—eligible focus records are still created or superseded without requiring the trader to open the expander—but part of the stable-rerender saving is lost.
-- Recommendation: make coaching-focus maintenance an explicit application action after evidence-changing operations such as review approval, manual assessment, and import/sync completion. A smaller alternative is to let `ensure_coaching_focus()` consume the already-computed account snapshot or precomputed scores. Durable writes should remain outside `st.cache_data`.
+This preserves automatic coaching behavior without the previously measured **47.7 ms and 16 SELECT statements** on every stable Dashboard rerun.
 
-### 2. Medium: three regression tests remain outside the fast gate
+### Resolved: repeated snapshot lookup and repository lifecycle
 
-`tests/test_app.py` has a module-level `pytest.mark.web`. The following new tests do not use `AppTest`, but are therefore excluded from `make check`:
+The entrypoint snapshot is stored in session state for the selected page in the same rerun. Dashboard reuses it, with a cached-function fallback when the page is executed standalone. `_cached_dashboard_report()` now closes its temporary repository in `finally`, matching the framework snapshot wrapper.
 
-- account/snapshot mismatch for the alert renderer;
-- account/snapshot mismatch for the framework Dashboard;
-- coaching-focus maintenance while the expander is collapsed.
+### Resolved: validation, tests, and alert presentation
 
-Evidence: `tests/test_app.py:268-314` and `pyproject.toml:31-36`.
+- `AccountFrameworkSnapshot.require_account()` is the single account-identity guard used by both renderers.
+- Pure snapshot, mismatch, coaching-plan, cache-reuse, and repository-lifecycle tests now live in the unmarked fast suite.
+- The two-account fixture distinguishes risk configuration, alerts, focus state, review count, and pillar evidence in addition to account IDs.
+- The active account is shown once in the alert panel heading instead of on every alert row.
 
-The two service snapshot tests were correctly moved to `tests/test_framework_snapshot.py` and now run in the fast gate. Move the remaining pure tests to an unmarked presentation/application test module, or centralize the account identity assertion in a fast-testable helper.
-
-### 3. Low: invalidation is account-keyed but database-wide
+### Accepted: invalidation is account-keyed but database-wide
 
 `_cached_account_framework_snapshot()` keys cached values by database path, database change token, and account ID. The change token comes from the SQLite database and WAL file metadata, so a write for any account invalidates cached entries for every account in that database.
 
@@ -46,13 +42,9 @@ The two service snapshot tests were correctly moved to `tests/test_framework_sna
 - Performance: inactive-account auto-sync activity can reduce cache hit rates for the active account.
 - Recommendation: keep the conservative token until profiling shows it matters. A true per-account revision needs reliable mutation tracking across all framework source tables; an incomplete timestamp fingerprint would risk stale alerts and badges.
 
-### 4. Low: isolation coverage proves the queue count, not every snapshot field
+### Accepted: exact `now` values remain part of risk-cache identity
 
-`test_account_framework_snapshots_never_mix_account_history()` creates differing account histories but asserts only `review_queue_count`. The snapshot also contains alerts, focus state, risk state, pillar scores, and readiness.
-
-Evidence: `tests/test_framework_snapshot.py:30-84`.
-
-The implementation routes every calculation through the requested `account_id`, so no mixing was found. Still, a stronger fixture with deliberately different risk policies, focus records, and reviewed evidence would protect the full contract.
+`FrameworkService.risk_snapshot()` keeps `(account_id, now)` as its cache key. This deduplicates the repeated `now=None` path inside account snapshot construction and remains correct for repeated calculations at an identical explicit as-of instant. `TodayService` requests one explicit instant once, so there is no duplicate Today calculation to eliminate.
 
 ## What changed
 
@@ -66,7 +58,8 @@ The implementation routes every calculation through the requested `account_id`, 
 - coaching focus and progress;
 - risk snapshot;
 - three pillar scores;
-- readiness assessment.
+- readiness assessment;
+- an optional coaching-focus persistence plan.
 
 `FrameworkService.account_snapshot(account_id)` computes these values through one short-lived service. Its internal caches allow dependent calculations to reuse the same account trade history and risk timeline.
 
@@ -104,7 +97,7 @@ Streamlit executes the Python entry script from top to bottom for each browser s
 
 `st.cache_resource` behaves differently: it retains a shared live object. The application uses it for bounded repository instances, while snapshots correctly use `st.cache_data` because they are immutable data rather than connections.
 
-The coaching expander uses `on_change="rerun"`. Its `.open` state allows expensive detail rendering to be skipped while collapsed. The focus creation/supersession step is deliberately executed outside that condition because it persists business state and previously occurred whenever Dashboard was visited.
+The coaching expander uses `on_change="rerun"`. Its `.open` state allows expensive detail rendering to be skipped while collapsed. The cached snapshot describes any required focus creation/supersession, while the actual database write remains an explicit uncached action. No extra rerun is forced because framework alerts and scores do not depend on the newly created focus; the database token refreshes the snapshot on the next natural run.
 
 The SQLite/WAL metadata token is passed as a cache argument. A committed database change normally changes this token, producing a cache miss immediately instead of waiting for the TTL. The TTL is a bounded fallback, not the primary freshness mechanism.
 
@@ -112,8 +105,8 @@ The SQLite/WAL metadata token is passed as a cache argument. A committed databas
 
 | Area | Trigger | Current cost/evidence | Account scope | Severity | Recommended direction |
 |---|---|---:|---|---|---|
-| Coaching-focus maintenance | Every Dashboard rerun | 47.7 ms, 16 SELECTs | One active account | Medium | Run after evidence mutations or reuse snapshot inputs |
-| Framework snapshot miss | DB/WAL change or 15 s expiry | 68.8 ms, 24 SELECTs | One requested account | Medium | Keep cache; later push rolling windows into SQL if history grows |
+| Coaching-focus maintenance | Only when cached plan requests persistence | No extra read service on the common empty-plan path | One active account | Low | Keep persistence outside `st.cache_data` |
+| Framework snapshot miss | DB/WAL change or 15 s expiry | 69.3 ms, 24 SELECTs | One requested account | Medium | Keep cache; later push rolling windows into SQL if history grows |
 | Database-wide invalidation | Any write in the user's SQLite DB | Causes otherwise avoidable account cache misses | Results isolated; invalidation shared | Low | Add per-account revisions only with complete mutation coverage |
 | Navigation precomputation | Every full Streamlit rerun | Cache hit is cheap; miss blocks navigation construction | Active account only | Low | Retain single snapshot; consider fragments only if navigation architecture changes |
 | Full account history scoring | Snapshot or coaching cache miss | Loads/scans complete closed-trade history | One account | Scale risk | Add SQL-side/windowed reads after realistic large-history benchmarks |
@@ -128,14 +121,15 @@ Measurements used a copied database, never the live journal file. The copy conta
 |---|---:|---:|
 | Before snapshot consolidation | ~3.14 s | ~0.52-0.58 s |
 | Initial snapshot implementation before restoring automatic coaching | ~2.31 s | ~0.34-0.38 s |
-| Final reviewed implementation | 2.552 s | 0.541, 0.409, 0.386, 0.682, 0.424 s; median **0.424 s** |
+| Automatic coaching restored with an unconditional service call | 2.552 s | 0.541, 0.409, 0.386, 0.682, 0.424 s; median **0.424 s** |
+| Final cached coaching-plan implementation | 2.538 s | 0.540, 0.362, 0.351, 0.367, 0.351 s; median **0.362 s** |
 
 Final component profile:
 
 | Operation | Time | SQL statements |
 |---|---:|---:|
-| `FrameworkService.account_snapshot()` | 68.8 ms | 24 SELECTs |
-| `FrameworkService.ensure_coaching_focus()` with an existing active focus | 47.7 ms | 16 SELECTs |
+| `FrameworkService.account_snapshot()` | 69.3 ms | 24 SELECTs |
+| Collapsed coaching renderer with an empty cached plan | No repository/service call | 0 |
 
 The final code remains faster than the baseline while preserving coaching behavior. Timing variance means these figures should be treated as directional; repeatable CI benchmarks would be required for regression thresholds.
 
@@ -155,15 +149,15 @@ The final code remains faster than the baseline while preserving coaching behavi
 - Switching accounts requires a different snapshot and usually another computation.
 - Database-wide invalidation can evict useful account-specific results after unrelated account writes.
 - Snapshot construction currently calculates all framework sections even when a page needs only one badge.
-- Durable coaching maintenance remains a separate calculation because it cannot safely live inside a cached read function.
+- A required coaching write still invalidates the next snapshot, as it should.
 - Full-history calculation cost will still grow with the selected account's journal size.
 
 ## Validation
 
-- `make check`: **331 passed, 56 deselected**.
-- `make test-web`: **55 passed, 332 deselected**.
-- Focused snapshot tests: **2 passed**.
-- Focused alert, mismatch, coaching, and cache-invalidation tests: **5 passed**.
+- `make check`: **338 passed, 53 deselected**.
+- `make test-web`: **52 passed, 339 deselected**.
+- Focused snapshot and follow-up regression tests: **9 passed**.
+- Focus and coaching service scenarios: **16 passed**.
 - `python -m compileall -q app.py src tests/test_framework_snapshot.py`: passed.
 - `git diff --check`: passed.
 - AppTest benchmark completed with zero rendered exceptions.
@@ -171,4 +165,4 @@ The final code remains faster than the baseline while preserving coaching behavi
 
 ## Disposition
 
-There is no release-blocking correctness finding in the reviewed changes. The implementation satisfies strict per-account presentation and improves rerender performance. Before treating the optimization as complete, move the remaining pure regression tests into the fast gate. The next performance change should target coaching-focus maintenance, but only through explicit application orchestration or reuse of already-computed inputs—not by putting persistence inside `st.cache_data`.
+There is no release-blocking correctness finding in the reviewed changes. The implementation satisfies strict per-account presentation, keeps persistence outside cached reads, and improves rerender performance. Database-wide invalidation remains the only accepted cache-granularity tradeoff; change it only after measurement and with complete per-account mutation tracking.

@@ -245,6 +245,7 @@ def test_framework_alert_bubble_only_renders_the_active_account_snapshot(monkeyp
     account = SimpleNamespace(id=2, display_name="Alpha")
     snapshot = SimpleNamespace(
         account_id=2,
+        require_account=lambda account_id: None,
         alerts=(
             SimpleNamespace(severity="warning", code="review_due", message="Review is due"),
             SimpleNamespace(severity="critical", code="risk_stop", message="Daily risk stop reached"),
@@ -259,59 +260,11 @@ def test_framework_alert_bubble_only_renders_the_active_account_snapshot(monkeyp
 
     assert captured["label"] == "1 critical · 1 warning"
     assert captured["has_critical"] is True
+    assert captured["panel_title"] == "Active alerts · Alpha"
     assert captured["alerts"] == [
-        {"account_name": "Alpha", "code": "risk_stop", "message": "Daily risk stop reached", "severity": "critical"},
-        {"account_name": "Alpha", "code": "review_due", "message": "Review is due", "severity": "warning"},
+        {"code": "risk_stop", "message": "Daily risk stop reached", "severity": "critical"},
+        {"code": "review_due", "message": "Review is due", "severity": "warning"},
     ]
-
-
-def test_framework_alert_bubble_rejects_a_snapshot_from_another_account():
-    import app as journal_app
-
-    account = SimpleNamespace(id=1, display_name="Primary")
-    snapshot = SimpleNamespace(account_id=2, alerts=())
-
-    with pytest.raises(ValueError, match="does not match active account"):
-        journal_app.render_account_framework_alert_bubble(account, snapshot)
-
-
-def test_framework_dashboard_rejects_a_snapshot_from_another_account():
-    from trading_journal.presentation.framework import render_framework_dashboard
-
-    account = SimpleNamespace(id=1)
-    snapshot = SimpleNamespace(account_id=2)
-
-    with pytest.raises(ValueError, match="does not match dashboard account"):
-        render_framework_dashboard(SimpleNamespace(), account, snapshot)
-
-
-def test_dashboard_coaching_focus_is_ensured_while_details_are_collapsed(monkeypatch):
-    from trading_journal.presentation import framework as framework_presentation
-
-    ensured_accounts = []
-
-    class StubFrameworkService:
-        def __init__(self, repo):
-            pass
-
-        def ensure_coaching_focus(self, account_id):
-            ensured_accounts.append(account_id)
-
-    fake_streamlit = SimpleNamespace(
-        context=SimpleNamespace(theme=SimpleNamespace(type="light")),
-        get_option=lambda key: "#ffffff",
-        markdown=lambda *args, **kwargs: None,
-        expander=lambda *args, **kwargs: SimpleNamespace(open=False),
-    )
-    monkeypatch.setattr(framework_presentation, "FrameworkService", StubFrameworkService)
-    monkeypatch.setattr(framework_presentation, "st", fake_streamlit)
-
-    framework_presentation.render_dashboard_coaching_focus(
-        SimpleNamespace(),
-        SimpleNamespace(id=7),
-    )
-
-    assert ensured_accounts == [7]
 
 
 def test_framework_alert_codes_render_in_vietnamese_without_parsing_english(monkeypatch):

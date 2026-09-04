@@ -540,10 +540,7 @@ def render_framework_dashboard(
     snapshot: AccountFrameworkSnapshot,
 ) -> None:
     """Compact monitoring inside the main performance dashboard."""
-    if snapshot.account_id != account.id:
-        raise ValueError(
-            f"Framework snapshot account {snapshot.account_id} does not match dashboard account {account.id}."
-        )
+    snapshot.require_account(account.id)
     risk = snapshot.risk
     scores = snapshot.pillar_scores
     readiness = snapshot.readiness
@@ -1659,7 +1656,6 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
             icon=":material/group_work:",
             type="primary",
             disabled=len(selected_logical_trade_ids) < 2,
-            help="Combine every position from two or more selected logical trades into a new logical trade.",
         )
         bulk_selected = st.button(
             f"Quick review selected ({selected_reviewable_count})",
@@ -1667,7 +1663,6 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
             icon=":material/done_all:",
             type="primary",
             disabled=selected_reviewable_count == 0,
-            help="Review selected Awaiting approval or Requires review trades in one confirmed action.",
         )
         auto_reviewed_visible = [(trade, score) for trade, score in visible if score.review_kind == "auto_review"]
         bulk_approve = (
@@ -2324,7 +2319,11 @@ def _render_framework_focus(
         st.success(tr("On track: no coaching intervention is required from the current reviewed evidence."))
 
 
-def render_dashboard_coaching_focus(repo: SQLiteJournalRepository, account: AccountListItem) -> None:
+def render_dashboard_coaching_focus(
+    repo: SQLiteJournalRepository,
+    account: AccountListItem,
+    snapshot: AccountFrameworkSnapshot,
+) -> None:
     """Collapsible coaching nudge fixed in the Dashboard's top-right corner, always visible above scrolled content."""
     theme_type = st.context.theme.type or "light"
     background = st.get_option(f"theme.{theme_type}.secondaryBackgroundColor") or ("#141a18" if theme_type == "dark" else "#eeeee7")
@@ -2361,10 +2360,12 @@ def render_dashboard_coaching_focus(repo: SQLiteJournalRepository, account: Acco
         """,
         unsafe_allow_html=True,
     )
-    service = FrameworkService(repo)
-    # Creating or superseding a recommendation is durable coaching behavior, not
-    # rendering work. Keep it independent of whether the detail panel is open.
-    service.ensure_coaching_focus(account.id)
+    snapshot.require_account(account.id)
+    if snapshot.coaching_focus_plan is not None:
+        # The cached snapshot decides what is needed; persistence remains an
+        # explicit, uncached action. The write invalidates the next-run snapshot;
+        # no extra rerun is needed because alerts and scores do not depend on it.
+        FrameworkService(repo).apply_coaching_focus_plan(snapshot.coaching_focus_plan)
     expander = st.expander(
         tr("🎯 Current coaching focus"),
         expanded=False,
@@ -2373,6 +2374,7 @@ def render_dashboard_coaching_focus(repo: SQLiteJournalRepository, account: Acco
     )
     if expander.open:
         with expander:
+            service = FrameworkService(repo)
             scores = service.pillar_scores(account.id)
             _render_framework_focus(
                 repo,
