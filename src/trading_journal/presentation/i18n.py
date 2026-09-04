@@ -32,6 +32,7 @@ VI: dict[str, str] = {
     "Volume": "Khối lượng",
     "Entry": "Giá vào",
     "Open risk": "Rủi ro đang mở",
+    "Open risk {risk}": "Rủi ro đang mở {risk}",
     "Side": "Hướng",
     "Current aggregate: {risk} open risk · {pnl} unrealized P&L": "Tổng hiện tại: rủi ro mở {risk} · P&L chưa thực hiện {pnl}",
     "Magic": "Magic",

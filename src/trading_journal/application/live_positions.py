@@ -42,6 +42,7 @@ class LiveLogicalTradeSummary:
     members: tuple[LiveLogicalTradeMember, ...]
     open_risk_r: Decimal | None
     net_unrealized_pnl: Decimal
+    unrealized_pnl_r: Decimal | None
     unprotected_count: int
     risk_unavailable_count: int
 
@@ -186,7 +187,7 @@ class LivePositionService:
             )
             for row in rows
         )
-        logical_trades = self._logical_trade_summaries(account_id, risks)
+        logical_trades = self._logical_trade_summaries(account_id, risks, standard_r)
         unprotected = sum(not item.protected for item in risks)
         risk_unavailable = sum(item.protected and not item.risk_amount_available for item in risks)
         known_risks = tuple(item.risk_r for item in risks if item.risk_r is not None)
@@ -281,6 +282,7 @@ class LivePositionService:
         self,
         account_id: int,
         risks: tuple[LivePositionRisk, ...],
+        standard_r: Decimal | None,
     ) -> tuple[LiveLogicalTradeSummary, ...]:
         risk_by_position = {item.position.position_id: item for item in risks}
         pending = self._repository.list_pending_logical_trades(account_id)
@@ -308,6 +310,7 @@ class LivePositionService:
                 direction=group.direction,
                 members=members,
                 open_items=open_items,
+                standard_r=standard_r,
             ))
         for item in risks:
             position_id = item.position.position_id
@@ -320,6 +323,7 @@ class LivePositionService:
                 direction=item.position.direction,
                 members=(LiveLogicalTradeMember(position_id, "open", item),),
                 open_items=(item,),
+                standard_r=standard_r,
             ))
         return tuple(sorted(
             summaries,
@@ -340,12 +344,16 @@ class LivePositionService:
         direction: str,
         members: tuple[LiveLogicalTradeMember, ...],
         open_items: tuple[LivePositionRisk, ...],
+        standard_r: Decimal | None,
     ) -> LiveLogicalTradeSummary:
         known_risks = tuple(item.risk_r for item in open_items if item.risk_r is not None)
         open_risk = (
             Decimal("0") if not open_items
             else sum(known_risks, Decimal("0")) if known_risks
             else None
+        )
+        net_unrealized_pnl = sum(
+            (Decimal(item.position.net_unrealized_pnl) for item in open_items), Decimal("0")
         )
         return LiveLogicalTradeSummary(
             logical_trade_id=logical_trade_id,
@@ -354,9 +362,8 @@ class LivePositionService:
             direction=direction,
             members=members,
             open_risk_r=open_risk,
-            net_unrealized_pnl=sum(
-                (Decimal(item.position.net_unrealized_pnl) for item in open_items), Decimal("0")
-            ),
+            net_unrealized_pnl=net_unrealized_pnl,
+            unrealized_pnl_r=None if standard_r is None else net_unrealized_pnl / standard_r,
             unprotected_count=sum(not item.protected for item in open_items),
             risk_unavailable_count=sum(
                 item.protected and not item.risk_amount_available for item in open_items

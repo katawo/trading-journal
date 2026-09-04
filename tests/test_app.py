@@ -565,6 +565,10 @@ def test_ongoing_page_groups_concurrent_positions_into_a_live_logical_trade(monk
     assert groups[0].position_ids == ("9001", "9002")
     assert any("London scale-in" in item.value for item in app.markdown)
     assert not any("2 pos" in item.value for item in app.markdown)
+    page_markup = "\n".join(item.value for item in app.markdown)
+    assert ":orange-badge[Open risk 1.00R]" in page_markup
+    assert ":green-badge[Open risk 1.00R]" not in page_markup
+    assert ":green-badge[+$20.00 · +2.00R]" in page_markup
 
     next(item for item in app.button if item.label == "Manage").click().run()
     next(item for item in app.multiselect if item.label == "Open positions").set_value(["9001"]).run()

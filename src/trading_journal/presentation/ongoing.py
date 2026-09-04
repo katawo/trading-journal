@@ -506,10 +506,10 @@ def _render_positions(repo: SQLiteJournalRepository, report, account: AccountLis
                     )
                     st.badge(
                         _logical_trade_risk_label(item),
-                        color="red" if item.unprotected_count else "orange" if item.risk_unavailable_count else "green",
+                        color="red" if item.unprotected_count else "orange",
                     )
                     st.badge(
-                        format_currency(item.net_unrealized_pnl, account.account_currency),
+                        _logical_trade_pnl_label(item, account.account_currency),
                         color="green" if item.net_unrealized_pnl > 0 else "red" if item.net_unrealized_pnl < 0 else "gray",
                     )
                 awaiting = sum(member.state == "awaiting_import" for member in item.members)
@@ -551,7 +551,14 @@ def _logical_trade_risk_label(item) -> str:  # type: ignore[no-untyped-def]
         return tr("Unprotected")
     if item.risk_unavailable_count or item.open_risk_r is None:
         return tr("Risk unavailable")
-    return format_exposure_r(item.open_risk_r)
+    return tr("Open risk {risk}", risk=format_exposure_r(item.open_risk_r))
+
+
+def _logical_trade_pnl_label(item, currency: str) -> str:  # type: ignore[no-untyped-def]
+    pnl = format_currency(item.net_unrealized_pnl, currency)
+    if item.unrealized_pnl_r is None:
+        return pnl
+    return f"{pnl} · {format_r(item.unrealized_pnl_r)}"
 
 
 def _logical_trade_member_row(member, account: AccountListItem) -> dict[str, str]:  # type: ignore[no-untyped-def]

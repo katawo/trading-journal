@@ -130,6 +130,7 @@ def test_live_group_survives_snapshots_and_becomes_one_trade_only_after_every_me
     assert group.display_label == "London scale-in"
     assert group.open_count == 2
     assert group.net_unrealized_pnl == Decimal("40")
+    assert group.unrealized_pnl_r == Decimal("4")
     assert group.open_risk_r == Decimal("2")
 
     importer.import_snapshot(_snapshot(position_id="9002", moment="2026-08-18T08:01:00+00:00"))
