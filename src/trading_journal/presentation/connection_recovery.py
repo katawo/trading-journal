@@ -227,12 +227,12 @@ _CONNECTION_RECOVERY_JS = """
           if (state.disconnectObserved) showReloadRequired()
           return
         }
-        state.disconnectObserved = true
         state.reloadRequired = false
         if (state.disconnectTimer !== null) return
         state.disconnectTimer = window.setTimeout(() => {
           state.disconnectTimer = null
           if (state.stopped || connectedStates.has(connectionState())) return
+          state.disconnectObserved = true
           if (!state.visible) state.attempts = 1
           showDisconnected(data.websocket_status)
           schedule()

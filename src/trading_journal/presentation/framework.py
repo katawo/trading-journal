@@ -32,7 +32,6 @@ from trading_journal.infrastructure.sqlite_repository import (
     RISK_CRITERIA,
     SYSTEM_CRITERIA,
     AccountListItem,
-    PostTradeAssessmentConflictError,
     ReviewContextSelection,
     SQLiteJournalRepository,
 )
@@ -658,7 +657,6 @@ def _clear_review_dialog() -> None:
     st.session_state.pop("post-trade-review-queue", None)
     if isinstance(trade_id, int):
         _clear_assessment_draft(trade_id)
-        st.session_state.pop(f"post-trade-review-reload-warning-{trade_id}", None)
 
 
 def _clear_assessment_draft(
@@ -935,53 +933,18 @@ def _initialize_assessment_grades(
         grade = (existing or {}).get(criterion)
         if grade is None and criterion == "policy_adherence":
             grade = _default_policy_adherence_grade(risk_policy_state)
-        target[key] = None if grade is None else grade.capitalize()
+        target[key] = "Pass" if grade is None else grade.capitalize()
 
 
 def _initialize_assessment_draft(
     defaults: dict[str, object],
     state: MutableMapping[str, object] | None = None,
 ) -> None:
-    """Set draft defaults once so reruns cannot refresh its concurrency version."""
+    """Set draft defaults once so validation reruns preserve local edits."""
 
     target = st.session_state if state is None else state
     for key, value in defaults.items():
         target.setdefault(key, value)
-
-
-def _set_pillar_grades_to_pass(
-    trade_id: int,
-    criteria: Sequence[str],
-    state: MutableMapping[str, object] | None = None,
-) -> None:
-    """Apply Pass grades and acknowledge the bulk update before the dialog rerenders."""
-
-    target = st.session_state if state is None else state
-    for criterion in criteria:
-        target[f"assessment-{trade_id}-{criterion}"] = "Pass"
-    if state is None:
-        st.toast(
-            tr(
-                "Marked {count} criteria as Pass. Refreshing the assessment…",
-                count=len(criteria),
-            ),
-            icon="spinner",
-            duration="long",
-        )
-
-
-def _grade_summary(
-    trade_id: int,
-    criteria: Sequence[str],
-    state: MutableMapping[str, object] | None = None,
-) -> tuple[int, int]:
-    """Return completed grades and non-pass exceptions for the review header."""
-
-    target = st.session_state if state is None else state
-    values = [target.get(f"assessment-{trade_id}-{criterion}") for criterion in criteria]
-    completed = sum(value in GRADE_OPTIONS for value in values)
-    exceptions = sum(value in {"Partial", "Fail"} for value in values)
-    return completed, exceptions
 
 
 def _render_post_trade_review_dialog(repo: SQLiteJournalRepository, account: AccountListItem, trade, score: TradeProcessScore, profiles) -> None:  # type: ignore[no-untyped-def]
@@ -992,9 +955,6 @@ def _render_post_trade_review_dialog(repo: SQLiteJournalRepository, account: Acc
     existing_manual = existing if existing is not None and existing.method == "manual" else None
     queue = tuple(st.session_state.get("post-trade-review-queue", ()))
     st.caption(tr("Correct {trade}" if existing_manual else "Review {trade}", trade=trade.display_label))
-    warning_key = f"post-trade-review-reload-warning-{trade.id}"
-    if reload_warning := st.session_state.pop(warning_key, None):
-        st.warning(tr(str(reload_warning)), icon=":material/refresh:")
     _render_imported_execution(repo, account, trade, score)
     if monitoring_detail := _automatic_risk_monitoring_detail(score):
         st.warning(
@@ -1063,7 +1023,6 @@ def _render_post_trade_review_dialog(repo: SQLiteJournalRepository, account: Acc
             if existing_manual and existing_manual.declared_actual_risk_amount
             else ""
         ),
-        f"assessment-{trade.id}-base-version": existing.version if existing is not None else 0,
     }
     _initialize_assessment_draft(draft_defaults)
     _initialize_assessment_grades(
@@ -1071,136 +1030,109 @@ def _render_post_trade_review_dialog(repo: SQLiteJournalRepository, account: Acc
         existing_manual.criterion_grades if existing_manual else None,
         score.risk_policy_state,
     )
-
-    context_left, context_middle, context_right = st.columns(3)
-    selected_setup = context_left.selectbox(
-        "Setup (optional)", setup_options, format_func=_review_context_option_label,
-        key=f"assessment-{trade.id}-setup",
-    )
-    selected_session = context_middle.selectbox(
-        "Session (optional)", session_options, format_func=_review_context_option_label,
-        key=f"assessment-{trade.id}-session",
-    )
-    selected_regime = context_right.selectbox(
-        "Market regime (optional)", regime_options, format_func=_review_context_option_label,
-        key=f"assessment-{trade.id}-regime",
-    )
     pillars = (
         ("Psychology", PSYCHOLOGY_CRITERIA),
         ("Risk management", RISK_CRITERIA),
         ("Trading system", SYSTEM_CRITERIA),
     )
-    summaries = [_grade_summary(trade.id, criteria) for _, criteria in pillars]
-    completed = sum(item[0] for item in summaries)
-    exceptions = sum(item[1] for item in summaries)
-    st.caption(
-        tr(
-            "{completed} of {total} criteria graded · {exceptions} exception{plural}",
-            completed=completed,
-            total=sum(len(criteria) for _, criteria in pillars),
-            exceptions=exceptions,
-            plural="s" if exceptions != 1 else "",
-        )
-    )
-    st.caption(tr("Mark a pillar as Pass, then change only the Partial or Fail exceptions."))
-    st.button(
-        "Mark all criteria as Pass",
-        key=f"assessment-{trade.id}-pass-all",
-        icon=":material/done_all:",
-        type="primary",
-        on_click=_set_pillar_grades_to_pass,
-        args=(trade.id, ASSESSMENT_CRITERIA),
-    )
-    grades: dict[str, str | None] = {}
-    pillar_columns = st.columns(3, gap="small", border=True)
-    for pillar_column, (title, criteria), (done, _) in zip(
-        pillar_columns, pillars, summaries, strict=True
+    st.caption(tr("Change any Partial or Fail exceptions, then save once."))
+    with st.form(
+        f"assessment-{trade.id}-form",
+        clear_on_submit=False,
+        enter_to_submit=False,
+        border=False,
     ):
-        pillar_column.markdown(f"###### :{PILLAR_ACCENT_COLORS[title]}[{tr(title)}] · {done}/{len(criteria)}")
-        pillar_column.button(
-            tr("Mark {pillar} as Pass", pillar=tr(title)),
-            key=f"assessment-{trade.id}-{title}-pass-all",
-            icon=":material/done_all:",
-            type="secondary",
-            width="stretch",
-            on_click=_set_pillar_grades_to_pass,
-            args=(trade.id, criteria),
+        context_left, context_middle, context_right = st.columns(3)
+        selected_setup = context_left.selectbox(
+            "Setup (optional)", setup_options, format_func=_review_context_option_label,
+            key=f"assessment-{trade.id}-setup",
         )
-        for criterion in criteria:
-            with pillar_column:
-                grades[criterion] = _grade_control(
-                    f"{tr(CRITERION_LABELS[criterion])} *",
-                    key=f"assessment-{trade.id}-{criterion}",
-                    help_text=CRITERION_HELP.get(criterion),
-                )
-    reflection_column, evidence_column = st.columns([1.5, 1], gap="small")
-    with reflection_column.container(border=True):
-        st.markdown(f"##### {tr('Reflection and action')}")
-        note = st.text_area(
-            f"{tr('What happened and what did you learn?')} *",
-            key=f"assessment-{trade.id}-note",
-            placeholder=tr("Describe execution independently of P&L."),
-            height=160,
+        selected_session = context_middle.selectbox(
+            "Session (optional)", session_options, format_func=_review_context_option_label,
+            key=f"assessment-{trade.id}-session",
         )
-        action = st.text_area(
-            tr("Corrective action"),
-            key=f"assessment-{trade.id}-action",
-            placeholder=tr("Required when any criterion is Partial or Fail, or a hard rule is selected."),
-            height=160,
+        selected_regime = context_right.selectbox(
+            "Market regime (optional)", regime_options, format_func=_review_context_option_label,
+            key=f"assessment-{trade.id}-regime",
         )
-    with evidence_column.container(border=True):
-        st.markdown(f"##### {tr('Mistakes and rule breaches')}")
-        violation_codes = st.multiselect(
-            tr("Trading mistakes"),
-            options=REVIEW_MISTAKE_CODES,
-            key=f"assessment-{trade.id}-violations",
-            format_func=lambda code: f"{MISTAKE_CATEGORY_PREFIXES[code]} · {tr(VIOLATION_LABELS[code])}",
-            placeholder=tr("Select any mistakes made"),
-            help=tr("Choose all mistakes that affected this trade. Leave empty if the trade followed your plan."),
-        )
-        hard_rules = st.multiselect(
-            tr("Hard-rule events"),
-            options=available_hard_rules,
-            key=f"assessment-{trade.id}-hard-rules",
-            format_func=lambda code: tr(HARD_RULE_LABELS[code]),
-            help=tr("Enabled events selected on save set Hard-rule status to Fail. That result is snapshotted for this assessment, so later Review rules changes do not rewrite it. Automatic Risk limits are monitoring evidence, not hard failures by themselves."),
-        )
-        if not available_hard_rules:
-            st.caption(tr("No hard-rule events are enabled. Enable one in Settings → Review rules to record it on a new assessment."))
-    with evidence_column.container(border=True):
-        st.markdown(f"##### {tr('Risk evidence')}")
-        if policy is not None:
-            st.caption(
-                tr(
-                    "Risk policy v{version}: Standard 1R {standard}% · maximum {maximum}%.",
-                    version=policy.version,
-                    standard=policy.standard_risk_per_trade_percent,
-                    maximum=policy.maximum_risk_per_trade_percent,
-                )
+        grades: dict[str, str | None] = {}
+        pillar_columns = st.columns(3, gap="small", border=True)
+        for pillar_column, (title, criteria) in zip(pillar_columns, pillars, strict=True):
+            pillar_column.markdown(f"###### :{PILLAR_ACCENT_COLORS[title]}[{tr(title)}]")
+            for criterion in criteria:
+                with pillar_column:
+                    grades[criterion] = _grade_control(
+                        f"{tr(CRITERION_LABELS[criterion])} *",
+                        key=f"assessment-{trade.id}-{criterion}",
+                        help_text=CRITERION_HELP.get(criterion),
+                    )
+        reflection_column, evidence_column = st.columns([1.5, 1], gap="small")
+        with reflection_column.container(border=True):
+            st.markdown(f"##### {tr('Reflection and action')}")
+            note = st.text_area(
+                f"{tr('What happened and what did you learn?')} *",
+                key=f"assessment-{trade.id}-note",
+                placeholder=tr("Describe execution independently of P&L."),
+                height=160,
             )
-        else:
-            st.caption(tr("No active Risk policy is attached; the assessment still records your judgement, while automatic limit checks remain unavailable."))
-        actual_risk = st.text_input(
-            tr("Actual risk amount (optional)"),
-            key=f"assessment-{trade.id}-actual-risk",
-            placeholder=tr("Enter a verified amount when automatic evidence is not sufficient"),
-            help=tr("Overrides automatic evidence for this logical trade's policy comparison. It does not rewrite imported MT5 member positions or logical-trade account-limit monitoring."),
-        )
-    with st.container(horizontal=True, horizontal_alignment="left"):
-        submitted = st.button(
-            "Update assessment" if existing_manual else "Save assessment",
-            key=f"assessment-{trade.id}-save",
-            type="primary",
-        )
-        submit_and_next = (
-            st.button(
-                tr("Save & review next ({count} left)", count=len(queue)),
-                key=f"assessment-{trade.id}-save-next",
-                icon=":material/skip_next:",
+            action = st.text_area(
+                tr("Corrective action"),
+                key=f"assessment-{trade.id}-action",
+                placeholder=tr("Required when any criterion is Partial or Fail, or a hard rule is selected."),
+                height=160,
             )
-            if queue
-            else False
-        )
+        with evidence_column.container(border=True):
+            st.markdown(f"##### {tr('Mistakes and rule breaches')}")
+            violation_codes = st.multiselect(
+                tr("Trading mistakes"),
+                options=REVIEW_MISTAKE_CODES,
+                key=f"assessment-{trade.id}-violations",
+                format_func=lambda code: f"{MISTAKE_CATEGORY_PREFIXES[code]} · {tr(VIOLATION_LABELS[code])}",
+                placeholder=tr("Select any mistakes made"),
+                help=tr("Choose all mistakes that affected this trade. Leave empty if the trade followed your plan."),
+            )
+            hard_rules = st.multiselect(
+                tr("Hard-rule events"),
+                options=available_hard_rules,
+                key=f"assessment-{trade.id}-hard-rules",
+                format_func=lambda code: tr(HARD_RULE_LABELS[code]),
+                help=tr("Enabled events selected on save set Hard-rule status to Fail. That result is snapshotted for this assessment, so later Review rules changes do not rewrite it. Automatic Risk limits are monitoring evidence, not hard failures by themselves."),
+            )
+            if not available_hard_rules:
+                st.caption(tr("No hard-rule events are enabled. Enable one in Settings → Review rules to record it on a new assessment."))
+        with evidence_column.container(border=True):
+            st.markdown(f"##### {tr('Risk evidence')}")
+            if policy is not None:
+                st.caption(
+                    tr(
+                        "Risk policy v{version}: Standard 1R {standard}% · maximum {maximum}%.",
+                        version=policy.version,
+                        standard=policy.standard_risk_per_trade_percent,
+                        maximum=policy.maximum_risk_per_trade_percent,
+                    )
+                )
+            else:
+                st.caption(tr("No active Risk policy is attached; the assessment still records your judgement, while automatic limit checks remain unavailable."))
+            actual_risk = st.text_input(
+                tr("Actual risk amount (optional)"),
+                key=f"assessment-{trade.id}-actual-risk",
+                placeholder=tr("Enter a verified amount when automatic evidence is not sufficient"),
+                help=tr("Overrides automatic evidence for this logical trade's policy comparison. It does not rewrite imported MT5 member positions or logical-trade account-limit monitoring."),
+            )
+        with st.container(horizontal=True, horizontal_alignment="left"):
+            submitted = st.form_submit_button(
+                "Update assessment" if existing_manual else "Save assessment",
+                type="primary",
+                icon=":material/save:",
+            )
+            submit_and_next = (
+                st.form_submit_button(
+                    tr("Save & review next ({count} left)", count=len(queue)),
+                    icon=":material/skip_next:",
+                )
+                if queue
+                else False
+            )
     if not (submitted or submit_and_next):
         _render_review_history(repo, account.id, trade)
         return
@@ -1220,20 +1152,12 @@ def _render_post_trade_review_dialog(repo: SQLiteJournalRepository, account: Acc
                 declared_actual_risk_amount=actual_risk,
                 post_review_note=note,
                 corrective_action=action,
-                expected_version=int(st.session_state[f"assessment-{trade.id}-base-version"]),
                 review_context=ReviewContextSelection(
                     strategy_setup_id=None if selected_setup is None else selected_setup.id,
                     session_tag_id=None if selected_session is None else selected_session.id,
                     regime_tag_id=None if selected_regime is None else selected_regime.id,
                 ),
             )
-    except PostTradeAssessmentConflictError:
-        _clear_assessment_draft(trade.id)
-        st.session_state[warning_key] = (
-            "This assessment changed in another session. "
-            "Your draft was discarded and the latest saved version was loaded."
-        )
-        st.rerun()
     except ValueError as error:
         st.error(tr(str(error)))
     else:
@@ -1250,25 +1174,13 @@ def _render_post_trade_review_dialog(repo: SQLiteJournalRepository, account: Acc
 
 
 def _render_review_history(repo: SQLiteJournalRepository, account_id: int, trade) -> None:  # type: ignore[no-untyped-def]
-    revisions = repo.list_post_trade_assessment_revisions(trade.id)
     superseded = repo.list_superseded_post_trade_assessments_for_trade(
         account_id=account_id,
         logical_trade_id=trade.id,
     )
-    if not revisions and not superseded:
+    if not superseded:
         return
-    with st.expander(f"Assessment history ({len(revisions) + len(superseded)})"):
-        for revision in revisions:
-            failed = sum(value == "fail" for value in revision.criterion_grades.values())
-            strategy_label = revision.strategy_snapshot.name if revision.strategy_snapshot is not None else tr("Auto-approved")
-            st.markdown(
-                f"**{tr('Version {version}', version=revision.version)}** · "
-                f"{_rubric_label(revision.rubric_version)} · {revision.archived_at[:19]} · {strategy_label}"
-            )
-            hard_rule_text = ", ".join(tr(HARD_RULE_LABELS.get(code, code)) for code in revision.hard_rule_codes) or tr("none")
-            st.caption(tr("{failed} failed criterion/criteria · Hard rules: {hard_rules}", failed=failed, hard_rules=hard_rule_text))
-            if revision.post_review_note:
-                st.write(revision.post_review_note)
+    with st.expander(f"Assessment history ({len(superseded)})"):
         for assessment in superseded:
             positions = ", ".join(f"#{position_id}" for position_id in assessment.assessed_position_ids)
             st.markdown(

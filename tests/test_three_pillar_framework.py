@@ -37,14 +37,12 @@ from trading_journal.presentation.framework import (
     _daily_r_metric,
     _drawdown_metric,
     _focus_metric_text,
-    _grade_summary,
     _initialize_assessment_draft,
     _initialize_assessment_grades,
     _process_failure_detail,
     _readiness_metric,
     _risk_evidence_detail,
     _risk_state_metric,
-    _set_pillar_grades_to_pass,
     render_post_trade_review_dialog,
 )
 
@@ -178,41 +176,33 @@ def test_trade_tags_keep_direction_and_realized_outcome_separate() -> None:
     assert outcome_tag("0").label == "Breakeven"
 
 
-def test_marking_a_pillar_as_pass_changes_only_its_criteria() -> None:
-    state = {"assessment-42-edge_execution": "Fail", "assessment-42-policy_adherence": "Partial"}
-
-    _set_pillar_grades_to_pass(42, ("edge_execution", "risk_acceptance"), state)
-
-    assert state == {
-        "assessment-42-edge_execution": "Pass",
-        "assessment-42-risk_acceptance": "Pass",
-        "assessment-42-policy_adherence": "Partial",
-    }
-
-
-def test_marking_all_criteria_as_pass_sets_every_criterion() -> None:
-    state = {"assessment-42-edge_execution": "Fail", "assessment-42-policy_adherence": "Partial"}
-
-    _set_pillar_grades_to_pass(42, ASSESSMENT_CRITERIA, state)
-
-    assert state == {f"assessment-42-{criterion}": "Pass" for criterion in ASSESSMENT_CRITERIA}
-
-
-def test_assessment_grades_are_initialized_before_progress_is_calculated() -> None:
+def test_new_assessment_grades_start_as_pass() -> None:
     state: dict[str, object] = {}
 
     _initialize_assessment_grades(42, None, "within_policy", state)
 
-    assert state["assessment-42-policy_adherence"] == "Pass"
-    assert _grade_summary(42, ASSESSMENT_CRITERIA, state) == (1, 0)
+    assert state == {f"assessment-42-{criterion}": "Pass" for criterion in ASSESSMENT_CRITERIA}
 
 
-def test_assessment_draft_keeps_the_version_from_when_editing_started() -> None:
-    state: dict[str, object] = {"assessment-42-base-version": 1}
+def test_over_policy_evidence_still_defaults_policy_adherence_to_fail() -> None:
+    state: dict[str, object] = {}
 
-    _initialize_assessment_draft({"assessment-42-base-version": 2}, state)
+    _initialize_assessment_grades(42, None, "over_policy", state)
 
-    assert state["assessment-42-base-version"] == 1
+    assert state["assessment-42-policy_adherence"] == "Fail"
+    assert all(
+        value == "Pass"
+        for key, value in state.items()
+        if key != "assessment-42-policy_adherence"
+    )
+
+
+def test_assessment_draft_keeps_local_edits_during_validation_reruns() -> None:
+    state: dict[str, object] = {"assessment-42-note": "Local edit"}
+
+    _initialize_assessment_draft({"assessment-42-note": "Saved default"}, state)
+
+    assert state["assessment-42-note"] == "Local edit"
 
 
 def test_default_policy_adherence_grade_matches_within_policy_state() -> None:
@@ -386,7 +376,6 @@ def _review(
     hard_rules: tuple[str, ...] = (),
     actual_risk: str | None = "10",
     action: str | None = None,
-    expected_version: int | None = None,
 ):
     return repository.save_post_trade_assessment(
         account_id=account_id,
@@ -399,7 +388,6 @@ def _review(
         declared_actual_risk_amount=actual_risk,
         post_review_note="Reviewed independently of trade P&L.",
         corrective_action=action,
-        expected_version=expected_version,
     )
 
 
@@ -1374,7 +1362,7 @@ def test_approval_needed_auto_review_can_be_approved_and_then_replaced_by_full_r
     assert all(item.reviewed_total == 1 for item in after_manual.pillar_scores(account_id))
 
 
-def test_upgrading_an_auto_review_to_manual_archives_it_as_a_revision(tmp_path) -> None:
+def test_upgrading_an_auto_review_to_manual_replaces_it(tmp_path) -> None:
     repository, account_id = _repository(tmp_path)
     policy, strategy = _policy(repository, account_id), _strategy(repository)
     trade_id = _import_position(repository, account_id, initial_risk_amount="20", entry_stop_price="3290")
@@ -1388,11 +1376,13 @@ def test_upgrading_an_auto_review_to_manual_archives_it_as_a_revision(tmp_path) 
 
     upgraded = _review(repository, account_id, trade_id, policy, strategy, actual_risk=None)
 
-    assert upgraded.version == 2
-    revisions = repository.list_post_trade_assessment_revisions(trade_id)
-    assert len(revisions) == 1
-    assert revisions[0].version == 1
-    assert revisions[0].method == "auto"
+    assert upgraded.method == "manual"
+    with sqlite3.connect(repository.database_path) as connection:
+        count = connection.execute(
+            "SELECT COUNT(*) FROM post_trade_assessments WHERE logical_trade_id = ?",
+            (trade_id,),
+        ).fetchone()[0]
+    assert count == 1
 
 
 def test_upgrading_an_auto_review_requires_hard_rules_to_be_currently_enabled(tmp_path) -> None:
@@ -1462,6 +1452,87 @@ def test_approve_auto_review_is_idempotent(tmp_path) -> None:
     )
 
     assert first.id == second.id
+    assert len(repository.list_active_post_trade_assessments(account_id)) == 1
+
+
+def test_overlapping_auto_approval_does_not_overwrite_a_manual_review(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    trade_id = _import_position(repository, account_id, initial_risk_amount="20", entry_stop_price="3290")
+    score = FrameworkService(repository).trade_process_scores(account_id)[0]
+    competing_repository = SQLiteJournalRepository(repository.database_path)
+    competing_write_started = False
+
+    def save_manual_review(_connection, _cursor, statement, _parameters, _context, _many) -> None:
+        nonlocal competing_write_started
+        if competing_write_started or not statement.lstrip().startswith("INSERT INTO post_trade_assessments"):
+            return
+        competing_write_started = True
+        _review(competing_repository, account_id, trade_id, policy, strategy)
+
+    event.listen(repository._engine, "before_cursor_execute", save_manual_review)
+    try:
+        with pytest.raises(ValueError, match="already has a full assessment"):
+            repository.approve_auto_review(
+                account_id=account_id,
+                trade_id=trade_id,
+                risk_policy_id=policy.id,
+                risk_evidence_source=score.risk_evidence_source,
+                risk_policy_state=score.risk_policy_state,
+                actual_risk_amount=score.actual_risk_amount,
+                criterion_grades=FrameworkService._automatic_review_grades(score.risk_policy_state),
+            )
+    finally:
+        event.remove(repository._engine, "before_cursor_execute", save_manual_review)
+        competing_repository.close()
+
+    latest = repository.get_post_trade_assessment_for_trade(trade_id)
+    assert latest is not None
+    assert latest.method == "manual"
+
+
+def test_overlapping_auto_approvals_keep_the_last_save(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy = _policy(repository, account_id)
+    trade_id = _import_position(repository, account_id, initial_risk_amount="8", entry_stop_price="3290")
+    score = FrameworkService(repository).trade_process_scores(account_id)[0]
+    competing_repository = SQLiteJournalRepository(repository.database_path)
+    competing_write_started = False
+
+    def save_competing_approval(_connection, _cursor, statement, _parameters, _context, _many) -> None:
+        nonlocal competing_write_started
+        if competing_write_started or not statement.lstrip().startswith("INSERT INTO post_trade_assessments"):
+            return
+        competing_write_started = True
+        competing_repository.approve_auto_review(
+            account_id=account_id,
+            trade_id=trade_id,
+            risk_policy_id=policy.id,
+            risk_evidence_source=score.risk_evidence_source,
+            risk_policy_state="within_policy",
+            actual_risk_amount="8",
+            criterion_grades=FrameworkService._automatic_review_grades("within_policy"),
+        )
+
+    event.listen(repository._engine, "before_cursor_execute", save_competing_approval)
+    try:
+        latest = repository.approve_auto_review(
+            account_id=account_id,
+            trade_id=trade_id,
+            risk_policy_id=policy.id,
+            risk_evidence_source="reviewed_actual_risk",
+            risk_policy_state="over_policy",
+            actual_risk_amount="20",
+            criterion_grades=FrameworkService._automatic_review_grades("over_policy"),
+        )
+    finally:
+        event.remove(repository._engine, "before_cursor_execute", save_competing_approval)
+        competing_repository.close()
+
+    assert latest.method == "auto"
+    assert latest.risk_evidence_source == "reviewed_actual_risk"
+    assert latest.risk_policy_state == "over_policy"
+    assert latest.declared_actual_risk_amount == "20"
     assert len(repository.list_active_post_trade_assessments(account_id)) == 1
 
 
@@ -3107,46 +3178,41 @@ def test_a_period_review_only_satisfies_measure_for_its_own_account(tmp_path) ->
     assert not system_measure.completed, "System is account-scoped and must not unlock from another account's period review"
 
 
-def test_corrections_archive_complete_prior_assessment(tmp_path) -> None:
+def test_correction_overwrites_the_single_current_assessment(tmp_path) -> None:
     repository, account_id = _repository(tmp_path)
     policy, strategy = _policy(repository, account_id), _strategy(repository)
     trade_id = _import_position(repository, account_id)
     first = _review(repository, account_id, trade_id, policy, strategy)
     grades = {**ALL_PASS, "edge_execution": "partial"}
     corrected = _review(repository, account_id, trade_id, policy, strategy, grades=grades, tags=("fomo_or_chase",), action="Wait for the setup.")
-    history = repository.list_post_trade_assessment_revisions(trade_id)
 
-    assert first.version == 1
-    assert corrected.version == 2
-    assert history[0].criterion_grades["edge_execution"] == "pass"
+    assert corrected.id == first.id
+    assert corrected.criterion_grades["edge_execution"] == "partial"
+    with sqlite3.connect(repository.database_path) as connection:
+        count = connection.execute(
+            "SELECT COUNT(*) FROM post_trade_assessments WHERE logical_trade_id = ?",
+            (trade_id,),
+        ).fetchone()[0]
+    assert count == 1
 
 
-def test_identical_manual_assessment_save_is_a_no_op(tmp_path) -> None:
+def test_repeated_manual_assessment_save_keeps_one_row(tmp_path) -> None:
     repository, account_id = _repository(tmp_path)
     policy, strategy = _policy(repository, account_id), _strategy(repository)
     trade_id = _import_position(repository, account_id)
 
     first = _review(repository, account_id, trade_id, policy, strategy)
-    repeated = _review(
-        repository,
-        account_id,
-        trade_id,
-        policy,
-        strategy,
-        expected_version=first.version,
-    )
+    repeated = _review(repository, account_id, trade_id, policy, strategy)
 
     assert repeated.id == first.id
-    assert repeated.version == first.version
-    assert repository.list_post_trade_assessment_revisions(trade_id) == []
 
 
-def test_changed_manual_assessment_rejects_a_stale_expected_version(tmp_path) -> None:
+def test_latest_manual_assessment_save_replaces_previous_values(tmp_path) -> None:
     repository, account_id = _repository(tmp_path)
     policy, strategy = _policy(repository, account_id), _strategy(repository)
     trade_id = _import_position(repository, account_id)
-    first = _review(repository, account_id, trade_id, policy, strategy)
-    corrected = _review(
+    _review(repository, account_id, trade_id, policy, strategy)
+    _review(
         repository,
         account_id,
         trade_id,
@@ -3155,37 +3221,80 @@ def test_changed_manual_assessment_rejects_a_stale_expected_version(tmp_path) ->
         grades={**ALL_PASS, "edge_execution": "partial"},
         tags=("fomo_or_chase",),
         action="Wait for the setup.",
-        expected_version=first.version,
     )
 
-    with pytest.raises(ValueError, match="changed in another session"):
-        _review(
-            repository,
-            account_id,
-            trade_id,
-            policy,
-            strategy,
-            grades={**ALL_PASS, "risk_acceptance": "partial"},
-            tags=("risk_not_accepted",),
-            action="Accept the predefined risk.",
-            expected_version=first.version,
-        )
+    latest = _review(
+        repository,
+        account_id,
+        trade_id,
+        policy,
+        strategy,
+        grades={**ALL_PASS, "risk_acceptance": "partial"},
+        tags=("risk_not_accepted",),
+        action="Accept the predefined risk.",
+    )
 
-    assert corrected.version == 2
-    assert len(repository.list_post_trade_assessment_revisions(trade_id)) == 1
+    assert latest.criterion_grades["edge_execution"] == "pass"
+    assert latest.criterion_grades["risk_acceptance"] == "partial"
 
 
-def test_overlapping_assessment_update_cannot_pass_the_version_check(tmp_path) -> None:
+def test_schema_upgrade_removes_review_versions_and_preserves_latest_save(tmp_path) -> None:
     repository, account_id = _repository(tmp_path)
     policy, strategy = _policy(repository, account_id), _strategy(repository)
     trade_id = _import_position(repository, account_id)
-    first = _review(repository, account_id, trade_id, policy, strategy)
+    _review(repository, account_id, trade_id, policy, strategy)
+    _review(
+        repository,
+        account_id,
+        trade_id,
+        policy,
+        strategy,
+        grades={**ALL_PASS, "risk_acceptance": "partial"},
+        tags=("risk_not_accepted",),
+        action="Accept the predefined risk.",
+    )
+    repository.close()
+    with sqlite3.connect(tmp_path / "journal.db") as connection:
+        connection.execute(
+            "ALTER TABLE post_trade_assessments "
+            "ADD COLUMN version INTEGER NOT NULL DEFAULT 1 CHECK(version >= 1)"
+        )
+        connection.execute(
+            "CREATE TABLE post_trade_assessment_revisions ("
+            "id INTEGER PRIMARY KEY, post_trade_assessment_id INTEGER NOT NULL, "
+            "version INTEGER NOT NULL, method TEXT NOT NULL, rubric_version TEXT NOT NULL, "
+            "criterion_grades TEXT NOT NULL, violation_codes TEXT NOT NULL, hard_rule_codes TEXT NOT NULL)"
+        )
+        connection.execute("PRAGMA user_version = 4")
+
+    migrated = SQLiteJournalRepository(tmp_path / "journal.db")
+    migrated.initialize()
+    latest = migrated.get_post_trade_assessment_for_trade(trade_id)
+    assert latest is not None
+    assert latest.criterion_grades["risk_acceptance"] == "partial"
+    with sqlite3.connect(tmp_path / "journal.db") as connection:
+        assessment_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(post_trade_assessments)")
+        }
+        revision_table = connection.execute(
+            "SELECT 1 FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'post_trade_assessment_revisions'"
+        ).fetchone()
+    assert "version" not in assessment_columns
+    assert revision_table is None
+
+
+def test_overlapping_assessment_updates_keep_the_last_save(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    trade_id = _import_position(repository, account_id)
+    _review(repository, account_id, trade_id, policy, strategy)
     competing_repository = SQLiteJournalRepository(repository.database_path)
     competing_write_started = False
 
-    def save_competing_version(_connection, _cursor, statement, _parameters, _context, _many) -> None:
+    def save_competing_review(_connection, _cursor, statement, _parameters, _context, _many) -> None:
         nonlocal competing_write_started
-        if competing_write_started or not statement.lstrip().startswith("UPDATE post_trade_assessments"):
+        if competing_write_started or not statement.lstrip().startswith("INSERT INTO post_trade_assessments"):
             return
         competing_write_started = True
         _review(
@@ -3197,55 +3306,31 @@ def test_overlapping_assessment_update_cannot_pass_the_version_check(tmp_path) -
             grades={**ALL_PASS, "edge_execution": "partial"},
             tags=("fomo_or_chase",),
             action="Wait for the setup.",
-            expected_version=first.version,
         )
 
-    event.listen(repository._engine, "before_cursor_execute", save_competing_version)
+    event.listen(repository._engine, "before_cursor_execute", save_competing_review)
     try:
-        with pytest.raises(ValueError, match="changed in another session"):
-            _review(
-                repository,
-                account_id,
-                trade_id,
-                policy,
-                strategy,
-                grades={**ALL_PASS, "risk_acceptance": "partial"},
-                tags=("risk_not_accepted",),
-                action="Accept the predefined risk.",
-                expected_version=first.version,
-            )
-    finally:
-        event.remove(repository._engine, "before_cursor_execute", save_competing_version)
-        competing_repository.close()
-
-    latest = repository.get_post_trade_assessment_for_trade(trade_id)
-    assert latest is not None
-    assert latest.version == 2
-    assert latest.criterion_grades["edge_execution"] == "partial"
-    assert latest.criterion_grades["risk_acceptance"] == "pass"
-
-
-def test_new_assessment_draft_rejects_a_review_created_in_another_session(tmp_path) -> None:
-    repository, account_id = _repository(tmp_path)
-    policy, strategy = _policy(repository, account_id), _strategy(repository)
-    trade_id = _import_position(repository, account_id)
-    _review(repository, account_id, trade_id, policy, strategy)
-
-    with pytest.raises(ValueError, match="changed in another session"):
         _review(
             repository,
             account_id,
             trade_id,
             policy,
             strategy,
-            grades={**ALL_PASS, "edge_execution": "partial"},
-            tags=("fomo_or_chase",),
-            action="Wait for the setup.",
-            expected_version=0,
+            grades={**ALL_PASS, "risk_acceptance": "partial"},
+            tags=("risk_not_accepted",),
+            action="Accept the predefined risk.",
         )
+    finally:
+        event.remove(repository._engine, "before_cursor_execute", save_competing_review)
+        competing_repository.close()
+
+    latest = repository.get_post_trade_assessment_for_trade(trade_id)
+    assert latest is not None
+    assert latest.criterion_grades["edge_execution"] == "pass"
+    assert latest.criterion_grades["risk_acceptance"] == "partial"
 
 
-def test_overlapping_new_assessment_insert_becomes_a_reload_conflict(tmp_path) -> None:
+def test_overlapping_new_assessment_inserts_keep_the_last_save(tmp_path) -> None:
     repository, account_id = _repository(tmp_path)
     policy, strategy = _policy(repository, account_id), _strategy(repository)
     with sqlite3.connect(repository.database_path) as connection:
@@ -3269,34 +3354,30 @@ def test_overlapping_new_assessment_insert_becomes_a_reload_conflict(tmp_path) -
             trade_id,
             policy,
             strategy,
-            expected_version=0,
         )
 
     event.listen(repository._engine, "before_cursor_execute", save_competing_review)
     try:
-        with pytest.raises(ValueError, match="changed in another session"):
-            _review(
-                repository,
-                account_id,
-                trade_id,
-                policy,
-                strategy,
-                grades={**ALL_PASS, "edge_execution": "partial"},
-                tags=("fomo_or_chase",),
-                action="Wait for the setup.",
-                expected_version=0,
-            )
+        _review(
+            repository,
+            account_id,
+            trade_id,
+            policy,
+            strategy,
+            grades={**ALL_PASS, "edge_execution": "partial"},
+            tags=("fomo_or_chase",),
+            action="Wait for the setup.",
+        )
     finally:
         event.remove(repository._engine, "before_cursor_execute", save_competing_review)
         competing_repository.close()
 
     latest = repository.get_post_trade_assessment_for_trade(trade_id)
     assert latest is not None
-    assert latest.version == 1
-    assert latest.criterion_grades == ALL_PASS
+    assert latest.criterion_grades["edge_execution"] == "partial"
 
 
-def test_corrections_archive_the_prior_context_snapshot(tmp_path) -> None:
+def test_correction_replaces_the_prior_context_snapshot(tmp_path) -> None:
     repository, account_id = _repository(tmp_path)
     policy, strategy = _policy(repository, account_id), _strategy(repository)
     setup = repository.save_strategy_setup(strategy_profile_id=strategy.id, name="London pullback")
@@ -3310,8 +3391,6 @@ def test_corrections_archive_the_prior_context_snapshot(tmp_path) -> None:
         review_context=ReviewContextSelection(setup.id, session.id, regime.id),
     )
 
-    # The correction switches to a different setup; the original context must
-    # still be recoverable from the archived revision, not overwritten.
     other_setup = repository.save_strategy_setup(strategy_profile_id=strategy.id, name="NY reversal")
     repository.save_post_trade_assessment(
         account_id=account_id, trade_id=trade_id, risk_policy_id=policy.id, strategy_profile_id=strategy.id,
@@ -3320,10 +3399,9 @@ def test_corrections_archive_the_prior_context_snapshot(tmp_path) -> None:
         review_context=ReviewContextSelection(other_setup.id, session.id, regime.id),
     )
 
-    history = repository.list_post_trade_assessment_revisions(trade_id)
-    assert (history[0].setup_snapshot, history[0].session_snapshot, history[0].regime_snapshot) == ("London pullback", "London", "Trending")
-    assert history[0].assessed_trade_label
-    assert history[0].assessed_position_ids
+    latest = repository.get_post_trade_assessment_for_trade(trade_id)
+    assert latest is not None
+    assert (latest.setup_snapshot, latest.session_snapshot, latest.regime_snapshot) == ("NY reversal", "London", "Trending")
 
 
 def test_all_three_pillars_are_account_scoped(tmp_path) -> None:

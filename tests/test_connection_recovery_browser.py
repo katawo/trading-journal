@@ -116,9 +116,8 @@ def test_websocket_disconnect_blocks_stale_ui_until_user_reloads() -> None:
             page.wait_for_timeout(300)
             assert health_requests == []
 
-            # A sleeping tab can reconnect before the grace period elapses. The
-            # disconnect must still invalidate the old controls and require a
-            # user-confirmed reload instead of silently keeping the stale DOM.
+            # A transient ping state is not a confirmed disconnect. Returning
+            # within the grace period must leave the current controls usable.
             page.locator('[data-testid="stApp"]').evaluate(
                 "element => element.setAttribute('data-test-connection-state', 'PINGING_SERVER')"
             )
@@ -127,15 +126,26 @@ def test_websocket_disconnect_blocks_stale_ui_until_user_reloads() -> None:
             page.locator('[data-testid="stApp"]').evaluate(
                 "element => element.setAttribute('data-test-connection-state', 'CONNECTED')"
             )
+            page.wait_for_timeout(300)
+            playwright.expect(dialog).to_be_hidden()
+            assert page.locator('[data-testid="stAppViewContainer"]').evaluate("element => element.inert") is False
+            assert page.evaluate("window.__connectionRecoveryReloading") is False
+            assert health_requests == []
+
+            # A sustained outage still blocks stale controls. HTTP health alone
+            # must not claim recovery while Streamlit's live WebSocket is down.
+            page.locator('[data-testid="stApp"]').evaluate(
+                "element => element.setAttribute('data-test-connection-state', 'PINGING_SERVER')"
+            )
 
             playwright.expect(dialog).to_be_visible(timeout=1_000)
-            playwright.expect(page.get_by_role("heading", name="Connection restored")).to_be_visible()
-            playwright.expect(page.get_by_text("fresh session", exact=False)).to_be_visible()
-            playwright.expect(page.get_by_role("button", name="Retry now")).to_be_hidden()
-            playwright.expect(page.get_by_role("button", name="Reload page")).to_be_focused()
+            playwright.expect(page.get_by_role("heading", name="Connection lost")).to_be_visible()
+            playwright.expect(page.get_by_text("Trade Compass lost its live session", exact=False)).to_be_visible()
+            playwright.expect(page.get_by_role("button", name="Retry now")).to_be_focused()
+            assert page.locator('[data-testid="stAppViewContainer"]').evaluate("element => element.inert") is True
             assert dialog.evaluate("element => element.open") is True
-            reload_button = page.get_by_role("button", name="Reload page")
-            assert reload_button.evaluate(
+            retry_button = page.get_by_role("button", name="Retry now")
+            assert retry_button.evaluate(
                 """
                 element => {
                   const bounds = element.getBoundingClientRect()
@@ -146,36 +156,6 @@ def test_websocket_disconnect_blocks_stale_ui_until_user_reloads() -> None:
                 }
                 """
             ) is True
-            assert page.locator('[data-testid="stAppViewContainer"]').evaluate("element => element.inert") is True
-            page.wait_for_timeout(300)
-            assert page.evaluate("window.__connectionRecoveryReloading") is False
-            assert health_requests == []
-
-            page.evaluate("document.querySelector('#tj-connection-recovery-anchor')._cleanup()")
-            playwright.expect(dialog).to_have_count(0)
-            assert page.locator('[data-testid="stAppViewContainer"]').evaluate("element => element.inert") is False
-
-            # Remount and exercise a longer outage. HTTP health alone must not
-            # claim recovery while Streamlit's live WebSocket is still down.
-            page.evaluate(
-                """
-                (data) => window.mountConnectionRecovery({
-                  data,
-                  parentElement: document.querySelector('#component-root'),
-                })
-                """,
-                component_data,
-            )
-            dialog = page.get_by_role("alertdialog")
-            page.locator('[data-testid="stApp"]').evaluate(
-                "element => element.setAttribute('data-test-connection-state', 'PINGING_SERVER')"
-            )
-
-            playwright.expect(dialog).to_be_visible(timeout=1_000)
-            playwright.expect(page.get_by_role("heading", name="Connection lost")).to_be_visible()
-            playwright.expect(page.get_by_text("Trade Compass lost its live session", exact=False)).to_be_visible()
-            playwright.expect(page.get_by_role("button", name="Retry now")).to_be_focused()
-            assert page.locator('[data-testid="stAppViewContainer"]').evaluate("element => element.inert") is True
 
             health_status["value"] = 200
             page.get_by_role("button", name="Retry now").click()

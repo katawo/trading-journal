@@ -1736,11 +1736,11 @@ def test_reopening_review_after_upgrading_an_auto_review_does_not_crash(monkeypa
     assert not app.exception
     markdown_values = [item.value for item in app.markdown]
     assert [value for value in markdown_values if value.startswith("###### :")] == [
-        "###### :blue[Psychology] · 0/4",
-        "###### :orange[Risk management] · 1/4",
-        "###### :violet[Trading system] · 0/4",
+        "###### :blue[Psychology]",
+        "###### :orange[Risk management]",
+        "###### :violet[Trading system]",
     ]
-    assert any("1 of 12 criteria graded" in item.value for item in app.caption)
+    assert any("Change any Partial or Fail exceptions" in item.value for item in app.caption)
     criterion_labels = {
         "Edge execution *",
         "Risk acceptance *",
@@ -1756,28 +1756,8 @@ def test_reopening_review_after_upgrading_an_auto_review_does_not_crash(monkeypa
         "Management / exit fidelity *",
     }
     assert {item.label for item in app.segmented_control if item.label in criterion_labels} == criterion_labels
-    assert {
-        item.label
-        for item in app.button
-        if item.label.startswith("Mark ") and item.label.endswith(" as Pass")
-    } >= {
-        "Mark all criteria as Pass",
-        "Mark Psychology as Pass",
-        "Mark Risk management as Pass",
-        "Mark Trading system as Pass",
-    }
-    assert next(
-        item for item in app.button if item.label == "Mark all criteria as Pass"
-    ).proto.type == "primary"
-    assert all(
-        item.proto.type == "secondary"
-        for item in app.button
-        if item.label in {
-            "Mark Psychology as Pass",
-            "Mark Risk management as Pass",
-            "Mark Trading system as Pass",
-        }
-    )
+    assert all(item.value == "Pass" for item in app.segmented_control if item.label in criterion_labels)
+    assert not any(item.label.startswith("Mark ") for item in app.button)
     lower_section_headings = {
         "##### Mistakes and rule breaches",
         "##### Reflection and action",
@@ -1806,27 +1786,26 @@ def test_reopening_review_after_upgrading_an_auto_review_does_not_crash(monkeypa
     }
     assert all(item.value is None for item in context_selectboxes.values())
     assert all(item.format_func(None) == "" for item in context_selectboxes.values())
-    context_selectboxes["Setup (optional)"].select("London pullback").run()
-    context_selectboxes["Session (optional)"].select("London").run()
-    context_selectboxes["Market regime (optional)"].select("Trending").run()
-    next(item for item in app.segmented_control if item.label == "Edge execution *").select("Partial").run()
-    assert any("2 of 12 criteria graded · 1 exception" in item.value for item in app.caption)
-    next(item for item in app.button if item.label == "Mark all criteria as Pass").click().run()
+    next(item for item in app.button if item.label == "Save assessment").click().run()
+    assert any("Post-trade review is required" in item.value for item in app.error)
     assert all(item.value == "Pass" for item in app.segmented_control if item.label in criterion_labels)
-    assert any("12 of 12 criteria graded" in item.value for item in app.caption)
-    assert any(
-        item.value == "Marked 12 criteria as Pass. Refreshing the assessment…"
-        for item in app.toast
-    )
+    context_selectboxes = {
+        item.label: item
+        for item in app.selectbox
+        if item.label in {"Setup (optional)", "Session (optional)", "Market regime (optional)"}
+    }
+    context_selectboxes["Setup (optional)"].select("London pullback")
+    context_selectboxes["Session (optional)"].select("London")
+    context_selectboxes["Market regime (optional)"].select("Trending")
     note = next(item for item in app.text_area if item.label == "What happened and what did you learn? *")
-    note.set_value("Upgraded from an auto review.").run()
+    note.set_value("Upgraded from an auto review.")
     next(item for item in app.button if item.label == "Save assessment").click().run()
     assert not app.exception
 
     next(item for item in app.button if item.label == "Review").click().run()
 
     assert not app.exception
-    assert any("Assessment history" in item.label for item in app.expander)
+    assert not any("Assessment history" in item.label for item in app.expander)
     reopened_context = {
         item.label: item.value.name
         for item in app.selectbox
@@ -1839,7 +1818,7 @@ def test_reopening_review_after_upgrading_an_auto_review_does_not_crash(monkeypa
     }
 
 
-def test_stale_assessment_draft_warns_and_reloads_the_latest_review(monkeypatch, tmp_path):
+def test_existing_assessment_loads_and_saves_local_form_changes(monkeypatch, tmp_path):
     monkeypatch.setattr("trading_journal.presentation.global_alert_bubble.render_global_alert_bubble", lambda **kwargs: None)
     database_path = tmp_path / "journal.db"
     repository = SQLiteJournalRepository(database_path)
@@ -1897,17 +1876,6 @@ def test_stale_assessment_draft_warns_and_reloads_the_latest_review(monkeypatch,
         "conflict-review-test",
     )
     trade = repository.list_closed_trades_for_review(account.id)[0]
-    monkeypatch.setenv("TRADING_JOURNAL_DB", str(database_path))
-
-    app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
-    app.switch_page("app_pages/bearings_review.py").run()
-    _set_review_filters(app, needs_approval=True, auto_reviewed=True, manual_reviewed=True)
-    next(item for item in app.button if item.label == "Review").click().run()
-    next(item for item in app.button if item.label == "Mark all criteria as Pass").click().run()
-    next(
-        item for item in app.text_area if item.label == "What happened and what did you learn? *"
-    ).set_value("My stale draft.").run()
-
     repository.save_post_trade_assessment(
         account_id=account.id,
         trade_id=trade.id,
@@ -1922,17 +1890,31 @@ def test_stale_assessment_draft_warns_and_reloads_the_latest_review(monkeypatch,
         declared_actual_risk_amount=None,
         post_review_note="Latest review from another session.",
         corrective_action="Wait for the setup.",
-        expected_version=0,
     )
+    monkeypatch.setenv("TRADING_JOURNAL_DB", str(database_path))
 
-    next(item for item in app.button if item.label == "Save assessment").click().run()
+    app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
+    app.switch_page("app_pages/bearings_review.py").run()
+    _set_review_filters(app, needs_approval=True, auto_reviewed=True, manual_reviewed=True)
+    next(item for item in app.button if item.label == "Review").click().run()
+    note = next(
+        item for item in app.text_area if item.label == "What happened and what did you learn? *"
+    )
+    edge_execution = next(
+        item for item in app.segmented_control if item.label == "Edge execution *"
+    )
+    assert note.value == "Latest review from another session."
+    assert edge_execution.value == "Partial"
+    note.set_value("My local change.")
+    edge_execution.select("Pass")
+    next(item for item in app.button if item.label == "Update assessment").click().run()
 
     assert not app.exception
-    assert any("Your draft was discarded" in item.value for item in app.warning)
-    assert next(
-        item for item in app.text_area if item.label == "What happened and what did you learn? *"
-    ).value == "Latest review from another session."
-    assert next(item for item in app.segmented_control if item.label == "Edge execution *").value == "Partial"
+    assert not app.error, [item.value for item in app.error]
+    latest = repository.get_post_trade_assessment_for_trade(trade.id)
+    assert latest is not None
+    assert latest.post_review_note == "My local change."
+    assert latest.criterion_grades == {criterion: "pass" for criterion in ASSESSMENT_CRITERIA}
 
 
 def test_save_and_review_next_skips_a_stale_queue_entry_instead_of_dropping_the_queue(monkeypatch, tmp_path):

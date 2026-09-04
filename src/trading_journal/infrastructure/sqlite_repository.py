@@ -9,7 +9,7 @@ import sqlite3
 from typing import Mapping
 
 from sqlalchemy import Boolean, CheckConstraint, ForeignKey, ForeignKeyConstraint, Index, Integer, String, Text, UniqueConstraint, create_engine, delete, event, func, select, text, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
 
 from trading_journal.application.reporting_time import REPORTING_TIME_BASES, normalize_server_timestamp, reporting_date
@@ -22,7 +22,7 @@ ASSESSMENT_GRADES = frozenset({"pass", "partial", "fail"})
 MONITORING_RESET_PERIODS = frozenset({"daily", "weekly", "monthly", "all_time"})
 CURRENT_RUBRIC_VERSION = "zone_v2"
 RUBRIC_VERSIONS = frozenset({CURRENT_RUBRIC_VERSION})
-CURRENT_SCHEMA_VERSION = 4
+CURRENT_SCHEMA_VERSION = 5
 _REMOVED_RUBRIC_VERSION = "legacy_v1"
 _REMOVED_PSYCHOLOGY_ROADMAP_ITEM_KEYS = ("triggers", "behaviour_rules", "practice")
 PSYCHOLOGY_CRITERIA = (
@@ -344,7 +344,6 @@ class PostTradeAssessment(Base):
         Index("ix_assessments_account_history", "mt5_account_id", "superseded_at", "updated_at"),
         CheckConstraint("method IN ('auto', 'manual')", name="ck_assessment_method"),
         CheckConstraint("rubric_version = 'zone_v2'", name="ck_assessment_rubric"),
-        CheckConstraint("version >= 1", name="ck_assessment_version"),
         CheckConstraint("json_valid(criterion_grades)", name="ck_assessment_grades_json"),
         CheckConstraint("json_valid(violation_codes)", name="ck_assessment_violations_json"),
         CheckConstraint("json_valid(hard_rule_codes)", name="ck_assessment_hard_rules_json"),
@@ -376,45 +375,6 @@ class PostTradeAssessment(Base):
     superseded_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[str] = mapped_column(String(64), nullable=False)
     updated_at: Mapped[str] = mapped_column(String(64), nullable=False)
-    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-
-
-class PostTradeAssessmentRevision(Base):
-    """Immutable copy of a post-trade assessment before it was corrected, upgraded, or superseded."""
-
-    __tablename__ = "post_trade_assessment_revisions"
-    __table_args__ = (
-        UniqueConstraint("post_trade_assessment_id", "version", name="uq_post_trade_assessment_revision"),
-        CheckConstraint("method IN ('auto', 'manual')", name="ck_assessment_revision_method"),
-        CheckConstraint("rubric_version = 'zone_v2'", name="ck_assessment_revision_rubric"),
-        CheckConstraint("version >= 1", name="ck_assessment_revision_version"),
-        CheckConstraint("json_valid(criterion_grades)", name="ck_assessment_revision_grades_json"),
-        CheckConstraint("json_valid(violation_codes)", name="ck_assessment_revision_violations_json"),
-        CheckConstraint("json_valid(hard_rule_codes)", name="ck_assessment_revision_hard_rules_json"),
-    )
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    post_trade_assessment_id: Mapped[int] = mapped_column(ForeignKey("post_trade_assessments.id"), nullable=False)
-    version: Mapped[int] = mapped_column(Integer, nullable=False)
-    method: Mapped[str] = mapped_column(String(16), nullable=False)
-    rubric_version: Mapped[str] = mapped_column(String(24), nullable=False, default=CURRENT_RUBRIC_VERSION)
-    risk_policy_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    risk_evidence_source: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    risk_policy_state: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    strategy_profile_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    strategy_snapshot: Mapped[str | None] = mapped_column(Text, nullable=True)
-    setup_snapshot: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    session_snapshot: Mapped[str | None] = mapped_column(String(80), nullable=True)
-    regime_snapshot: Mapped[str | None] = mapped_column(String(80), nullable=True)
-    criterion_grades: Mapped[str] = mapped_column(Text, nullable=False)
-    violation_codes: Mapped[str] = mapped_column(Text, nullable=False)
-    hard_rule_codes: Mapped[str] = mapped_column(Text, nullable=False)
-    declared_actual_risk_amount: Mapped[str | None] = mapped_column(String, nullable=True)
-    post_review_note: Mapped[str | None] = mapped_column(Text, nullable=True)
-    corrective_action: Mapped[str | None] = mapped_column(Text, nullable=True)
-    assessed_position_ids: Mapped[str | None] = mapped_column(Text, nullable=True)
-    assessed_trade_label: Mapped[str | None] = mapped_column(String(160), nullable=True)
-    archived_at: Mapped[str] = mapped_column(String(64), nullable=False)
 
 
 class FrameworkRuleSettings(Base):
@@ -792,35 +752,6 @@ class PostTradeAssessmentView:
     superseded_reason: str | None
     created_at: str
     updated_at: str
-    version: int
-
-
-class PostTradeAssessmentConflictError(ValueError):
-    """The assessment changed after an editor loaded its draft."""
-
-
-@dataclass(frozen=True)
-class PostTradeAssessmentRevisionView:
-    version: int
-    method: str
-    rubric_version: str
-    risk_policy_id: int | None
-    risk_evidence_source: str | None
-    risk_policy_state: str | None
-    strategy_profile_id: int | None
-    strategy_snapshot: "StrategyEvidenceSnapshot | None"
-    setup_snapshot: str | None
-    session_snapshot: str | None
-    regime_snapshot: str | None
-    criterion_grades: dict[str, str]
-    violation_codes: tuple[str, ...]
-    hard_rule_codes: tuple[str, ...]
-    declared_actual_risk_amount: str | None
-    post_review_note: str | None
-    corrective_action: str | None
-    assessed_position_ids: tuple[str, ...]
-    assessed_trade_label: str | None
-    archived_at: str
 
 
 @dataclass(frozen=True)
@@ -975,20 +906,6 @@ class SQLiteJournalRepository:
             ):
                 if column_name not in assessment_columns:
                     connection.exec_driver_sql(f"ALTER TABLE post_trade_assessments ADD COLUMN {column_name} {column_type}")
-            revision_columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(post_trade_assessment_revisions)")}
-            if revision_columns and "rubric_version" not in revision_columns:
-                connection.exec_driver_sql(
-                    "ALTER TABLE post_trade_assessment_revisions ADD COLUMN rubric_version VARCHAR(24) NOT NULL DEFAULT 'legacy_v1'"
-                )
-            for column_name, column_type in (
-                ("setup_snapshot", "VARCHAR(100)"),
-                ("session_snapshot", "VARCHAR(80)"),
-                ("regime_snapshot", "VARCHAR(80)"),
-                ("assessed_position_ids", "TEXT"),
-                ("assessed_trade_label", "VARCHAR(160)"),
-            ):
-                if column_name not in revision_columns:
-                    connection.exec_driver_sql(f"ALTER TABLE post_trade_assessment_revisions ADD COLUMN {column_name} {column_type}")
             focus_columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(framework_focuses)")}
             if focus_columns and "rubric_version" not in focus_columns:
                 connection.exec_driver_sql(
@@ -1008,6 +925,7 @@ class SQLiteJournalRepository:
                     "ALTER TABLE framework_period_reviews ADD COLUMN rubric_version VARCHAR(24) NOT NULL DEFAULT 'legacy_v1'"
                 )
             self._migrate_v1_framework_data(connection)
+            self._migrate_reviews_to_latest_only(connection)
             risk_policy_columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(account_risk_policies)")}
             if "pretrade_balance_auto_evidence_enabled" in risk_policy_columns:
                 connection.exec_driver_sql(
@@ -1143,10 +1061,42 @@ class SQLiteJournalRepository:
         return backup_path
 
     @staticmethod
+    def _migrate_reviews_to_latest_only(connection) -> None:  # type: ignore[no-untyped-def]
+        """Discard correction history and remove the obsolete assessment version column."""
+
+        connection.exec_driver_sql("DROP TRIGGER IF EXISTS enforce_zone_v2_revision_insert")
+        connection.exec_driver_sql("DROP TRIGGER IF EXISTS enforce_zone_v2_revision_update")
+        connection.exec_driver_sql("DROP TABLE IF EXISTS post_trade_assessment_revisions")
+        columns = {
+            row[1]
+            for row in connection.exec_driver_sql("PRAGMA table_info(post_trade_assessments)")
+        }
+        if "version" not in columns:
+            return
+        for index_name in (
+            "uq_active_post_trade_assessment_logical_trade",
+            "ix_active_assessments_account",
+            "ix_assessments_logical_history",
+            "ix_assessments_account_history",
+        ):
+            connection.exec_driver_sql(f"DROP INDEX IF EXISTS {index_name}")
+        connection.exec_driver_sql(
+            "ALTER TABLE post_trade_assessments RENAME TO post_trade_assessments_versioned"
+        )
+        PostTradeAssessment.__table__.create(connection)
+        column_names = [column.name for column in PostTradeAssessment.__table__.columns]
+        columns_sql = ", ".join(column_names)
+        connection.exec_driver_sql(
+            f"INSERT INTO post_trade_assessments ({columns_sql}) "
+            f"SELECT {columns_sql} FROM post_trade_assessments_versioned"
+        )
+        connection.exec_driver_sql("DROP TABLE post_trade_assessments_versioned")
+
+    @staticmethod
     def _migrate_v1_framework_data(connection) -> None:  # type: ignore[no-untyped-def]
         """Convert saved trade reviews to v2 and discard incompatible aggregates."""
 
-        for table_name in ("post_trade_assessments", "post_trade_assessment_revisions"):
+        for table_name in ("post_trade_assessments",):
             rows = connection.exec_driver_sql(
                 f"SELECT id, criterion_grades FROM {table_name} WHERE rubric_version = ?",
                 (_REMOVED_RUBRIC_VERSION,),
@@ -1314,14 +1264,6 @@ class SQLiteJournalRepository:
             "CREATE TRIGGER enforce_zone_v2_assessment_update BEFORE UPDATE OF rubric_version, criterion_grades, violation_codes, hard_rule_codes, assessed_position_ids ON post_trade_assessments "
             "WHEN NEW.rubric_version != 'zone_v2' OR NOT json_valid(NEW.criterion_grades) OR NOT json_valid(NEW.violation_codes) OR NOT json_valid(NEW.hard_rule_codes) OR NOT json_valid(NEW.assessed_position_ids) "
             "BEGIN SELECT RAISE(ABORT, 'Only valid zone_v2 assessments are supported'); END",
-            "DROP TRIGGER IF EXISTS enforce_zone_v2_revision_insert",
-            "CREATE TRIGGER enforce_zone_v2_revision_insert BEFORE INSERT ON post_trade_assessment_revisions "
-            "WHEN NEW.rubric_version != 'zone_v2' OR NOT json_valid(NEW.criterion_grades) OR NOT json_valid(NEW.violation_codes) OR NOT json_valid(NEW.hard_rule_codes) "
-            "BEGIN SELECT RAISE(ABORT, 'Only valid zone_v2 assessment revisions are supported'); END",
-            "DROP TRIGGER IF EXISTS enforce_zone_v2_revision_update",
-            "CREATE TRIGGER enforce_zone_v2_revision_update BEFORE UPDATE OF rubric_version, criterion_grades, violation_codes, hard_rule_codes ON post_trade_assessment_revisions "
-            "WHEN NEW.rubric_version != 'zone_v2' OR NOT json_valid(NEW.criterion_grades) OR NOT json_valid(NEW.violation_codes) OR NOT json_valid(NEW.hard_rule_codes) "
-            "BEGIN SELECT RAISE(ABORT, 'Only valid zone_v2 assessment revisions are supported'); END",
             "DROP TRIGGER IF EXISTS enforce_zone_v2_period_insert",
             "CREATE TRIGGER enforce_zone_v2_period_insert BEFORE INSERT ON framework_period_reviews "
             "WHEN NEW.rubric_version != 'zone_v2' OR NOT json_valid(NEW.alert_codes) OR NOT json_valid(NEW.recurring_issues) "
@@ -1363,7 +1305,6 @@ class SQLiteJournalRepository:
                 "superseded_at",
                 "superseded_reason",
             },
-            "post_trade_assessment_revisions": {"method", "criterion_grades", "violation_codes", "hard_rule_codes"},
             "live_positions": {"mt5_account_id", "mt5_position_id"},
             "live_position_snapshots": {"mt5_account_id", "snapshot_time"},
             "live_position_incidents": {"mt5_account_id"},
@@ -2566,51 +2507,55 @@ class SQLiteJournalRepository:
             trade = session.get(LogicalTrade, trade_id)
             if trade is None or trade.mt5_account_id != account_id:
                 raise ValueError("Logical trade was not found for this account")
+            assessed_position_ids, assessed_trade_label = self._assessment_trade_snapshot(session, trade)
+            current_values = {
+                "method": "auto",
+                "rubric_version": CURRENT_RUBRIC_VERSION,
+                "risk_policy_id": risk_policy_id,
+                "risk_evidence_source": risk_evidence_source,
+                "risk_policy_state": risk_policy_state,
+                "strategy_profile_id": None,
+                "strategy_snapshot": None,
+                "setup_snapshot": None,
+                "session_snapshot": None,
+                "regime_snapshot": None,
+                "criterion_grades": json.dumps(grades, sort_keys=True),
+                "violation_codes": "[]",
+                "hard_rule_codes": "[]",
+                "declared_actual_risk_amount": actual_risk_amount,
+                "post_review_note": None,
+                "corrective_action": None,
+                "updated_at": now,
+            }
+            statement = sqlite_insert(PostTradeAssessment).values(
+                mt5_account_id=account_id,
+                logical_trade_id=trade_id,
+                assessed_position_ids=assessed_position_ids,
+                assessed_trade_label=assessed_trade_label,
+                superseded_at=None,
+                superseded_reason=None,
+                created_at=now,
+                **current_values,
+            )
+            session.execute(
+                statement.on_conflict_do_update(
+                    index_elements=[PostTradeAssessment.logical_trade_id],
+                    index_where=PostTradeAssessment.superseded_at.is_(None),
+                    set_=current_values,
+                    where=PostTradeAssessment.method == "auto",
+                )
+            )
+            session.expire_all()
             row = session.scalar(
                 select(PostTradeAssessment).where(
                     PostTradeAssessment.logical_trade_id == trade_id,
                     PostTradeAssessment.superseded_at.is_(None),
                 )
             )
-            if row is not None and row.method == "manual":
+            assert row is not None
+            if row.method == "manual":
                 raise ValueError("This trade already has a full assessment")
-            if row is None:
-                assessed_position_ids, assessed_trade_label = self._assessment_trade_snapshot(session, trade)
-                row = PostTradeAssessment(
-                    mt5_account_id=account_id,
-                    logical_trade_id=trade_id,
-                    method="auto",
-                    rubric_version=CURRENT_RUBRIC_VERSION,
-                    risk_policy_id=risk_policy_id,
-                    risk_evidence_source=risk_evidence_source,
-                    risk_policy_state=risk_policy_state,
-                    declared_actual_risk_amount=actual_risk_amount,
-                    criterion_grades=json.dumps(grades, sort_keys=True),
-                    assessed_position_ids=assessed_position_ids,
-                    assessed_trade_label=assessed_trade_label,
-                    superseded_at=None,
-                    superseded_reason=None,
-                    created_at=now,
-                    updated_at=now,
-                    version=1,
-                )
-                session.add(row)
-                session.flush()
             return self._to_post_trade_assessment_view(row)
-
-    def list_post_trade_assessment_revisions(self, trade_id: int) -> list[PostTradeAssessmentRevisionView]:
-        """Return the immutable prior versions of a review, newest first."""
-        with self._sessions() as session:
-            rows = session.scalars(
-                select(PostTradeAssessmentRevision)
-                .join(PostTradeAssessment)
-                .where(
-                    PostTradeAssessment.logical_trade_id == trade_id,
-                    PostTradeAssessment.superseded_at.is_(None),
-                )
-                .order_by(PostTradeAssessmentRevision.version.desc())
-            ).all()
-            return [self._to_post_trade_assessment_revision_view(row) for row in rows]
 
     def list_superseded_post_trade_assessments_for_trade(
         self,
@@ -2684,10 +2629,9 @@ class SQLiteJournalRepository:
         declared_actual_risk_amount: str | None,
         post_review_note: str,
         corrective_action: str | None,
-        expected_version: int | None = None,
         review_context: ReviewContextSelection | None = None,
     ) -> PostTradeAssessmentView:
-        """Create or correct the review for one already-imported logical trade."""
+        """Create or overwrite the trade's single current review."""
         normalized_grades = self._normalize_criterion_grades(criterion_grades, CURRENT_RUBRIC_VERSION)
         normalized_violations = self._normalize_codes(violation_codes, VIOLATION_CODES, "violation")
         normalized_hard_rules = self._normalize_codes(hard_rule_codes, HARD_RULE_CODES, "hard-rule")
@@ -2756,125 +2700,51 @@ class SQLiteJournalRepository:
             disabled_hard_rules = set(normalized_hard_rules) - enabled_hard_rules - existing_hard_rules
             if disabled_hard_rules:
                 raise ValueError("Enable a hard-rule event in Settings → Review rules before recording it on a new assessment")
-            if row is not None and all(
-                (
-                    row.method == "manual",
-                    row.rubric_version == CURRENT_RUBRIC_VERSION,
-                    row.risk_policy_id == risk_policy_id,
-                    row.risk_evidence_source is None,
-                    row.risk_policy_state is None,
-                    row.strategy_profile_id == strategy_profile_id,
-                    row.strategy_snapshot == strategy_snapshot,
-                    row.setup_snapshot == setup_snapshot,
-                    row.session_snapshot == session_snapshot,
-                    row.regime_snapshot == regime_snapshot,
-                    row.criterion_grades == grades_json,
-                    row.violation_codes == violations_json,
-                    row.hard_rule_codes == hard_rules_json,
-                    row.declared_actual_risk_amount == actual_risk,
-                    row.post_review_note == review_note,
-                    row.corrective_action == normalized_action,
+            assessed_position_ids, assessed_trade_label = self._assessment_trade_snapshot(session, trade)
+            current_values = {
+                "method": "manual",
+                "rubric_version": CURRENT_RUBRIC_VERSION,
+                "risk_evidence_source": None,
+                "risk_policy_state": None,
+                "risk_policy_id": risk_policy_id,
+                "strategy_profile_id": strategy_profile_id,
+                "strategy_snapshot": strategy_snapshot,
+                "setup_snapshot": setup_snapshot,
+                "session_snapshot": session_snapshot,
+                "regime_snapshot": regime_snapshot,
+                "criterion_grades": grades_json,
+                "violation_codes": violations_json,
+                "hard_rule_codes": hard_rules_json,
+                "declared_actual_risk_amount": actual_risk,
+                "post_review_note": review_note,
+                "corrective_action": normalized_action,
+                "updated_at": now,
+            }
+            statement = sqlite_insert(PostTradeAssessment).values(
+                mt5_account_id=account_id,
+                logical_trade_id=trade_id,
+                assessed_position_ids=assessed_position_ids,
+                assessed_trade_label=assessed_trade_label,
+                superseded_at=None,
+                superseded_reason=None,
+                created_at=now,
+                **current_values,
+            )
+            session.execute(
+                statement.on_conflict_do_update(
+                    index_elements=[PostTradeAssessment.logical_trade_id],
+                    index_where=PostTradeAssessment.superseded_at.is_(None),
+                    set_=current_values,
                 )
-            ):
-                return self._to_post_trade_assessment_view(row)
-            if expected_version is not None and (
-                (row is None and expected_version != 0)
-                or (row is not None and row.version != expected_version)
-            ):
-                raise PostTradeAssessmentConflictError("This assessment changed in another session")
-            if row is None:
-                assessed_position_ids, assessed_trade_label = self._assessment_trade_snapshot(session, trade)
-                row = PostTradeAssessment(
-                    mt5_account_id=account_id,
-                    logical_trade_id=trade_id,
-                    method="manual",
-                    rubric_version=CURRENT_RUBRIC_VERSION,
-                    risk_policy_id=risk_policy_id,
-                    strategy_profile_id=strategy_profile_id,
-                    strategy_snapshot=strategy_snapshot,
-                    setup_snapshot=setup_snapshot,
-                    session_snapshot=session_snapshot,
-                    regime_snapshot=regime_snapshot,
-                    criterion_grades=grades_json,
-                    violation_codes=violations_json,
-                    hard_rule_codes=hard_rules_json,
-                    declared_actual_risk_amount=actual_risk,
-                    post_review_note=review_note,
-                    corrective_action=normalized_action,
-                    assessed_position_ids=assessed_position_ids,
-                    assessed_trade_label=assessed_trade_label,
-                    superseded_at=None,
-                    superseded_reason=None,
-                    created_at=now,
-                    updated_at=now,
-                    version=1,
+            )
+            session.expire_all()
+            row = session.scalar(
+                select(PostTradeAssessment).where(
+                    PostTradeAssessment.logical_trade_id == trade_id,
+                    PostTradeAssessment.superseded_at.is_(None),
                 )
-                session.add(row)
-            else:
-                # A prior "auto" row is upgraded in place rather than superseded-and-recreated,
-                # so its automatic-evidence snapshot is preserved in revision history too.
-                revision = PostTradeAssessmentRevision(
-                    post_trade_assessment_id=row.id,
-                    version=row.version,
-                    method=row.method,
-                    rubric_version=row.rubric_version,
-                    risk_policy_id=row.risk_policy_id,
-                    risk_evidence_source=row.risk_evidence_source,
-                    risk_policy_state=row.risk_policy_state,
-                    strategy_profile_id=row.strategy_profile_id,
-                    strategy_snapshot=row.strategy_snapshot,
-                    setup_snapshot=row.setup_snapshot,
-                    session_snapshot=row.session_snapshot,
-                    regime_snapshot=row.regime_snapshot,
-                    criterion_grades=row.criterion_grades,
-                    violation_codes=row.violation_codes,
-                    hard_rule_codes=row.hard_rule_codes,
-                    declared_actual_risk_amount=row.declared_actual_risk_amount,
-                    post_review_note=row.post_review_note,
-                    corrective_action=row.corrective_action,
-                    assessed_position_ids=row.assessed_position_ids,
-                    assessed_trade_label=row.assessed_trade_label,
-                    archived_at=now,
-                )
-                write_result = session.execute(
-                    update(PostTradeAssessment)
-                    .where(
-                        PostTradeAssessment.id == row.id,
-                        PostTradeAssessment.version == row.version,
-                        PostTradeAssessment.superseded_at.is_(None),
-                    )
-                    .values(
-                        method="manual",
-                        rubric_version=CURRENT_RUBRIC_VERSION,
-                        risk_evidence_source=None,
-                        risk_policy_state=None,
-                        risk_policy_id=risk_policy_id,
-                        strategy_profile_id=strategy_profile_id,
-                        strategy_snapshot=strategy_snapshot,
-                        setup_snapshot=setup_snapshot,
-                        session_snapshot=session_snapshot,
-                        regime_snapshot=regime_snapshot,
-                        criterion_grades=grades_json,
-                        violation_codes=violations_json,
-                        hard_rule_codes=hard_rules_json,
-                        declared_actual_risk_amount=actual_risk,
-                        post_review_note=review_note,
-                        corrective_action=normalized_action,
-                        updated_at=now,
-                        version=row.version + 1,
-                    )
-                    .execution_options(synchronize_session=False)
-                )
-                if write_result.rowcount != 1:
-                    raise PostTradeAssessmentConflictError("This assessment changed in another session")
-                session.add(revision)
-                session.expire(row)
-            try:
-                session.flush()
-            except IntegrityError as error:
-                if expected_version == 0 and "post_trade_assessments.logical_trade_id" in str(error.orig):
-                    raise PostTradeAssessmentConflictError("This assessment changed in another session") from error
-                raise
+            )
+            assert row is not None
             return self._to_post_trade_assessment_view(row)
 
     @staticmethod
@@ -3664,32 +3534,6 @@ class SQLiteJournalRepository:
             superseded_reason=row.superseded_reason,
             created_at=row.created_at,
             updated_at=row.updated_at,
-            version=row.version,
-        )
-
-    @staticmethod
-    def _to_post_trade_assessment_revision_view(row: PostTradeAssessmentRevision) -> PostTradeAssessmentRevisionView:
-        return PostTradeAssessmentRevisionView(
-            version=row.version,
-            method=row.method,
-            rubric_version=row.rubric_version,
-            risk_policy_id=row.risk_policy_id,
-            risk_evidence_source=row.risk_evidence_source,
-            risk_policy_state=row.risk_policy_state,
-            strategy_profile_id=row.strategy_profile_id,
-            strategy_snapshot=None if row.strategy_snapshot is None else SQLiteJournalRepository._strategy_snapshot_from_json(row.strategy_snapshot),
-            setup_snapshot=row.setup_snapshot,
-            session_snapshot=row.session_snapshot,
-            regime_snapshot=row.regime_snapshot,
-            criterion_grades=dict(json.loads(row.criterion_grades)),
-            violation_codes=tuple(json.loads(row.violation_codes)),
-            hard_rule_codes=tuple(json.loads(row.hard_rule_codes)),
-            declared_actual_risk_amount=row.declared_actual_risk_amount,
-            post_review_note=row.post_review_note,
-            corrective_action=row.corrective_action,
-            assessed_position_ids=() if row.assessed_position_ids is None else tuple(json.loads(row.assessed_position_ids)),
-            assessed_trade_label=row.assessed_trade_label,
-            archived_at=row.archived_at,
         )
 
     @staticmethod
