@@ -610,6 +610,7 @@ def test_ongoing_page_groups_concurrent_positions_into_a_live_logical_trade(monk
     assert groups[0].display_label == "London scale-in"
     assert groups[0].position_ids == ("9001", "9002")
     assert any("London scale-in" in item.value for item in app.markdown)
+    assert any("2 pos" in item.value for item in app.markdown)
 
     next(item for item in app.button if item.label == "Manage").click().run()
     next(item for item in app.multiselect if item.label == "Open positions").set_value(["9001"]).run()

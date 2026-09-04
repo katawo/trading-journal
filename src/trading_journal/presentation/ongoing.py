@@ -493,10 +493,18 @@ def _render_positions(repo: SQLiteJournalRepository, report, account: AccountLis
                         }
                         st.rerun()
                 with st.container(horizontal=True, vertical_alignment="center", gap="small"):
+                    position_count = len(item.members)
+                    position_label = tr("1 pos") if position_count == 1 else tr("{count} pos", count=position_count)
                     st.badge(item.direction.title(), color="blue")
                     st.badge(
-                        tr("{open}/{total} open", open=item.open_count, total=len(item.members)),
-                        color="green" if item.open_count == len(item.members) else "orange",
+                        position_label,
+                        color="blue" if position_count > 1 else "gray",
+                        icon=":material/layers:" if position_count > 1 else None,
+                        help=", ".join(f"#{member.position_id}" for member in item.members),
+                    )
+                    st.badge(
+                        tr("{open}/{total} open", open=item.open_count, total=position_count),
+                        color="green" if item.open_count == position_count else "orange",
                     )
                     st.badge(
                         _logical_trade_risk_label(item),
@@ -509,7 +517,7 @@ def _render_positions(repo: SQLiteJournalRepository, report, account: AccountLis
                 awaiting = sum(member.state == "awaiting_import" for member in item.members)
                 if awaiting:
                     st.caption(tr("{count} closed position(s) are awaiting completed-history import.", count=awaiting))
-                with st.expander(tr("Position details ({count})", count=len(item.members))):
+                with st.expander(tr("Position details ({count})", count=position_count)):
                     st.dataframe(
                         pd.DataFrame([_logical_trade_member_row(member, account) for member in item.members]),
                         hide_index=True,
