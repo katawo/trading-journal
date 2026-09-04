@@ -348,6 +348,15 @@ def _reporting_time(repo: SQLiteJournalRepository, value: str, server_utc_offset
     return reporting_datetime(value, server_utc_offset_minutes, basis).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _compact_execution_window(entry: str, exit_: str, duration: str) -> str:
+    """Keep a logical trade's time range legible inside a narrow summary card."""
+    entry_date, entry_time = entry.split(" ", 1)
+    exit_date, exit_time = exit_.split(" ", 1)
+    if entry_date == exit_date:
+        return f"{entry_date} · {entry_time[:5]} → {exit_time[:5]} · {duration}"
+    return f"{entry_date} {entry_time[:5]} → {exit_date} {exit_time[:5]} · {duration}"
+
+
 def _format_trade_duration(entry_time: str, exit_time: str) -> str:
     """Format an imported trade's elapsed time without changing its stored timestamps."""
     entry = datetime.fromisoformat(entry_time.replace("Z", "+00:00"))
@@ -682,6 +691,52 @@ def _clear_group_dialog() -> None:
     st.session_state.pop("logical-trade-regroup-confirmation", None)
 
 
+_DISBAND_REVIEW_RETURN_KEY = "logical-trade-disband-review-return"
+
+
+def _snapshot_review_before_disband(account_id: int, trade_id: int, queue: Sequence[int]) -> None:
+    prefix = f"assessment-{trade_id}-"
+    st.session_state[_DISBAND_REVIEW_RETURN_KEY] = {
+        "account_id": account_id,
+        "trade_id": trade_id,
+        "queue": tuple(queue),
+        "draft": {
+            key: st.session_state[key]
+            for key in tuple(st.session_state)
+            if key.startswith(prefix)
+        },
+    }
+
+
+def _restore_review_after_disband_cancel() -> None:
+    saved = st.session_state.pop(_DISBAND_REVIEW_RETURN_KEY, None)
+    _clear_group_dialog()
+    if not isinstance(saved, dict):
+        return
+    st.session_state["post-trade-review-trade-id"] = saved["trade_id"]
+    st.session_state["post-trade-review-queue"] = tuple(saved.get("queue", ()))
+    for key, value in saved.get("draft", {}).items():
+        st.session_state[key] = value
+
+
+def _finish_review_after_disband() -> None:
+    saved = st.session_state.pop(_DISBAND_REVIEW_RETURN_KEY, None)
+    if not isinstance(saved, dict):
+        return
+    trade_id = saved["trade_id"]
+    _clear_assessment_draft(trade_id)
+    selected, remaining = _advance_review_queue(tuple(saved.get("queue", ())))
+    st.session_state["post-trade-review-trade-id"] = selected
+    st.session_state["post-trade-review-queue"] = remaining
+
+
+def _dismiss_group_dialog() -> None:
+    if st.session_state.get(_DISBAND_REVIEW_RETURN_KEY) is not None:
+        _restore_review_after_disband_cancel()
+    else:
+        _clear_group_dialog()
+
+
 def _bulk_quick_review_key(account_id: int) -> str:
     return f"bulk-quick-review-confirmation-{account_id}"
 
@@ -855,37 +910,74 @@ def _begin_logical_trade_disband(repo: SQLiteJournalRepository, account: Account
     st.rerun()
 
 
-def _render_imported_execution(repo: SQLiteJournalRepository, account: AccountListItem, trade, score: TradeProcessScore) -> None:  # type: ignore[no-untyped-def]
+def _render_imported_execution(repo: SQLiteJournalRepository, account: AccountListItem, trade, score: TradeProcessScore) -> bool:  # type: ignore[no-untyped-def]
     direction = direction_tag(trade.direction)
     outcome = outcome_tag(trade.net_pnl)
-    with st.container(horizontal=True, gap="small"):
-        st.badge(tr(direction.label), color=direction.color, icon=direction.icon)
-        st.badge(tr(outcome.label), color=outcome.color, icon=outcome.icon)
-    with st.container(horizontal=True, gap="small"):
-        st.metric("Symbol", trade.symbol, border=True)
-        st.metric("Positions", str(trade.position_count), border=True)
-        st.metric(f"P&L ({account.account_currency})", format_currency(trade.net_pnl, account.account_currency), border=True)
-        st.metric("Trade score", _score_text(score.overall_score), border=True)
-        st.metric("Risk evidence", _auto_risk_label(score), border=True)
-    st.caption(tr("{trade} · Entry {entry} · Exit {exit}. MT5 execution data is read-only.", trade=trade.display_label, entry=_reporting_time(repo, trade.entry_time, trade.server_utc_offset_minutes), exit=_reporting_time(repo, trade.exit_time, trade.server_utc_offset_minutes)))
-    st.caption(tr(_risk_evidence_detail(score)))
-    if trade.is_group:
-        with st.expander(tr("Member positions ({count})", count=trade.position_count)):
-            st.dataframe(
-                pd.DataFrame(
+    risk_source, separator, risk_state = _auto_risk_label(score).partition(" · ")
+    risk_color = {
+        "within_policy": "green",
+        "over_policy": "red",
+        "unavailable": "gray",
+    }.get(score.risk_policy_state, "gray")
+    summary_column, positions_column = (
+        st.columns([0.9, 1.6], gap="small", vertical_alignment="top")
+        if trade.is_group
+        else (st.container(), None)
+    )
+    disband_requested = False
+    with summary_column:
+        with st.container(border=True):
+            st.markdown(f"**{trade.symbol}**")
+            with st.container(horizontal=True, vertical_alignment="center", gap="small"):
+                st.badge(tr(direction.label), color=direction.color, icon=direction.icon)
+                st.badge(format_currency(trade.net_pnl, account.account_currency), color=outcome.color)
+                if score.overall_score is not None:
+                    st.badge(
+                        f"{tr('Trade score')}: {_score_text(score.overall_score)}",
+                        color=_SCORE_BADGE_COLOR.get(score.quality_status, "gray"),
+                    )
+                st.badge(risk_state if separator else risk_source, color=risk_color)
+            if separator:
+                st.caption(f"{tr('Risk evidence')} · {risk_source}")
+            entry_time = _reporting_time(repo, trade.entry_time, trade.server_utc_offset_minutes)
+            exit_time = _reporting_time(repo, trade.exit_time, trade.server_utc_offset_minutes)
+            st.caption(
+                _compact_execution_window(
+                    entry_time,
+                    exit_time,
+                    _format_trade_duration(trade.entry_time, trade.exit_time),
+                )
+            )
+            risk_detail = _risk_evidence_detail(score)
+            if risk_detail != "No usable automatic risk source is available.":
+                st.caption(tr(risk_detail))
+    if positions_column is not None:
+        with positions_column:
+            with st.container(border=True):
+                with st.container(horizontal=True, vertical_alignment="center", gap="small"):
+                    st.markdown(f"**{tr('Member positions ({count})', count=trade.position_count)}**")
+                    disband_requested = st.form_submit_button(
+                        tr("Disband"),
+                        icon=":material/group_off:",
+                    )
+                pnl_column = f"P&L ({account.account_currency})"
+                member_frame = pd.DataFrame(
                     [
                         {
                             tr("Position"): f"#{member.position_id or '—'}",
                             tr("Opened"): _reporting_time(repo, member.entry_time, member.server_utc_offset_minutes),
                             tr("Closed"): _reporting_time(repo, member.exit_time, member.server_utc_offset_minutes),
-                            f"P&L ({account.account_currency})": format_currency(member.net_pnl, account.account_currency),
+                            pnl_column: format_currency(member.net_pnl, account.account_currency),
                         }
                         for member in trade.members
                     ]
-                ),
-                hide_index=True,
-                width="stretch",
-            )
+                )
+                st.dataframe(
+                    member_frame.style.map(_pnl_cell_style, subset=[pnl_column]),
+                    hide_index=True,
+                    width="stretch",
+                )
+    return disband_requested
 
 
 def _grade_control(label: str, *, key: str, help_text: str | None = None) -> str | None:
@@ -954,24 +1046,6 @@ def _render_post_trade_review_dialog(repo: SQLiteJournalRepository, account: Acc
     # only its evidence-backed policy_adherence value is reused, further below.
     existing_manual = existing if existing is not None and existing.method == "manual" else None
     queue = tuple(st.session_state.get("post-trade-review-queue", ()))
-    st.caption(tr("Correct {trade}" if existing_manual else "Review {trade}", trade=trade.display_label))
-    _render_imported_execution(repo, account, trade, score)
-    if monitoring_detail := _automatic_risk_monitoring_detail(score):
-        st.warning(
-            f"{monitoring_detail} Select ‘Traded after hard shutdown’ only when your review confirms it breached your rule.",
-            icon=":material/warning:",
-        )
-    if failure_detail := _process_failure_detail(score):
-        st.error(
-            f"{failure_detail}. This hard block overrides the numeric pillar scores and classifies a profitable trade as a Bad Win.",
-            icon=":material/error:",
-        )
-    if st.button("Manage positions", key=f"manage-logical-trade-{trade.id}", icon=":material/group_work:"):
-        _clear_review_dialog()
-        st.session_state["logical-trade-group-editor"] = {"account_id": account.id, "logical_trade_id": trade.id}
-        st.rerun()
-    if existing is not None:
-        st.caption("Changing member positions supersedes this assessment and requires a new review. Changing only the label keeps it active.")
     strategy = repo.get_account_strategy(account.id)
     policy = repo.get_active_risk_policy(account.id)
     rule_settings = repo.get_framework_rule_settings(account.id)
@@ -989,9 +1063,6 @@ def _render_post_trade_review_dialog(repo: SQLiteJournalRepository, account: Acc
     available_hard_rules = [
         code for code in HARD_RULE_LABELS if code in enabled_hard_rules or code in existing_hard_rules
     ]
-    st.markdown(tr("##### Assessment"))
-    st.caption(f"Trading system: **{strategy.name}** (bound to this account)")
-    st.caption("\\* Required")
     active_setups = repo.list_strategy_setups(strategy.id)
     active_sessions = repo.list_review_context_tags("session")
     active_regimes = repo.list_review_context_tags("regime")
@@ -1035,13 +1106,27 @@ def _render_post_trade_review_dialog(repo: SQLiteJournalRepository, account: Acc
         ("Risk management", RISK_CRITERIA),
         ("Trading system", SYSTEM_CRITERIA),
     )
-    st.caption(tr("Change any Partial or Fail exceptions, then save once."))
     with st.form(
         f"assessment-{trade.id}-form",
         clear_on_submit=False,
         enter_to_submit=False,
         border=False,
     ):
+        disband_requested = _render_imported_execution(repo, account, trade, score)
+        if monitoring_detail := _automatic_risk_monitoring_detail(score):
+            st.warning(
+                f"{monitoring_detail} Select ‘Traded after hard shutdown’ only when your review confirms it breached your rule.",
+                icon=":material/warning:",
+            )
+        if failure_detail := _process_failure_detail(score):
+            st.error(
+                f"{failure_detail}. This hard block overrides the numeric pillar scores and classifies a profitable trade as a Bad Win.",
+                icon=":material/error:",
+            )
+        st.markdown(tr("##### Assessment"))
+        st.caption(f"Trading system: **{strategy.name}** (bound to this account)")
+        st.caption("\\* Required")
+        st.caption(tr("Change any Partial or Fail exceptions, then save once."))
         context_left, context_middle, context_right = st.columns(3)
         selected_setup = context_left.selectbox(
             "Setup (optional)", setup_options, format_func=_review_context_option_label,
@@ -1133,6 +1218,10 @@ def _render_post_trade_review_dialog(repo: SQLiteJournalRepository, account: Acc
                 if queue
                 else False
             )
+    if disband_requested:
+        _snapshot_review_before_disband(account.id, trade.id, queue)
+        _begin_logical_trade_disband(repo, account, trade.id)
+        return
     if not (submitted or submit_and_next):
         _render_review_history(repo, account.id, trade)
         return
@@ -1193,133 +1282,88 @@ def _render_review_history(repo: SQLiteJournalRepository, account_id: int, trade
                 st.write(assessment.post_review_note)
 
 
-def _render_logical_trade_group_dialog(
+def _pnl_cell_style(value: object) -> str:
+    formatted = str(value)
+    if formatted.startswith("+"):
+        return "color: #0e9163; font-weight: 600"
+    if formatted.startswith(("−", "-")):
+        return "color: #c73545; font-weight: 600"
+    return ""
+
+
+def _render_logical_trade_merge_dialog(
     repo: SQLiteJournalRepository,
     account: AccountListItem,
-    existing_group=None,
-    selected_position_trade_ids: tuple[int, ...] = (),
     selected_logical_trade_ids: tuple[int, ...] = (),
 ) -> None:  # type: ignore[no-untyped-def]
-    """Create or regroup a logical trade; imported MT5 positions stay immutable."""
-    existing_members = () if existing_group is None else existing_group.members
-    positions = repo.list_imported_positions_for_grouping(account.id)
+    """Combine selected logical trades; imported MT5 positions stay immutable."""
     units = repo.list_closed_trades_for_review(account.id)
     unit_by_id = {unit.id: unit for unit in units}
-    unit_by_position_id = {
-        member.id: unit
-        for unit in units
-        for member in unit.members
-    }
-    labels = {
-        position.id: (
-            f"#{position.position_id or '—'} · {position.symbol} {position.direction} · "
-            f"{format_currency(position.net_pnl, account.account_currency)} · "
-            f"{unit_by_position_id[position.id].display_label if unit_by_position_id[position.id].is_group else 'Standalone'}"
-        )
-        for position in positions
-    }
-    editor_id = None if existing_group is None else existing_group.id
     selected_logical_trade_ids = tuple(
         logical_trade_id for logical_trade_id in selected_logical_trade_ids if logical_trade_id in unit_by_id
     )
-    if existing_group is None and selected_logical_trade_ids:
-        selected_position_trade_ids = tuple(
-            member.id
-            for logical_trade_id in selected_logical_trade_ids
-            for member in unit_by_id[logical_trade_id].members
-        )
-    else:
-        selected_position_trade_ids = tuple(
-            position_id for position_id in selected_position_trade_ids if position_id in labels
-        )
-    confirmation = st.session_state.get("logical-trade-regroup-confirmation")
-    if confirmation is not None and confirmation.get("account_id") != account.id:
-        _clear_group_dialog()
-        st.rerun()
-    if confirmation is not None:
-        _render_logical_trade_regroup_confirmation(repo, account, confirmation)
-        return
-    is_selection_create = existing_group is None and len(selected_logical_trade_ids) >= 2
-    if existing_group is None and selected_position_trade_ids and not is_selection_create:
+    if len(selected_logical_trade_ids) < 2:
         st.warning(tr("At least two selected logical trades are required. Return to the register and select the trades again."))
         return
-    st.caption(
-        "The selected logical trades will be combined into a new logical trade. Each selected trade moves with all of its positions."
-        if is_selection_create
-        else "Every imported position starts as one logical trade. Select the current members for this logical trade; "
-        "selected positions may be moved from another group. Members must share account, symbol, direction, and imported Risk-policy version."
+    selected_position_trade_ids = tuple(
+        member.id
+        for logical_trade_id in selected_logical_trade_ids
+        for member in unit_by_id[logical_trade_id].members
     )
-    if is_selection_create:
-        selected_units = [unit_by_id[logical_trade_id] for logical_trade_id in selected_logical_trade_ids]
-        st.dataframe(
-            pd.DataFrame(
-                [
-                    {
-                        tr("Logical trade"): f"LT-{unit.id}",
-                        tr("Trade"): unit.display_label,
-                        tr("Positions"): unit.position_count,
-                        tr("Position IDs"): ", ".join(f"#{position_id}" for position_id in unit.position_ids),
-                    }
-                    for unit in selected_units
-                ]
-            ),
-            hide_index=True,
-            width="stretch",
-        )
-        st.caption("A new logical-trade ID will be created. Source labels are not carried forward automatically.")
-    with st.form(f"logical-trade-group-{account.id}-{editor_id}"):
+    st.caption("The selected logical trades will be combined into a new logical trade. Each selected trade moves with all of its positions.")
+    selected_units = [unit_by_id[logical_trade_id] for logical_trade_id in selected_logical_trade_ids]
+    pnl_column = tr("P&L")
+    selected_units_frame = pd.DataFrame(
+        [
+            {
+                tr("Logical trade"): f"LT-{unit.id}",
+                tr("Trade"): unit.display_label,
+                tr("Positions"): unit.position_count,
+                pnl_column: format_currency(unit.net_pnl, account.account_currency),
+                tr("Position IDs"): ", ".join(f"#{position_id}" for position_id in unit.position_ids),
+            }
+            for unit in selected_units
+        ]
+    )
+    st.dataframe(
+        selected_units_frame.style.map(_pnl_cell_style, subset=[pnl_column]),
+        hide_index=True,
+        width="stretch",
+    )
+    combined_pnl = sum((Decimal(unit.net_pnl) for unit in selected_units), Decimal("0"))
+    combined_pnl_text = format_currency(combined_pnl, account.account_currency)
+    combined_pnl_color = "green" if combined_pnl > 0 else "red" if combined_pnl < 0 else "gray"
+    st.markdown(f"### {tr('Combined P&L')} · :{combined_pnl_color}[{combined_pnl_text}]")
+    st.caption("A new logical-trade ID will be created. Source labels are not carried forward automatically.")
+    with st.form(f"logical-trade-group-{account.id}"):
         label = st.text_input(
             "Trade label (optional)",
-            value="" if existing_group is None else existing_group.custom_label or "",
             placeholder="e.g. London breakout scale-in",
         )
-        if is_selection_create:
-            selected = list(selected_position_trade_ids)
-        else:
-            selected = st.multiselect(
-                "Positions",
-                options=list(labels),
-                default=[member.id for member in existing_members] if existing_group is not None else [],
-                format_func=labels.get,
-                placeholder="Choose two or more positions",
-            )
         save = st.form_submit_button(
-            "Create new logical trade" if is_selection_create else "Create logical trade" if existing_group is None else "Continue",
+            "Create new logical trade",
             type="primary",
             icon=":material/group_work:",
         )
-        disband = (
-            st.form_submit_button("Disband into individual trades", type="secondary")
-            if existing_group is not None and existing_group.is_group
-            else False
-        )
-    if not save and not disband:
+    if not save:
         return
     try:
-        if disband:
-            preview = repo.preview_logical_trade_disband(
-                account_id=account.id,
-                logical_trade_id=existing_group.id,
-            )
-            mode = "disband"
-        else:
-            preview = repo.preview_logical_trade_regroup(
-                account_id=account.id,
-                position_trade_ids=tuple(selected),
-                logical_trade_id=editor_id,
-                source_logical_trade_ids=selected_logical_trade_ids if is_selection_create else (),
-            )
-            mode = "merge" if is_selection_create else "regroup"
+        preview = repo.preview_logical_trade_regroup(
+            account_id=account.id,
+            position_trade_ids=selected_position_trade_ids,
+            logical_trade_id=None,
+            source_logical_trade_ids=selected_logical_trade_ids,
+        )
     except ValueError as error:
         st.error(str(error))
         return
     st.session_state["logical-trade-regroup-confirmation"] = {
         "account_id": account.id,
-        "logical_trade_id": editor_id,
-        "position_trade_ids": tuple(selected),
-        "source_logical_trade_ids": selected_logical_trade_ids if is_selection_create else (),
+        "logical_trade_id": None,
+        "position_trade_ids": selected_position_trade_ids,
+        "source_logical_trade_ids": selected_logical_trade_ids,
         "display_label": label,
-        "mode": mode,
+        "mode": "merge",
         "affected_assessment_count": preview.affected_assessment_count,
         "affected_assessment_labels": preview.affected_assessment_labels,
     }
@@ -1328,8 +1372,39 @@ def _render_logical_trade_group_dialog(
 
 def _render_logical_trade_regroup_confirmation(repo: SQLiteJournalRepository, account: AccountListItem, confirmation: dict) -> None:  # type: ignore[type-arg]
     count = confirmation["affected_assessment_count"]
-    if confirmation["mode"] == "disband":
-        st.warning(tr("This will split the current logical trade into individual position trades."))
+    is_disband = confirmation["mode"] == "disband"
+    if is_disband:
+        group = next(
+            (
+                trade
+                for trade in repo.list_closed_trades_for_review(account.id)
+                if trade.id == confirmation["logical_trade_id"]
+            ),
+            None,
+        )
+        if group is None:
+            st.error(tr("Logical trade no longer exists."))
+            return
+        st.markdown(
+            f"**{tr('{count} positions will become standalone logical trades.', count=group.position_count)}**"
+        )
+        pnl_column = tr("P&L")
+        position_frame = pd.DataFrame(
+            [
+                {
+                    tr("Position"): f"#{member.position_id or '—'}",
+                    tr("Opened"): _reporting_time(repo, member.entry_time, member.server_utc_offset_minutes),
+                    tr("Closed"): _reporting_time(repo, member.exit_time, member.server_utc_offset_minutes),
+                    pnl_column: format_currency(member.net_pnl, account.account_currency),
+                }
+                for member in group.members
+            ]
+        )
+        st.dataframe(
+            position_frame.style.map(_pnl_cell_style, subset=[pnl_column]),
+            hide_index=True,
+            width="stretch",
+        )
     elif confirmation["mode"] == "merge":
         st.warning(tr("This will merge the selected logical trades into a new logical trade."))
     else:
@@ -1344,7 +1419,11 @@ def _render_logical_trade_regroup_confirmation(repo: SQLiteJournalRepository, ac
         for label in confirmation["affected_assessment_labels"]:
             st.caption(tr("Supersede: {label}", label=label))
     else:
-        st.caption("No active saved assessment is affected. Dashboard reporting will recalculate from the new grouping.")
+        st.caption(
+            tr("No saved assessment will be affected.")
+            if is_disband
+            else "No active saved assessment is affected. Dashboard reporting will recalculate from the new grouping."
+        )
     with st.container(horizontal=True, gap="small"):
         confirm = st.button(
             {
@@ -1354,9 +1433,15 @@ def _render_logical_trade_regroup_confirmation(repo: SQLiteJournalRepository, ac
             type="primary",
             icon=":material/check:",
         )
-        back = st.button("Back", icon=":material/arrow_back:")
-    if back:
-        st.session_state.pop("logical-trade-regroup-confirmation", None)
+        secondary = st.button(
+            tr("Cancel") if is_disband else "Back",
+            icon=":material/close:" if is_disband else ":material/arrow_back:",
+        )
+    if secondary:
+        if is_disband:
+            _restore_review_after_disband_cancel()
+        else:
+            st.session_state.pop("logical-trade-regroup-confirmation", None)
         st.rerun()
     if not confirm:
         return
@@ -1388,7 +1473,9 @@ def _render_logical_trade_regroup_confirmation(repo: SQLiteJournalRepository, ac
         st.error(str(error))
         return
     st.session_state["post-trade-review-notice"] = notice
-    if confirmation["mode"] != "disband" and result.logical_trade_id is not None:
+    if confirmation["mode"] == "disband":
+        _finish_review_after_disband()
+    elif result.logical_trade_id is not None:
         st.session_state["post-trade-review-trade-id"] = result.logical_trade_id
         st.session_state["post-trade-review-queue"] = ()
     queue_toast(tr(notice))
@@ -1498,11 +1585,6 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
     visible_trade_ids = tuple(visible_by_id)
     select_all_key = _logical_trade_select_all_key(account.id)
     st.session_state[select_all_key] = bool(visible_trade_ids) and len(selected_logical_trade_ids) == len(visible_trade_ids)
-    selected_position_trade_ids = tuple(
-        member.id
-        for trade_id in selected_logical_trade_ids
-        for member in visible_by_id[trade_id].members
-    )
     selected_reviewable_count = sum(
         scores[trade_id].review_kind in {"auto_review", "needs_approval"}
         for trade_id in selected_logical_trade_ids
@@ -1582,7 +1664,6 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
         st.session_state["logical-trade-group-editor"] = {
             "account_id": account.id,
             "logical_trade_id": None,
-            "selected_position_trade_ids": selected_position_trade_ids,
             "selected_logical_trade_ids": selected_logical_trade_ids,
         }
         st.rerun()
@@ -1774,23 +1855,29 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
                 if monitoring_detail := _automatic_risk_monitoring_detail(score):
                     st.caption(monitoring_detail)
         st.caption("Automatic risk evidence only counts toward scores once approved here in one click, or replaced by a full assessment.")
+    group_dialog_active = False
     group_editor = st.session_state.get("logical-trade-group-editor")
     if group_editor is not None and group_editor.get("account_id") == account.id:
-        group_id = group_editor.get("logical_trade_id")
-        group = next((item for item in trades if item.id == group_id), None) if group_id is not None else None
-        if group_id is None or group is not None:
-            st.dialog(tr("Manage logical-trade positions"), width="large", on_dismiss=_clear_group_dialog)(_render_logical_trade_group_dialog)(
+        confirmation = st.session_state.get("logical-trade-regroup-confirmation")
+        if confirmation is not None and confirmation.get("account_id") == account.id:
+            group_dialog_active = True
+            title = "Disband logical trade" if confirmation.get("mode") == "disband" else "Group logical trades"
+            st.dialog(tr(title), width="large", on_dismiss=_dismiss_group_dialog)(_render_logical_trade_regroup_confirmation)(
+                repo, account, confirmation
+            )
+        elif group_editor.get("logical_trade_id") is None:
+            group_dialog_active = True
+            st.dialog(tr("Group logical trades"), width="large", on_dismiss=_dismiss_group_dialog)(_render_logical_trade_merge_dialog)(
                 repo,
                 account,
-                group,
-                tuple(group_editor.get("selected_position_trade_ids", ())),
                 tuple(group_editor.get("selected_logical_trade_ids", ())),
             )
         else:
             _clear_group_dialog()
     if st.session_state.get(_bulk_quick_review_key(account.id)) is not None:
         st.dialog(tr("Quick review selected trades"), width="large", on_dismiss=_dismiss_bulk_quick_review)(_render_bulk_quick_review_dialog)(repo, account, trades, scores)
-    _render_selected_post_trade_review_dialog(repo, account, ordered, scores, profiles)
+    if not group_dialog_active:
+        _render_selected_post_trade_review_dialog(repo, account, ordered, scores, profiles)
 
 
 def _render_selected_post_trade_review_dialog(

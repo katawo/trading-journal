@@ -12,7 +12,7 @@ from trading_journal.application.display_time import format_relative_time
 from trading_journal.application.live_positions import LivePositionImportService
 from trading_journal.domain.models import MT5PositionExport
 from trading_journal.infrastructure.sqlite_repository import ASSESSMENT_CRITERIA, SQLiteJournalRepository
-from trading_journal.presentation.framework import _format_trade_duration
+from trading_journal.presentation.framework import _compact_execution_window, _format_trade_duration
 
 pytestmark = pytest.mark.web
 
@@ -129,6 +129,9 @@ def test_trade_duration_uses_compact_review_table_units():
     assert _format_trade_duration("2026-08-10T08:00:00+00:00", "2026-08-10T08:00:30+00:00") == "<1m"
     assert _format_trade_duration("2026-08-10T08:00:00+00:00", "2026-08-10T09:35:00+00:00") == "1h 35m"
     assert _format_trade_duration("2026-08-10T08:00:00+00:00", "2026-08-12T11:15:00+00:00") == "2d 3h"
+    assert _compact_execution_window("2026-08-10 08:00:00", "2026-08-10 09:35:00", "1h 35m") == (
+        "2026-08-10 · 08:00 → 09:35 · 1h 35m"
+    )
 
 
 def test_database_change_token_includes_sqlite_wal_changes(monkeypatch, tmp_path):
@@ -1817,6 +1820,10 @@ def test_reopening_review_after_upgrading_an_auto_review_does_not_crash(monkeypa
 
     next(item for item in app.button if item.label == "Review").click().run()
     assert not app.exception
+    assert not any(
+        metric.label in {"Symbol", "Positions", "P&L (USD)", "Trade score", "Risk evidence"}
+        for metric in app.metric
+    )
     markdown_values = [item.value for item in app.markdown]
     assert [value for value in markdown_values if value.startswith("###### :")] == [
         "###### :blue[Psychology]",
@@ -2098,7 +2105,7 @@ def test_framework_groups_positions_through_a_confirmation_step(monkeypatch, tmp
     repository.upsert_mt5_positions(account.id, positions, "positions.csv", "group-dialog")
     monkeypatch.setenv("TRADING_JOURNAL_DB", str(database_path))
 
-    check_all_app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
+    check_all_app = AppTest.from_file(Path(__file__).parents[1] / "app.py", default_timeout=10).run()
     check_all_app.switch_page("app_pages/bearings_review.py").run()
     assert len([item for item in check_all_app.checkbox if item.label.startswith("Select LT-")]) == 25
     next(item for item in check_all_app.checkbox if item.label == "Check all").set_value(True).run()
@@ -2107,7 +2114,7 @@ def test_framework_groups_positions_through_a_confirmation_step(monkeypatch, tmp
     assert len([item for item in check_all_app.checkbox if item.label.startswith("Select LT-")]) == 1
     assert next(item for item in check_all_app.checkbox if item.label.startswith("Select LT-")).value is True
 
-    app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
+    app = AppTest.from_file(Path(__file__).parents[1] / "app.py", default_timeout=10).run()
     app.switch_page("app_pages/bearings_review.py").run()
     next(item for item in app.checkbox if item.label.startswith("Select LT-")).set_value(True).run()
     next(item for item in app.button if item.label == "Next").click().run()
@@ -2119,6 +2126,11 @@ def test_framework_groups_positions_through_a_confirmation_step(monkeypatch, tmp
 
     assert not app.exception
     assert any("selected logical trades" in item.value for item in app.caption)
+    assert not any(item.label == "Positions" for item in app.multiselect)
+    assert not any(item.label == "Disband into individual trades" for item in app.button)
+    grouping_table = next(item.value for item in app.dataframe if "Logical trade" in item.value.columns)
+    assert grouping_table["P&L"].tolist() == ["+$20.00", "+$20.00"]
+    assert any(item.value == "### Combined P&L · :green[+$40.00]" for item in app.markdown)
     next(item for item in app.button if item.label == "Create new logical trade").click().run()
 
     assert not app.exception
@@ -2132,7 +2144,31 @@ def test_framework_groups_positions_through_a_confirmation_step(monkeypatch, tmp
     standalone = next(item for item in grouped if not item.is_group)
     assert app.session_state["post-trade-review-trade-id"] == source_group.id
     assert any(item.label == "What happened and what did you learn? *" for item in app.text_area)
+    assert any(" → " in item.value and " · 1h" in item.value for item in app.caption)
+    assert not any(item.value == "No usable automatic risk source is available." for item in app.caption)
+    member_table = next(item.value for item in app.dataframe if "Position" in item.value.columns)
+    assert len(member_table) == 2
+    assert not any(item.label.startswith("Member positions") for item in app.expander)
+    assert any(item.label == "Disband" for item in app.button)
+    assert not any(item.label == "Manage positions" for item in app.button)
+    assert not any("Changing member positions" in item.value for item in app.caption)
+    app.session_state["post-trade-review-queue"] = (standalone.id,)
+    app.run()
+    next(item for item in app.text_area if item.label == "What happened and what did you learn? *").set_value(
+        "Draft survives a cancelled disband."
+    ).run()
+    next(item for item in app.button if item.label == "Disband").click().run()
+
+    assert any(item.label == "Confirm disband" for item in app.button)
+    next(item for item in app.button if item.label == "Cancel").click().run()
+
+    assert next(
+        item for item in app.text_area if item.label == "What happened and what did you learn? *"
+    ).value == "Draft survives a cancelled disband."
+    assert app.session_state["post-trade-review-trade-id"] == source_group.id
+    assert app.session_state["post-trade-review-queue"] == (standalone.id,)
     app.session_state["post-trade-review-trade-id"] = None
+    app.session_state["post-trade-review-queue"] = ()
     app.run()
     assert any(item.value == ":blue-badge[:material/layers: 2 pos]" for item in app.markdown)
     assert any(item.value == ":gray-badge[1 pos]" for item in app.markdown)
@@ -2160,6 +2196,14 @@ def test_framework_groups_positions_through_a_confirmation_step(monkeypatch, tmp
 
     assert not app.exception
     assert any(item.label == "Confirm disband" for item in app.button)
+    assert any(item.label == "Cancel" for item in app.button)
+    assert not any(item.label == "Back" for item in app.button)
+    disband_table = next(item.value for item in app.dataframe if "Position" in item.value.columns)
+    assert len(disband_table) == 3
+    next(item for item in app.button if item.label == "Cancel").click().run()
+
+    assert not any(item.label == "Confirm disband" for item in app.button)
+    next(item for item in app.button if item.label == "Ungroup").click().run()
     next(item for item in app.button if item.label == "Confirm disband").click().run()
 
     assert not app.exception

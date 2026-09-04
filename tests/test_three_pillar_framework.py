@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 import sqlite3
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import event
@@ -40,6 +41,7 @@ from trading_journal.presentation.framework import (
     _initialize_assessment_draft,
     _initialize_assessment_grades,
     _process_failure_detail,
+    _pnl_cell_style,
     _readiness_metric,
     _risk_evidence_detail,
     _risk_state_metric,
@@ -58,6 +60,12 @@ def test_every_trade_and_monitor_rubric_weight_set_totals_one_hundred_percent() 
         assert sum(weight for _, weight in weights) == Decimal("1")
     for weights in PERIOD_WEIGHTS.values():
         assert sum(weights) == Decimal("1")
+
+
+def test_grouping_popup_pnl_colors_distinguish_profit_loss_and_breakeven() -> None:
+    assert "#0e9163" in _pnl_cell_style("+$20.00")
+    assert "#c73545" in _pnl_cell_style("−$20.00")
+    assert _pnl_cell_style("$0.00") == ""
 
 
 def test_monitor_metrics_use_semantic_colors_without_treating_status_as_a_trend() -> None:
@@ -1670,6 +1678,21 @@ def test_monitoring_uses_the_active_policy_for_every_historical_trade(tmp_path) 
     assert events[backfill_id]["policy_id"] == second.id
     assert events[newer_id]["policy_id"] == second.id
     assert events[late_old_id]["policy_id"] == second.id
+
+
+def test_risk_timeline_accepts_trade_read_models_created_before_a_hot_reload(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    _policy(repository, account_id)
+    trade_id = _import_position(repository, account_id)
+    current = repository.list_closed_trades_for_review(account_id)[0]
+    pre_reload_model = SimpleNamespace(**vars(current))
+
+    events, _ = FrameworkService(repository)._risk_timeline(
+        account_id,
+        trades=(pre_reload_model,),  # type: ignore[arg-type]
+    )
+
+    assert trade_id in events
 
 
 def test_shutdown_candidate_is_frozen_at_entry_when_latch_clears_before_close(tmp_path) -> None:

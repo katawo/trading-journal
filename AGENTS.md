@@ -24,6 +24,16 @@ Use four-space indentation, type hints where they clarify interfaces, and standa
 
 Add or update pytest coverage for every behavior change, especially imports, persistence, risk calculations, and framework scoring. Express scenarios as `given / when / then` in the test name or arrange the body under those comments when it improves clarity. Test observable behavior instead of source text or historical compatibility. Keep tests deterministic by using temporary databases and explicit timestamps. Run `make check` before opening a pull request; run `make test-web` for Streamlit interaction changes. Do not include `legacy/` in tests, compilation, packaging, or maintenance work.
 
+## Streamlit UI Design
+
+Keep the interface compact, calm, and information-dense. Follow the established app style: native Streamlit elements, bordered cards for meaningful groups, wrapping horizontal containers for responsive summaries, sentence-case labels, short captions for supporting context, and Material Symbols instead of decorative emoji. Prefer a bold identifier plus small semantic badges over rows of oversized metric cards in dialogs and operational workflows.
+
+Use color semantically and consistently: green for profit/clear/pass, red for loss/breach/fail, orange for caution or pending attention, blue for direction or neutral informational identity, and gray for unavailable or secondary state. Do not use color as the only carrier of meaning. Give decision-level aggregates stronger visual hierarchy than their component values—for example, show combined P&L as one compact emphasized line with a colored value while keeping individual position P&L secondary in the table. Do not place a single short value in a large full-width card. Preserve the application's restrained warm-neutral surfaces and monospace visual character; avoid generic dashboard decoration, excessive dividers, and duplicated information.
+
+For grouped logical trades, use a master-detail layout where space allows: compact logical-trade identity and aggregate facts on the left, member positions on the right. Keep member data visible when it is core review context instead of hiding it behind an expander, and remove repeated identity, time, or unavailable-state text from nearby captions. Co-locate structural actions such as Disband with the member-position panel they affect instead of leaving them as detached controls above the assessment form. Do not provide a general membership-editor dialog: grouping starts from selected logical trades, while existing groups expose a focused Disband confirmation.
+
+Keep confirmation dialogs consequence-first and compact. Show the exact affected records in a small table, reserve large warning/error callouts for actual data or review impact, and use `Cancel` when the secondary action closes the operation; use `Back` only when it returns to an editable prior step.
+
 ## Commit & Pull Request Guidelines
 
 Use short imperative commit subjects. Existing history commonly uses `fix:`, `feat(<area>):`, or plain imperative summaries; follow that pattern and keep each commit focused. Pull requests should describe the user-visible change and technical approach, link the relevant issue when available, list commands run, and include screenshots for Streamlit UI changes. Call out database-schema, MT5-export, or reset-data implications explicitly.

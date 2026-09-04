@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta, timezone, tzinfo
 from decimal import Decimal
+from typing import cast
 
 from trading_journal.application.reporting_time import reporting_date, reporting_datetime
 from trading_journal.domain.review_taxonomy import canonical_violation_code, violation_pillars, violation_sort_key
@@ -1646,12 +1647,10 @@ class FrameworkService:
             if cutoff is not None and occurred_at > cutoff:
                 continue
             if kind == "entry":
-                trade = payload
-                assert isinstance(trade, ClosedTradeReviewItem)
+                trade = cast(ClosedTradeReviewItem, payload)
                 self._apply_risk_entry_event(state, events[trade.id], trade, occurred_at)
             else:
-                trade = payload
-                assert isinstance(trade, ClosedTradeReviewItem)
+                trade = cast(ClosedTradeReviewItem, payload)
                 self._apply_risk_close_event(state, events[trade.id], trade, occurred_at, capital)
 
         if cutoff is not None and state.policy is not None:
