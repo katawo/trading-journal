@@ -21,7 +21,7 @@ from trading_journal.presentation.framework import (
     render_compact_framework_focus,
     render_post_trade_review_dialog,
 )
-from trading_journal.presentation.i18n import tr
+from trading_journal.presentation.i18n import queue_toast, tr
 from trading_journal.presentation.trade_tags import direction_tag, outcome_tag
 
 
@@ -93,7 +93,7 @@ def _render_live_positions(repo: SQLiteJournalRepository, account: AccountListIt
             )
         )
     with positions_column:
-        _render_positions(report, account)
+        _render_positions(repo, report, account)
 
 
 def _live_activity_indicator(report) -> str:  # type: ignore[no-untyped-def]
@@ -447,29 +447,312 @@ def _render_today_action_center(repo: SQLiteJournalRepository, account: AccountL
     render_post_trade_review_dialog(repo, account, framework)
 
 
-def _render_positions(report, account: AccountListItem) -> None:
+def _render_positions(repo: SQLiteJournalRepository, report, account: AccountListItem) -> None:  # type: ignore[no-untyped-def]
     with st.container(border=True, key="ongoing-current-positions"):
-        st.markdown(f"#### {tr('Current positions')}")
-        st.caption(tr("Highest-risk and unprotected positions remain first."))
-        if not report.positions:
+        st.markdown(f"#### {tr('Current logical trades')}")
+        st.caption(tr("Concurrent positions can be grouped while raw position risk remains visible."))
+        if not report.logical_trades:
             _render_inline_position_state(report)
             return
-        rows = []
-        for item in sorted(report.positions, key=_position_priority):
-            position = item.position
-            rows.append({
-                "Position": position.position_id,
-                "Symbol": position.symbol,
-                "Side": position.direction.title(),
-                "Volume": position.volume,
-                "Entry": position.entry_price,
-                "Current": position.current_price,
-                "Stop": position.stop_price or "—",
-                "Open risk": _risk_label(item.protected, item.risk_r),
-                "Unrealized P&L": format_currency(position.net_unrealized_pnl, account.account_currency),
-                "Magic": position.magic_number or "—",
-            })
-        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+        selection_prefix = f"ongoing-position-select-{account.id}-"
+        selectable_ids = {
+            item.members[0].position_id
+            for item in report.logical_trades
+            if not item.is_group and item.open_count == 1
+        }
+        for key in [key for key in st.session_state if key.startswith(selection_prefix)]:
+            if key.removeprefix(selection_prefix) not in selectable_ids:
+                st.session_state.pop(key, None)
+        selected: list[str] = []
+        grouping_enabled = report.snapshot_time is not None and report.status != "stale"
+        for item in report.logical_trades:
+            with st.container(border=True):
+                title, action = st.columns([5, 1], vertical_alignment="center")
+                with title:
+                    if item.is_group:
+                        st.markdown(f"**LT-{item.logical_trade_id} · {item.display_label}**")
+                    else:
+                        position_id = item.members[0].position_id
+                        checked = st.checkbox(
+                            f"{item.display_label} · {item.symbol} {item.direction.title()}",
+                            key=f"{selection_prefix}{position_id}",
+                            disabled=not grouping_enabled,
+                        )
+                        if checked:
+                            selected.append(position_id)
+                with action:
+                    if item.is_group and st.button(
+                        tr("Manage"),
+                        key=f"ongoing-manage-group-{account.id}-{item.logical_trade_id}",
+                        icon=":material/edit:",
+                        disabled=not grouping_enabled,
+                        width="stretch",
+                    ):
+                        st.session_state[f"ongoing-group-editor-{account.id}"] = {
+                            "logical_trade_id": item.logical_trade_id,
+                        }
+                        st.rerun()
+                with st.container(horizontal=True, vertical_alignment="center", gap="small"):
+                    st.badge(item.direction.title(), color="blue")
+                    st.badge(
+                        tr("{open}/{total} open", open=item.open_count, total=len(item.members)),
+                        color="green" if item.open_count == len(item.members) else "orange",
+                    )
+                    st.badge(
+                        _logical_trade_risk_label(item),
+                        color="red" if item.unprotected_count else "orange" if item.risk_unavailable_count else "green",
+                    )
+                    st.badge(
+                        format_currency(item.net_unrealized_pnl, account.account_currency),
+                        color="green" if item.net_unrealized_pnl > 0 else "red" if item.net_unrealized_pnl < 0 else "gray",
+                    )
+                awaiting = sum(member.state == "awaiting_import" for member in item.members)
+                if awaiting:
+                    st.caption(tr("{count} closed position(s) are awaiting completed-history import.", count=awaiting))
+                with st.expander(tr("Position details ({count})", count=len(item.members))):
+                    st.dataframe(
+                        pd.DataFrame([_logical_trade_member_row(member, account) for member in item.members]),
+                        hide_index=True,
+                        width="stretch",
+                    )
+        with st.container(horizontal=True, vertical_alignment="center", gap="small"):
+            if st.button(
+                tr("Group selected ({count})", count=len(selected)),
+                key=f"ongoing-create-group-{account.id}",
+                icon=":material/group_work:",
+                type="primary",
+                disabled=not grouping_enabled or len(selected) < 2,
+            ):
+                st.session_state[f"ongoing-group-editor-{account.id}"] = {
+                    "logical_trade_id": None,
+                    "position_ids": tuple(selected),
+                }
+                st.rerun()
+            if st.button(
+                tr("Clear selection"),
+                key=f"ongoing-clear-group-selection-{account.id}",
+                icon=":material/clear:",
+                disabled=not selected,
+            ):
+                for position_id in selectable_ids:
+                    st.session_state.pop(f"{selection_prefix}{position_id}", None)
+                st.rerun()
+    _render_live_logical_trade_dialog(repo, account, report)
+
+
+def _logical_trade_risk_label(item) -> str:  # type: ignore[no-untyped-def]
+    if item.unprotected_count:
+        return tr("Unprotected")
+    if item.risk_unavailable_count or item.open_risk_r is None:
+        return tr("Risk unavailable")
+    return format_exposure_r(item.open_risk_r)
+
+
+def _logical_trade_member_row(member, account: AccountListItem) -> dict[str, str]:  # type: ignore[no-untyped-def]
+    if member.live is None:
+        return {
+            tr("Position"): member.position_id,
+            tr("State"): tr("Closed") if member.state == "closed" else tr("Awaiting import"),
+            tr("Volume"): "—",
+            tr("Entry"): "—",
+            tr("Current"): "—",
+            tr("Stop"): "—",
+            tr("Open risk"): "—",
+            tr("Unrealized P&L"): "—",
+            tr("Magic"): "—",
+        }
+    item = member.live
+    position = item.position
+    return {
+        tr("Position"): position.position_id,
+        tr("State"): tr("Open"),
+        tr("Volume"): position.volume,
+        tr("Entry"): position.entry_price,
+        tr("Current"): position.current_price,
+        tr("Stop"): position.stop_price or "—",
+        tr("Open risk"): _risk_label(item.protected, item.risk_r),
+        tr("Unrealized P&L"): format_currency(position.net_unrealized_pnl, account.account_currency),
+        tr("Magic"): position.magic_number or "—",
+    }
+
+
+def _clear_live_logical_trade_dialog(account_id: int) -> None:
+    st.session_state.pop(f"ongoing-group-editor-{account_id}", None)
+    for key in [
+        key for key in st.session_state
+        if key.startswith(f"ongoing-group-dialog-{account_id}-")
+    ]:
+        st.session_state.pop(key, None)
+
+
+def _render_live_logical_trade_dialog(
+    repo: SQLiteJournalRepository,
+    account: AccountListItem,
+    report,
+) -> None:  # type: ignore[no-untyped-def]
+    editor = st.session_state.get(f"ongoing-group-editor-{account.id}")
+    if editor is None:
+        return
+    st.dialog(
+        tr("Manage live logical trade"),
+        width="large",
+        on_dismiss=lambda: _clear_live_logical_trade_dialog(account.id),
+    )(_render_live_logical_trade_dialog_body)(repo, account, report, editor)
+
+
+def _render_live_logical_trade_dialog_body(
+    repo: SQLiteJournalRepository,
+    account: AccountListItem,
+    report,
+    editor: dict,
+) -> None:  # type: ignore[type-arg,no-untyped-def]
+    service = LivePositionService(repo)
+    logical_trade_id = editor.get("logical_trade_id")
+    pending = {
+        item.logical_trade_id: item
+        for item in repo.list_pending_logical_trades(account.id)
+    }
+    live_by_id = {item.position.position_id: item for item in report.positions}
+    grouped_ids = {
+        position_id
+        for item in pending.values()
+        for position_id in item.position_ids
+    }
+    if logical_trade_id is None:
+        selected_ids = tuple(position_id for position_id in editor.get("position_ids", ()) if position_id in live_by_id)
+        if len(selected_ids) < 2:
+            st.error(tr("Selected positions changed; refresh Ongoing and select them again"))
+            return
+        st.caption(tr("Confirm that these concurrently open positions represent one trading decision."))
+        options = selected_ids
+        default = selected_ids
+        custom_label = ""
+        fixed_ids: tuple[str, ...] = ()
+    else:
+        group = pending.get(logical_trade_id)
+        if group is None:
+            st.info(tr("This logical trade has completed or is no longer available to edit."))
+            return
+        first = next((item.position for item in report.positions if item.position.position_id in group.position_ids), None)
+        if first is None:
+            first_symbol, first_direction = group.symbol, group.direction
+        else:
+            first_symbol, first_direction = first.symbol, first.direction
+        current_group_open_ids = {
+            position_id for position_id in group.position_ids if position_id in live_by_id
+        }
+        compatible = [
+            item.position.position_id
+            for item in report.positions
+            if item.position.symbol == first_symbol
+            and item.position.direction == first_direction
+            and (item.position.position_id not in grouped_ids or item.position.position_id in group.position_ids)
+            and (bool(current_group_open_ids) or item.position.position_id in group.position_ids)
+        ]
+        options = tuple(compatible)
+        default = tuple(position_id for position_id in group.position_ids if position_id in live_by_id)
+        fixed_ids = tuple(position_id for position_id in group.position_ids if position_id not in live_by_id)
+        custom_label = group.display_label or ""
+        st.caption(tr("Closed or closing members stay fixed; currently open members can be added or removed."))
+        if fixed_ids:
+            st.caption(tr("Fixed members: {positions}", positions=", ".join(f"#{item}" for item in fixed_ids)))
+    labels = {
+        position_id: (
+            f"#{position_id} · {live_by_id[position_id].position.symbol} "
+            f"{live_by_id[position_id].position.direction} · "
+            f"{format_currency(live_by_id[position_id].position.net_unrealized_pnl, account.account_currency)}"
+        )
+        for position_id in options
+    }
+    dialog_key = f"ongoing-group-dialog-{account.id}-{logical_trade_id}"
+    label_key = f"{dialog_key}-label"
+    members_key = f"{dialog_key}-members"
+    st.session_state.setdefault(label_key, custom_label)
+    label = st.text_input(
+        tr("Trade label (optional)"),
+        max_chars=160,
+        placeholder=tr("e.g. London breakout scale-in"),
+        key=label_key,
+    )
+    if logical_trade_id is None:
+        chosen = list(default)
+    else:
+        stored_members = st.session_state.get(members_key)
+        if stored_members is None:
+            st.session_state[members_key] = list(default)
+        else:
+            st.session_state[members_key] = [
+                position_id for position_id in stored_members if position_id in options
+            ]
+        chosen = st.multiselect(
+            tr("Open positions"),
+            options=list(options),
+            format_func=labels.get,
+            key=members_key,
+        )
+    preview_ids = tuple(chosen)
+    if preview_ids:
+        preview_items = [live_by_id[position_id] for position_id in preview_ids]
+        st.dataframe(
+            pd.DataFrame([
+                {
+                    tr("Position"): item.position.position_id,
+                    tr("Symbol"): item.position.symbol,
+                    tr("Side"): item.position.direction.title(),
+                    tr("Open risk"): _risk_label(item.protected, item.risk_r),
+                    tr("Unrealized P&L"): format_currency(
+                        item.position.net_unrealized_pnl, account.account_currency
+                    ),
+                }
+                for item in preview_items
+            ]),
+            hide_index=True,
+            width="stretch",
+        )
+        preview_risk = (
+            tr("Unprotected") if any(not item.protected for item in preview_items)
+            else tr("Risk unavailable") if any(item.risk_r is None for item in preview_items)
+            else format_exposure_r(sum((item.risk_r for item in preview_items if item.risk_r is not None), Decimal("0")))
+        )
+        preview_pnl = format_currency(
+            sum((Decimal(item.position.net_unrealized_pnl) for item in preview_items), Decimal("0")),
+            account.account_currency,
+        )
+        st.caption(tr("Current aggregate: {risk} open risk · {pnl} unrealized P&L", risk=preview_risk, pnl=preview_pnl))
+    with st.container(horizontal=True, vertical_alignment="center", gap="small"):
+        save = st.button(
+            tr("Confirm grouping") if logical_trade_id is None else tr("Save logical trade"),
+            type="primary",
+            icon=":material/group_work:",
+            key=f"{dialog_key}-save",
+        )
+        can_disband = logical_trade_id is not None and not fixed_ids
+        disband = st.button(
+            tr("Disband into standalone positions"),
+            icon=":material/call_split:",
+            disabled=not can_disband,
+            key=f"{dialog_key}-disband",
+        ) if logical_trade_id is not None else False
+    if not save and not disband:
+        return
+    try:
+        if disband:
+            service.disband_logical_trade(account.id, logical_trade_id)
+            notice = tr("Live logical trade disbanded.")
+        elif logical_trade_id is None:
+            service.create_logical_trade(account.id, tuple(chosen), label)
+            notice = tr("Live logical trade created.")
+        else:
+            service.update_logical_trade(account.id, logical_trade_id, tuple(chosen), label)
+            notice = tr("Live logical trade saved.")
+    except ValueError as error:
+        st.error(tr(str(error)))
+        return
+    _clear_live_logical_trade_dialog(account.id)
+    for position_id in live_by_id:
+        st.session_state.pop(f"ongoing-position-select-{account.id}-{position_id}", None)
+    queue_toast(notice)
+    st.rerun()
 
 
 def _position_priority(item) -> tuple[int, Decimal, str, str]:

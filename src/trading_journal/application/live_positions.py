@@ -27,8 +27,37 @@ class LivePositionRisk:
 
 
 @dataclass(frozen=True)
+class LiveLogicalTradeMember:
+    position_id: str
+    state: str
+    live: LivePositionRisk | None
+
+
+@dataclass(frozen=True)
+class LiveLogicalTradeSummary:
+    logical_trade_id: int | None
+    display_label: str
+    symbol: str
+    direction: str
+    members: tuple[LiveLogicalTradeMember, ...]
+    open_risk_r: Decimal | None
+    net_unrealized_pnl: Decimal
+    unprotected_count: int
+    risk_unavailable_count: int
+
+    @property
+    def is_group(self) -> bool:
+        return self.logical_trade_id is not None
+
+    @property
+    def open_count(self) -> int:
+        return sum(member.state == "open" for member in self.members)
+
+
+@dataclass(frozen=True)
 class LivePositionReport:
     positions: tuple[LivePositionRisk, ...]
+    logical_trades: tuple[LiveLogicalTradeSummary, ...]
     snapshot_time: datetime | None
     status: str
     total_risk_r: Decimal | None
@@ -157,6 +186,7 @@ class LivePositionService:
             )
             for row in rows
         )
+        logical_trades = self._logical_trade_summaries(account_id, risks)
         unprotected = sum(not item.protected for item in risks)
         risk_unavailable = sum(item.protected and not item.risk_amount_available for item in risks)
         known_risks = tuple(item.risk_r for item in risks if item.risk_r is not None)
@@ -189,6 +219,7 @@ class LivePositionService:
             status, detail = "within", "Known open risk is within the account limit."
         report = LivePositionReport(
             positions=risks,
+            logical_trades=logical_trades,
             snapshot_time=snapshot_time,
             status=status,
             total_risk_r=displayed_total,
@@ -200,6 +231,147 @@ class LivePositionService:
         )
         self._record_incidents(account_id, report)
         return report
+
+    def create_logical_trade(
+        self,
+        account_id: int,
+        position_ids: tuple[str, ...],
+        display_label: str | None,
+        *,
+        now: datetime | None = None,
+    ) -> int:
+        self._require_fresh_snapshot(account_id, now=now)
+        return self._repository.create_pending_logical_trade(
+            account_id=account_id,
+            position_ids=position_ids,
+            display_label=display_label,
+        )
+
+    def update_logical_trade(
+        self,
+        account_id: int,
+        logical_trade_id: int,
+        open_position_ids: tuple[str, ...],
+        display_label: str | None,
+        *,
+        now: datetime | None = None,
+    ) -> None:
+        self._require_fresh_snapshot(account_id, now=now)
+        self._repository.update_pending_logical_trade(
+            account_id=account_id,
+            logical_trade_id=logical_trade_id,
+            open_position_ids=open_position_ids,
+            display_label=display_label,
+        )
+
+    def disband_logical_trade(
+        self,
+        account_id: int,
+        logical_trade_id: int,
+        *,
+        now: datetime | None = None,
+    ) -> None:
+        self._require_fresh_snapshot(account_id, now=now)
+        self._repository.disband_pending_logical_trade(
+            account_id=account_id,
+            logical_trade_id=logical_trade_id,
+        )
+
+    def _logical_trade_summaries(
+        self,
+        account_id: int,
+        risks: tuple[LivePositionRisk, ...],
+    ) -> tuple[LiveLogicalTradeSummary, ...]:
+        risk_by_position = {item.position.position_id: item for item in risks}
+        pending = self._repository.list_pending_logical_trades(account_id)
+        grouped_ids = {position_id for group in pending for position_id in group.position_ids}
+        summaries: list[LiveLogicalTradeSummary] = []
+        for group in pending:
+            imported = set(group.imported_position_ids)
+            members = tuple(
+                LiveLogicalTradeMember(
+                    position_id=position_id,
+                    state=(
+                        "open" if position_id in risk_by_position
+                        else "closed" if position_id in imported
+                        else "awaiting_import"
+                    ),
+                    live=risk_by_position.get(position_id),
+                )
+                for position_id in group.position_ids
+            )
+            open_items = tuple(member.live for member in members if member.live is not None)
+            summaries.append(self._summary(
+                logical_trade_id=group.logical_trade_id,
+                display_label=group.display_label or f"{group.symbol} {group.direction} · {group.first_entry_time[:16].replace('T', ' ')}",
+                symbol=group.symbol,
+                direction=group.direction,
+                members=members,
+                open_items=open_items,
+            ))
+        for item in risks:
+            position_id = item.position.position_id
+            if position_id in grouped_ids:
+                continue
+            summaries.append(self._summary(
+                logical_trade_id=None,
+                display_label=f"#{position_id}",
+                symbol=item.position.symbol,
+                direction=item.position.direction,
+                members=(LiveLogicalTradeMember(position_id, "open", item),),
+                open_items=(item,),
+            ))
+        return tuple(sorted(
+            summaries,
+            key=lambda item: (
+                0 if item.unprotected_count else 1,
+                -(item.open_risk_r or Decimal("0")),
+                item.symbol,
+                item.display_label,
+            ),
+        ))
+
+    @staticmethod
+    def _summary(
+        *,
+        logical_trade_id: int | None,
+        display_label: str,
+        symbol: str,
+        direction: str,
+        members: tuple[LiveLogicalTradeMember, ...],
+        open_items: tuple[LivePositionRisk, ...],
+    ) -> LiveLogicalTradeSummary:
+        known_risks = tuple(item.risk_r for item in open_items if item.risk_r is not None)
+        open_risk = (
+            Decimal("0") if not open_items
+            else sum(known_risks, Decimal("0")) if known_risks
+            else None
+        )
+        return LiveLogicalTradeSummary(
+            logical_trade_id=logical_trade_id,
+            display_label=display_label,
+            symbol=symbol,
+            direction=direction,
+            members=members,
+            open_risk_r=open_risk,
+            net_unrealized_pnl=sum(
+                (Decimal(item.position.net_unrealized_pnl) for item in open_items), Decimal("0")
+            ),
+            unprotected_count=sum(not item.protected for item in open_items),
+            risk_unavailable_count=sum(
+                item.protected and not item.risk_amount_available for item in open_items
+            ),
+        )
+
+    def _require_fresh_snapshot(self, account_id: int, *, now: datetime | None) -> None:
+        snapshot = self._repository.get_live_snapshot(account_id)
+        if snapshot is None:
+            raise ValueError("Wait for a fresh MT5 snapshot before grouping positions")
+        current = now or datetime.now(timezone.utc)
+        current = current.replace(tzinfo=timezone.utc) if current.tzinfo is None else current.astimezone(timezone.utc)
+        snapshot_time = self._parse_snapshot_time(snapshot.snapshot_time)
+        if current - snapshot_time > timedelta(seconds=snapshot.export_interval_seconds * 2):
+            raise ValueError("Refresh the stale MT5 snapshot before grouping positions")
 
     @staticmethod
     def _parse_snapshot_time(raw: str) -> datetime:

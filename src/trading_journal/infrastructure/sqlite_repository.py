@@ -22,7 +22,7 @@ ASSESSMENT_GRADES = frozenset({"pass", "partial", "fail"})
 MONITORING_RESET_PERIODS = frozenset({"daily", "weekly", "monthly", "all_time"})
 CURRENT_RUBRIC_VERSION = "zone_v2"
 RUBRIC_VERSIONS = frozenset({CURRENT_RUBRIC_VERSION})
-CURRENT_SCHEMA_VERSION = 5
+CURRENT_SCHEMA_VERSION = 7
 _REMOVED_RUBRIC_VERSION = "legacy_v1"
 _REMOVED_PSYCHOLOGY_ROADMAP_ITEM_KEYS = ("triggers", "behaviour_rules", "practice")
 PSYCHOLOGY_CRITERIA = (
@@ -224,6 +224,55 @@ class LivePosition(Base):
     net_unrealized_pnl: Mapped[str] = mapped_column(String, nullable=False)
     risk_to_stop_amount: Mapped[str | None] = mapped_column(String, nullable=True)
     magic_number: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+
+class PendingLogicalTrade(Base):
+    """A user-confirmed logical trade waiting for every MT5 position to close."""
+
+    __tablename__ = "pending_logical_trades"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ("logical_trade_id", "mt5_account_id"),
+            ("logical_trades.id", "logical_trades.mt5_account_id"),
+            name="fk_pending_logical_trade_account",
+        ),
+        ForeignKeyConstraint(
+            ("risk_policy_id", "mt5_account_id"),
+            ("account_risk_policies.id", "account_risk_policies.mt5_account_id"),
+            name="fk_pending_logical_trade_policy_account",
+        ),
+        UniqueConstraint("logical_trade_id", "mt5_account_id", name="uq_pending_logical_trade_account"),
+        CheckConstraint("direction IN ('long', 'short')", name="ck_pending_logical_trade_direction"),
+    )
+
+    logical_trade_id: Mapped[int] = mapped_column(ForeignKey("logical_trades.id"), primary_key=True)
+    mt5_account_id: Mapped[int] = mapped_column(ForeignKey("mt5_accounts.id"), nullable=False)
+    risk_policy_id: Mapped[int | None] = mapped_column(ForeignKey("account_risk_policies.id"), nullable=True)
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    direction: Mapped[str] = mapped_column(String(8), nullable=False)
+    first_entry_time: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
+class PendingLogicalTradeMember(Base):
+    """One expected MT5 position in an incomplete logical trade."""
+
+    __tablename__ = "pending_logical_trade_members"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ("logical_trade_id", "mt5_account_id"),
+            ("pending_logical_trades.logical_trade_id", "pending_logical_trades.mt5_account_id"),
+            name="fk_pending_member_trade_account",
+        ),
+        UniqueConstraint("mt5_account_id", "mt5_position_id", name="uq_pending_member_position"),
+        Index("ix_pending_members_trade", "logical_trade_id", "mt5_position_id"),
+    )
+
+    logical_trade_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    mt5_position_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    mt5_account_id: Mapped[int] = mapped_column(ForeignKey("mt5_accounts.id"), nullable=False)
+    entry_time: Mapped[str] = mapped_column(String(64), nullable=False)
+    added_at: Mapped[str] = mapped_column(String(64), nullable=False)
 
 
 class LivePositionSnapshot(Base):
@@ -652,6 +701,20 @@ class LiveSnapshotItem:
 
 
 @dataclass(frozen=True)
+class PendingLogicalTradeItem:
+    logical_trade_id: int
+    account_id: int
+    display_label: str | None
+    risk_policy_id: int | None
+    symbol: str
+    direction: str
+    first_entry_time: str
+    position_ids: tuple[str, ...]
+    imported_position_ids: tuple[str, ...]
+    created_at: str
+
+
+@dataclass(frozen=True)
 class StrategyEvidenceSnapshot:
     profile_id: int
     name: str
@@ -894,6 +957,24 @@ class SQLiteJournalRepository:
                 connection.exec_driver_sql("ALTER TABLE live_position_snapshots ADD COLUMN source_file_size INTEGER")
             if live_snapshot_columns and "export_interval_seconds" not in live_snapshot_columns:
                 connection.exec_driver_sql("ALTER TABLE live_position_snapshots ADD COLUMN export_interval_seconds INTEGER NOT NULL DEFAULT 60")
+            pending_member_columns = {
+                row[1] for row in connection.exec_driver_sql("PRAGMA table_info(pending_logical_trade_members)")
+            }
+            if pending_member_columns and "entry_time" not in pending_member_columns:
+                connection.exec_driver_sql(
+                    "ALTER TABLE pending_logical_trade_members ADD COLUMN entry_time VARCHAR(64)"
+                )
+                connection.exec_driver_sql(
+                    "UPDATE pending_logical_trade_members AS member SET entry_time = COALESCE("
+                    "(SELECT live.entry_time FROM live_positions AS live "
+                    "WHERE live.mt5_account_id = member.mt5_account_id "
+                    "AND live.mt5_position_id = member.mt5_position_id), "
+                    "(SELECT trade.entry_time FROM trades AS trade "
+                    "WHERE trade.mt5_account_id = member.mt5_account_id "
+                    "AND trade.mt5_position_id = member.mt5_position_id LIMIT 1), "
+                    "(SELECT pending.first_entry_time FROM pending_logical_trades AS pending "
+                    "WHERE pending.logical_trade_id = member.logical_trade_id))"
+                )
             assessment_columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(post_trade_assessments)")}
             if assessment_columns and "rubric_version" not in assessment_columns:
                 connection.exec_driver_sql(
@@ -955,6 +1036,9 @@ class SQLiteJournalRepository:
                 "CREATE UNIQUE INDEX IF NOT EXISTS uq_active_account_risk_policy ON account_risk_policies (mt5_account_id) WHERE active = 1",
                 "CREATE INDEX IF NOT EXISTS ix_trades_account_exit ON trades (mt5_account_id, exit_time, id)",
                 "CREATE INDEX IF NOT EXISTS ix_trades_logical_trade ON trades (logical_trade_id)",
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_pending_logical_trade_account ON pending_logical_trades (logical_trade_id, mt5_account_id)",
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_pending_member_position ON pending_logical_trade_members (mt5_account_id, mt5_position_id)",
+                "CREATE INDEX IF NOT EXISTS ix_pending_members_trade ON pending_logical_trade_members (logical_trade_id, mt5_position_id)",
                 "CREATE INDEX IF NOT EXISTS ix_import_runs_account_path_status_id ON mt5_import_runs (mt5_account_id, source_file_path, status, id)",
                 "CREATE INDEX IF NOT EXISTS ix_active_assessments_account ON post_trade_assessments (mt5_account_id) WHERE superseded_at IS NULL",
                 "CREATE INDEX IF NOT EXISTS ix_assessments_logical_history ON post_trade_assessments (logical_trade_id, superseded_at, updated_at)",
@@ -1308,6 +1392,8 @@ class SQLiteJournalRepository:
             "live_positions": {"mt5_account_id", "mt5_position_id"},
             "live_position_snapshots": {"mt5_account_id", "snapshot_time"},
             "live_position_incidents": {"mt5_account_id"},
+            "pending_logical_trades": {"logical_trade_id", "mt5_account_id", "risk_policy_id", "symbol", "direction"},
+            "pending_logical_trade_members": {"logical_trade_id", "mt5_account_id", "mt5_position_id"},
             "strategy_setups": {"strategy_profile_id", "name"},
             "review_context_tags": {"kind", "name"},
             "framework_focuses": {"account_id", "status"},
@@ -1663,6 +1749,15 @@ class SQLiteJournalRepository:
                 raise ValueError("An account with imported trades cannot be deleted. Disable it to retain its history instead")
             session.execute(delete(MT5ImportRun).where(MT5ImportRun.mt5_account_id == account_id))
             session.execute(delete(LivePositionIncident).where(LivePositionIncident.mt5_account_id == account_id))
+            pending_ids = tuple(
+                session.scalars(
+                    select(PendingLogicalTrade.logical_trade_id).where(PendingLogicalTrade.mt5_account_id == account_id)
+                ).all()
+            )
+            session.execute(delete(PendingLogicalTradeMember).where(PendingLogicalTradeMember.mt5_account_id == account_id))
+            session.execute(delete(PendingLogicalTrade).where(PendingLogicalTrade.mt5_account_id == account_id))
+            if pending_ids:
+                session.execute(delete(LogicalTrade).where(LogicalTrade.id.in_(pending_ids)))
             session.execute(delete(LivePosition).where(LivePosition.mt5_account_id == account_id))
             session.execute(delete(LivePositionSnapshot).where(LivePositionSnapshot.mt5_account_id == account_id))
             session.execute(delete(AccountRiskPolicy).where(AccountRiskPolicy.mt5_account_id == account_id))
@@ -1886,6 +1981,259 @@ class SQLiteJournalRepository:
                 )
                 for row in rows
             ]
+
+    def list_pending_logical_trades(self, account_id: int) -> list[PendingLogicalTradeItem]:
+        """Return durable live group intent, including members already imported as closed."""
+        with self._sessions() as session:
+            pending_rows = session.scalars(
+                select(PendingLogicalTrade)
+                .where(PendingLogicalTrade.mt5_account_id == account_id)
+                .order_by(PendingLogicalTrade.created_at, PendingLogicalTrade.logical_trade_id)
+            ).all()
+            if not pending_rows:
+                return []
+            logical_ids = tuple(row.logical_trade_id for row in pending_rows)
+            logical_by_id = {
+                row.id: row
+                for row in session.scalars(select(LogicalTrade).where(LogicalTrade.id.in_(logical_ids))).all()
+            }
+            member_ids: dict[int, list[str]] = {logical_id: [] for logical_id in logical_ids}
+            for row in session.scalars(
+                select(PendingLogicalTradeMember)
+                .where(PendingLogicalTradeMember.logical_trade_id.in_(logical_ids))
+                .order_by(PendingLogicalTradeMember.added_at, PendingLogicalTradeMember.mt5_position_id)
+            ).all():
+                member_ids[row.logical_trade_id].append(row.mt5_position_id)
+            imported_ids: dict[int, list[str]] = {logical_id: [] for logical_id in logical_ids}
+            for logical_id, position_id in session.execute(
+                select(Trade.logical_trade_id, Trade.mt5_position_id)
+                .where(Trade.logical_trade_id.in_(logical_ids))
+                .order_by(Trade.entry_time, Trade.id)
+            ).all():
+                if position_id is not None:
+                    imported_ids[logical_id].append(position_id)
+            return [
+                PendingLogicalTradeItem(
+                    logical_trade_id=row.logical_trade_id,
+                    account_id=row.mt5_account_id,
+                    display_label=logical_by_id[row.logical_trade_id].display_label,
+                    risk_policy_id=row.risk_policy_id,
+                    symbol=row.symbol,
+                    direction=row.direction,
+                    first_entry_time=row.first_entry_time,
+                    position_ids=tuple(member_ids[row.logical_trade_id]),
+                    imported_position_ids=tuple(imported_ids[row.logical_trade_id]),
+                    created_at=row.created_at,
+                )
+                for row in pending_rows
+            ]
+
+    def create_pending_logical_trade(
+        self,
+        *,
+        account_id: int,
+        position_ids: tuple[str, ...],
+        display_label: str | None,
+    ) -> int:
+        """Reserve one logical trade for compatible positions open at the same time."""
+        selected = tuple(sorted(set(position_ids)))
+        if len(selected) < 2:
+            raise ValueError("Select at least two open positions to create one logical trade")
+        now = datetime.now(timezone.utc).isoformat()
+        with self._sessions.begin() as session:
+            account = session.get(MT5Account, account_id)
+            if account is None or not account.active:
+                raise ValueError("The selected MT5 account is not active")
+            rows = self._live_group_rows(session, account_id, selected)
+            occupied = session.scalar(
+                select(PendingLogicalTradeMember.logical_trade_id)
+                .where(
+                    PendingLogicalTradeMember.mt5_account_id == account_id,
+                    PendingLogicalTradeMember.mt5_position_id.in_(selected),
+                )
+                .limit(1)
+            )
+            if occupied is not None:
+                raise ValueError("One or more selected positions already belong to a live logical trade")
+            policy = session.scalar(
+                select(AccountRiskPolicy)
+                .where(AccountRiskPolicy.mt5_account_id == account_id, AccountRiskPolicy.active.is_(True))
+                .order_by(AccountRiskPolicy.version.desc())
+            )
+            logical_trade = LogicalTrade(
+                mt5_account_id=account_id,
+                display_label=self._optional_text(display_label),
+                created_at=now,
+            )
+            session.add(logical_trade)
+            session.flush()
+            session.add(PendingLogicalTrade(
+                logical_trade_id=logical_trade.id,
+                mt5_account_id=account_id,
+                risk_policy_id=None if policy is None else policy.id,
+                symbol=rows[0].symbol,
+                direction=rows[0].direction,
+                first_entry_time=min(row.entry_time for row in rows),
+                created_at=now,
+            ))
+            session.flush()
+            session.add_all([
+                PendingLogicalTradeMember(
+                    logical_trade_id=logical_trade.id,
+                    mt5_account_id=account_id,
+                    mt5_position_id=position_id,
+                    entry_time=next(row.entry_time for row in rows if row.mt5_position_id == position_id),
+                    added_at=now,
+                )
+                for position_id in selected
+            ])
+            return logical_trade.id
+
+    def update_pending_logical_trade(
+        self,
+        *,
+        account_id: int,
+        logical_trade_id: int,
+        open_position_ids: tuple[str, ...],
+        display_label: str | None,
+    ) -> None:
+        """Replace only the editable, currently-open portion of a pending group."""
+        selected = tuple(sorted(set(open_position_ids)))
+        now = datetime.now(timezone.utc).isoformat()
+        with self._sessions.begin() as session:
+            pending = session.get(PendingLogicalTrade, logical_trade_id)
+            if pending is None or pending.mt5_account_id != account_id:
+                raise ValueError("Live logical trade was not found for this account")
+            existing_rows = session.scalars(
+                select(PendingLogicalTradeMember).where(
+                    PendingLogicalTradeMember.logical_trade_id == logical_trade_id
+                )
+            ).all()
+            existing_ids = {row.mt5_position_id for row in existing_rows}
+            live_ids = set(session.scalars(
+                select(LivePosition.mt5_position_id).where(LivePosition.mt5_account_id == account_id)
+            ).all())
+            fixed_ids = existing_ids - live_ids
+            if selected:
+                rows = self._live_group_rows(session, account_id, selected)
+                if any(row.symbol != pending.symbol or row.direction != pending.direction for row in rows):
+                    raise ValueError("Grouped positions must use the same symbol and direction")
+                occupied = session.scalar(
+                    select(PendingLogicalTradeMember.logical_trade_id)
+                    .where(
+                        PendingLogicalTradeMember.mt5_account_id == account_id,
+                        PendingLogicalTradeMember.mt5_position_id.in_(selected),
+                        PendingLogicalTradeMember.logical_trade_id != logical_trade_id,
+                    )
+                    .limit(1)
+                )
+                if occupied is not None:
+                    raise ValueError("One or more selected positions already belong to another live logical trade")
+            desired_ids = fixed_ids | set(selected)
+            if len(desired_ids) < 2:
+                raise ValueError("A logical trade must keep at least two positions")
+            if set(selected) - existing_ids and not existing_ids.intersection(live_ids):
+                raise ValueError("A new member must overlap a still-open member of this logical trade")
+            for row in existing_rows:
+                if row.mt5_position_id not in desired_ids:
+                    session.delete(row)
+            for position_id in desired_ids - existing_ids:
+                session.add(PendingLogicalTradeMember(
+                    logical_trade_id=logical_trade_id,
+                    mt5_account_id=account_id,
+                    mt5_position_id=position_id,
+                    entry_time=next(row.entry_time for row in rows if row.mt5_position_id == position_id),
+                    added_at=now,
+                ))
+            logical_trade = session.get(LogicalTrade, logical_trade_id)
+            assert logical_trade is not None
+            logical_trade.display_label = self._optional_text(display_label)
+            session.flush()
+            pending.first_entry_time = min(session.scalars(
+                select(PendingLogicalTradeMember.entry_time).where(
+                    PendingLogicalTradeMember.logical_trade_id == logical_trade_id
+                )
+            ).all())
+            self._finalize_pending_logical_trade_if_complete(session, logical_trade_id)
+
+    def disband_pending_logical_trade(self, *, account_id: int, logical_trade_id: int) -> None:
+        """Delete a pending group only while every expected member is still open."""
+        with self._sessions.begin() as session:
+            pending = session.get(PendingLogicalTrade, logical_trade_id)
+            if pending is None or pending.mt5_account_id != account_id:
+                raise ValueError("Live logical trade was not found for this account")
+            member_ids = set(session.scalars(
+                select(PendingLogicalTradeMember.mt5_position_id).where(
+                    PendingLogicalTradeMember.logical_trade_id == logical_trade_id
+                )
+            ).all())
+            live_ids = set(session.scalars(
+                select(LivePosition.mt5_position_id).where(
+                    LivePosition.mt5_account_id == account_id,
+                    LivePosition.mt5_position_id.in_(member_ids),
+                )
+            ).all())
+            imported = session.scalar(select(Trade.id).where(Trade.logical_trade_id == logical_trade_id).limit(1))
+            if imported is not None or live_ids != member_ids:
+                raise ValueError("A live logical trade cannot be disbanded after a member starts closing")
+            session.execute(delete(PendingLogicalTradeMember).where(
+                PendingLogicalTradeMember.logical_trade_id == logical_trade_id
+            ))
+            session.delete(pending)
+            logical_trade = session.get(LogicalTrade, logical_trade_id)
+            if logical_trade is not None:
+                session.delete(logical_trade)
+
+    @staticmethod
+    def _live_group_rows(session, account_id: int, position_ids: tuple[str, ...]):  # type: ignore[no-untyped-def]
+        rows = session.scalars(
+            select(LivePosition)
+            .where(
+                LivePosition.mt5_account_id == account_id,
+                LivePosition.mt5_position_id.in_(position_ids),
+            )
+            .order_by(LivePosition.entry_time, LivePosition.mt5_position_id)
+        ).all()
+        if len(rows) != len(position_ids):
+            raise ValueError("Selected positions changed; refresh Ongoing and select them again")
+        if session.scalar(
+            select(Trade.id).where(
+                Trade.mt5_account_id == account_id,
+                Trade.mt5_position_id.in_(position_ids),
+            ).limit(1)
+        ) is not None:
+            raise ValueError("A selected position has already entered the completed journal")
+        if len({row.symbol for row in rows}) != 1 or len({row.direction for row in rows}) != 1:
+            raise ValueError("Grouped positions must use the same symbol and direction")
+        return rows
+
+    @staticmethod
+    def _mt5_position_lifecycle(position_id: str) -> tuple[str, int]:
+        """Split the completed-export suffix while leaving ordinary MT5 identifiers intact."""
+        base_id, separator, encoded_ordinal = position_id.rpartition(":")
+        if separator and base_id and encoded_ordinal.isdecimal() and int(encoded_ordinal) >= 2:
+            return base_id, int(encoded_ordinal)
+        return position_id, 1
+
+    @staticmethod
+    def _finalize_pending_logical_trade_if_complete(session, logical_trade_id: int) -> bool:  # type: ignore[no-untyped-def]
+        expected = set(session.scalars(
+            select(PendingLogicalTradeMember.mt5_position_id).where(
+                PendingLogicalTradeMember.logical_trade_id == logical_trade_id
+            )
+        ).all())
+        imported = set(session.scalars(
+            select(Trade.mt5_position_id).where(Trade.logical_trade_id == logical_trade_id)
+        ).all())
+        if not expected or not expected.issubset(imported):
+            return False
+        session.execute(delete(PendingLogicalTradeMember).where(
+            PendingLogicalTradeMember.logical_trade_id == logical_trade_id
+        ))
+        session.execute(delete(PendingLogicalTrade).where(
+            PendingLogicalTrade.logical_trade_id == logical_trade_id
+        ))
+        return True
 
     def record_live_incident_transitions(
         self, account_id: int, active: dict[str, tuple[str, str | None, str]], *, occurred_at: str
@@ -2167,7 +2515,16 @@ class SQLiteJournalRepository:
 
     def list_imported_positions_for_grouping(self, account_id: int) -> list[ImportedPositionReviewItem]:
         """Return every raw MT5 position that may be moved between logical trades."""
-        return self.list_imported_positions_for_risk(account_id)
+        with self._sessions() as session:
+            rows = session.scalars(
+                select(Trade)
+                .where(
+                    Trade.mt5_account_id == account_id,
+                    Trade.logical_trade_id.not_in(select(PendingLogicalTrade.logical_trade_id)),
+                )
+                .order_by(Trade.exit_time, Trade.id)
+            ).all()
+            return [self._to_imported_position_review_item(row) for row in rows]
 
     def preview_logical_trade_regroup(
         self,
@@ -2291,6 +2648,8 @@ class SQLiteJournalRepository:
             group = session.get(LogicalTrade, logical_trade_id)
             if group is None or group.mt5_account_id != account_id:
                 raise ValueError("Logical trade was not found for this MT5 account")
+            if session.get(PendingLogicalTrade, logical_trade_id) is not None:
+                raise ValueError("Live logical trade must finish importing before completed regrouping")
             rows = session.scalars(select(Trade).where(Trade.logical_trade_id == logical_trade_id)).all()
             if len(rows) < 2:
                 raise ValueError("Only grouped logical trades can be disbanded")
@@ -2353,6 +2712,8 @@ class SQLiteJournalRepository:
             group = session.get(LogicalTrade, logical_trade_id)
             if group is None or group.mt5_account_id != account_id:
                 raise ValueError("Logical trade was not found for this MT5 account")
+            if session.get(PendingLogicalTrade, logical_trade_id) is not None:
+                raise ValueError("Live logical trade must finish importing before completed regrouping")
             rows = session.scalars(select(Trade).where(Trade.logical_trade_id == logical_trade_id)).all()
             if len(rows) < 2:
                 raise ValueError("Only grouped logical trades can be disbanded")
@@ -2387,11 +2748,20 @@ class SQLiteJournalRepository:
         ).all()
         if len(rows) != len(position_trade_ids) or any(row.mt5_account_id != account_id for row in rows):
             raise ValueError("Selected positions do not belong to this MT5 account")
+        pending_ids = set(session.scalars(
+            select(PendingLogicalTrade.logical_trade_id).where(
+                PendingLogicalTrade.logical_trade_id.in_({row.logical_trade_id for row in rows})
+            )
+        ).all())
+        if pending_ids:
+            raise ValueError("Live logical trade must finish importing before completed regrouping")
         destination = None if logical_trade_id is None else session.get(LogicalTrade, logical_trade_id)
         if destination is not None and destination.mt5_account_id != account_id:
             raise ValueError("Logical trade was not found for this MT5 account")
         if logical_trade_id is not None and destination is None:
             raise ValueError("Logical trade was not found for this MT5 account")
+        if logical_trade_id is not None and session.get(PendingLogicalTrade, logical_trade_id) is not None:
+            raise ValueError("Live logical trade must finish importing before completed regrouping")
         destination_rows = [] if destination is None else session.scalars(
             select(Trade).where(Trade.logical_trade_id == destination.id).order_by(Trade.entry_time, Trade.id)
         ).all()
@@ -3389,6 +3759,8 @@ class SQLiteJournalRepository:
         statement = select(LogicalTrade)
         if account_id is not None:
             statement = statement.where(LogicalTrade.mt5_account_id == account_id)
+        pending_ids = select(PendingLogicalTrade.logical_trade_id)
+        statement = statement.where(LogicalTrade.id.not_in(pending_ids))
         logical_rows = session.scalars(statement.order_by(LogicalTrade.id)).all()
         logical_ids = [row.id for row in logical_rows]
         if not logical_ids:
@@ -3722,6 +4094,7 @@ class SQLiteJournalRepository:
                     Trade.mt5_account_id == account_id,
                     Trade.exit_time >= window_start,
                     Trade.exit_time < window_end,
+                    Trade.logical_trade_id.not_in(select(PendingLogicalTrade.logical_trade_id)),
                 )
                 .distinct()
             )
@@ -3824,6 +4197,39 @@ class SQLiteJournalRepository:
                 if positions
                 else {}
             )
+            pending_members = session.scalars(
+                select(PendingLogicalTradeMember).where(
+                    PendingLogicalTradeMember.mt5_account_id == account_id
+                )
+            ).all() if positions else []
+            pending_members_by_position_id: dict[str, PendingLogicalTradeMember] = {}
+            positions_by_lifecycle_base: dict[str, list[MT5PositionExport]] = {}
+            for position in positions:
+                base_id, _ = self._mt5_position_lifecycle(position.position_id)
+                positions_by_lifecycle_base.setdefault(base_id, []).append(position)
+            for member in pending_members:
+                pending_base, pending_ordinal = self._mt5_position_lifecycle(member.mt5_position_id)
+                candidates = positions_by_lifecycle_base.get(pending_base, [])
+                if pending_ordinal > 1:
+                    candidates = [item for item in candidates if item.position_id == member.mt5_position_id]
+                compatible = [
+                    item
+                    for item in candidates
+                    if item.entry_time == member.entry_time
+                ]
+                if compatible:
+                    matched = max(
+                        compatible,
+                        key=lambda item: self._mt5_position_lifecycle(item.position_id)[1],
+                    )
+                    pending_members_by_position_id[matched.position_id] = member
+            pending_trade_ids = {member.logical_trade_id for member in pending_members_by_position_id.values()}
+            pending_by_id = {
+                row.logical_trade_id: row
+                for row in session.scalars(
+                    select(PendingLogicalTrade).where(PendingLogicalTrade.logical_trade_id.in_(pending_trade_ids))
+                ).all()
+            } if pending_trade_ids else {}
             for position in positions:
                 trade = existing_trades_by_position_id.get(position.position_id)
                 values = {
@@ -3858,19 +4264,34 @@ class SQLiteJournalRepository:
                         "exit_time": normalize_server_timestamp(position.exit_time, position.server_utc_offset_minutes),
                         "server_utc_offset_minutes": position.server_utc_offset_minutes,
                     }
-                    logical_trade = LogicalTrade(
-                        mt5_account_id=account_id,
-                        display_label=None,
-                        created_at=now,
-                    )
-                    session.add(logical_trade)
-                    session.flush()
+                    pending_member = pending_members_by_position_id.get(position.position_id)
+                    pending = None if pending_member is None else pending_by_id.get(pending_member.logical_trade_id)
+                    if pending is not None and (
+                        position.symbol != pending.symbol or position.direction != pending.direction
+                    ):
+                        pending = None
+                    if pending is not None and pending_member is not None:
+                        pending_member.mt5_position_id = position.position_id
+                    if pending is None:
+                        logical_trade = LogicalTrade(
+                            mt5_account_id=account_id,
+                            display_label=None,
+                            created_at=now,
+                        )
+                        session.add(logical_trade)
+                        session.flush()
+                        risk_policy_id = active_policy.id if active_policy else None
+                    else:
+                        logical_trade = session.get(LogicalTrade, pending.logical_trade_id)
+                        if logical_trade is None:
+                            raise ValueError("Pending logical trade no longer exists")
+                        risk_policy_id = pending.risk_policy_id
                     new_trade = Trade(
                         source="mt5",
                         mt5_account_id=account_id,
                         mt5_position_id=position.position_id,
                         logical_trade_id=logical_trade.id,
-                        auto_risk_policy_id=active_policy.id if active_policy else None,
+                        auto_risk_policy_id=risk_policy_id,
                         **imported_times,
                         **values,
                     )
@@ -3882,9 +4303,13 @@ class SQLiteJournalRepository:
                 else:
                     for field, value in values.items():
                         setattr(trade, field, value)
-                    if trade.auto_risk_policy_id is None and active_policy is not None:
+                    pending_member = pending_members_by_position_id.get(position.position_id)
+                    if pending_member is None and trade.auto_risk_policy_id is None and active_policy is not None:
                         trade.auto_risk_policy_id = active_policy.id
                     updated += 1
+            session.flush()
+            for logical_trade_id in pending_trade_ids:
+                self._finalize_pending_logical_trade_if_complete(session, logical_trade_id)
             session.add(MT5ImportRun(
                 mt5_account_id=account_id,
                 source_file_path=source_path,

@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import csv
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from io import StringIO
+import sqlite3
 from types import SimpleNamespace
 
+import pytest
+
 from trading_journal.application.live_positions import LivePositionImportService, LivePositionService
+from trading_journal.domain.models import MT5PositionExport
 from trading_journal.infrastructure.sqlite_repository import SQLiteJournalRepository
 from trading_journal.presentation.ongoing import (
     ONGOING_REFRESH_INTERVAL_SECONDS,
@@ -54,6 +58,44 @@ def _snapshot(
     return {"schema_version": 1, "account_login": "123456", "broker_server": "DemoBroker-Live", "account_currency": "USD", "snapshot_time": moment, "export_interval_seconds": export_interval_seconds, "positions": [row] if positions else []}
 
 
+def _closed(
+    position_id: str,
+    *,
+    net_pnl: str = "10",
+    direction: str = "long",
+    entry_time: str = "2026-08-18T07:00:00+00:00",
+) -> MT5PositionExport:
+    return MT5PositionExport(
+        schema_version=5,
+        account_login="123456",
+        broker_server="DemoBroker-Live",
+        account_currency="USD",
+        position_id=position_id,
+        symbol="EURUSD",
+        direction=direction,
+        entry_time=entry_time,
+        exit_time="2026-08-18T09:00:00+00:00",
+        entry_price="1.1000",
+        exit_price="1.1010",
+        volume="1",
+        gross_pnl=net_pnl,
+        commission="0",
+        swap="0",
+        fees="0",
+        net_pnl=net_pnl,
+        initial_risk_amount="10",
+        server_utc_offset_minutes=0,
+    )
+
+
+def _two_position_snapshot() -> dict:
+    payload = _snapshot(position_id="9001")
+    second = dict(payload["positions"][0])
+    second.update({"position_id": "9002", "entry_time": "2026-08-18T07:05:00+00:00", "net_unrealized_pnl": "15"})
+    payload["positions"].append(second)
+    return payload
+
+
 def test_live_snapshot_replaces_current_positions_and_does_not_create_trades(tmp_path) -> None:
     repository = _repository(tmp_path)
     importer = LivePositionImportService(repository)
@@ -67,6 +109,247 @@ def test_live_snapshot_replaces_current_positions_and_does_not_create_trades(tmp
     importer.import_snapshot(_snapshot(positions=False))
     assert repository.list_live_positions(account.id) == []
     assert repository.get_live_snapshot(account.id) is not None
+
+
+def test_live_group_survives_snapshots_and_becomes_one_trade_only_after_every_member_closes(tmp_path) -> None:
+    repository = _repository(tmp_path)
+    importer = LivePositionImportService(repository)
+    importer.import_snapshot(_two_position_snapshot())
+    account = repository.get_active_mt5_account()
+    assert account is not None
+    service = LivePositionService(repository)
+
+    logical_trade_id = service.create_logical_trade(
+        account.id,
+        ("9001", "9002"),
+        "London scale-in",
+        now=datetime(2026, 8, 18, 8, 0, tzinfo=timezone.utc),
+    )
+    report = service.build_report(account.id, now=datetime(2026, 8, 18, 8, 0, tzinfo=timezone.utc))
+    group = next(item for item in report.logical_trades if item.logical_trade_id == logical_trade_id)
+    assert group.display_label == "London scale-in"
+    assert group.open_count == 2
+    assert group.net_unrealized_pnl == Decimal("40")
+    assert group.open_risk_r == Decimal("2")
+
+    importer.import_snapshot(_snapshot(position_id="9002", moment="2026-08-18T08:01:00+00:00"))
+    repository.upsert_mt5_positions(account.id, [_closed("9001")], "positions.csv", "one")
+    assert repository.list_closed_trades_for_review(account.id) == []
+    assert repository.list_imported_positions_for_grouping(account.id) == []
+    assert repository.realized_pnl_on(account.id, date(2026, 8, 18), "utc") == "0"
+    imported_member = repository.list_imported_positions_for_risk(account.id)[0]
+    with pytest.raises(ValueError, match="must finish importing"):
+        repository.update_logical_trade_group(
+            account_id=account.id,
+            logical_trade_id=logical_trade_id,
+            position_trade_ids=(imported_member.id,),
+            display_label=None,
+        )
+    pending = repository.list_pending_logical_trades(account.id)[0]
+    assert pending.imported_position_ids == ("9001",)
+
+    repository.upsert_mt5_positions(
+        account.id,
+        [_closed("9001"), _closed("9002", entry_time="2026-08-18T07:05:00+00:00")],
+        "positions.csv",
+        "two",
+    )
+    completed = repository.list_closed_trades_for_review(account.id)
+    assert repository.list_pending_logical_trades(account.id) == []
+    assert len(completed) == 1
+    assert completed[0].id == logical_trade_id
+    assert completed[0].position_ids == ("9001", "9002")
+    assert completed[0].display_label == "London scale-in"
+
+
+def test_legacy_live_group_attaches_the_current_netting_lifecycle_after_reversals(tmp_path) -> None:
+    repository = _repository(tmp_path)
+    payload = _two_position_snapshot()
+    payload["positions"][0]["entry_time"] = "2026-08-18T07:00:00+00:00"
+    LivePositionImportService(repository).import_snapshot(payload)
+    account = repository.get_active_mt5_account()
+    assert account is not None
+    logical_trade_id = repository.create_pending_logical_trade(
+        account_id=account.id,
+        position_ids=("9001", "9002"),
+        display_label="Current long idea",
+    )
+
+    repository.upsert_mt5_positions(
+        account.id,
+        [
+            _closed("9001", direction="short", entry_time="2026-08-18T06:00:00+00:00"),
+            _closed("9001:2", entry_time="2026-08-18T07:00:00+00:00"),
+            _closed("9002", entry_time="2026-08-18T07:05:00+00:00"),
+        ],
+        "positions.csv",
+        "reversal",
+    )
+
+    completed = repository.list_closed_trades_for_review(account.id)
+    grouped = next(item for item in completed if item.id == logical_trade_id)
+    assert grouped.position_ids == ("9001:2", "9002")
+    assert grouped.direction == "long"
+    assert any(item.position_ids == ("9001",) and item.direction == "short" for item in completed)
+    assert repository.list_pending_logical_trades(account.id) == []
+
+
+def test_live_group_keeps_one_risk_policy_version_when_policy_changes_before_close(tmp_path) -> None:
+    repository = _repository(tmp_path)
+    LivePositionImportService(repository).import_snapshot(_two_position_snapshot())
+    account = repository.get_active_mt5_account()
+    assert account is not None
+    original_policy = repository.get_active_risk_policy(account.id)
+    assert original_policy is not None
+    logical_trade_id = repository.create_pending_logical_trade(
+        account_id=account.id,
+        position_ids=("9001", "9002"),
+        display_label=None,
+    )
+    repository.save_account_risk_policy(
+        account_id=account.id,
+        standard_risk_per_trade_percent="1",
+        maximum_risk_per_trade_percent="1",
+        daily_loss_limit_r="2",
+        weekly_loss_limit_r="4",
+        max_drawdown_percent="10",
+        max_open_risk_r="3",
+        max_consecutive_losses=3,
+        minimum_rr="1.5",
+        correlation_policy=None,
+        expected_active_policy_id=original_policy.id,
+        confirm_recalculation=True,
+    )
+
+    repository.upsert_mt5_positions(
+        account.id,
+        [_closed("9001"), _closed("9002", entry_time="2026-08-18T07:05:00+00:00")],
+        "positions.csv",
+        "all",
+    )
+
+    completed = next(item for item in repository.list_closed_trades_for_review(account.id) if item.id == logical_trade_id)
+    assert {member.auto_risk_policy_id for member in completed.members} == {original_policy.id}
+
+
+def test_pending_group_can_change_open_members_but_keeps_a_closed_member_fixed(tmp_path) -> None:
+    repository = _repository(tmp_path)
+    importer = LivePositionImportService(repository)
+    importer.import_snapshot(_two_position_snapshot())
+    account = repository.get_active_mt5_account()
+    assert account is not None
+    service = LivePositionService(repository)
+    logical_trade_id = service.create_logical_trade(
+        account.id,
+        ("9001", "9002"),
+        None,
+        now=datetime(2026, 8, 18, 8, 0, tzinfo=timezone.utc),
+    )
+
+    third = _snapshot(position_id="9003", moment="2026-08-18T08:01:00+00:00")["positions"][0]
+    third["entry_time"] = "2026-08-18T06:45:00+00:00"
+    remaining = _snapshot(position_id="9002", moment="2026-08-18T08:01:00+00:00")["positions"][0]
+    importer.import_snapshot({
+        "schema_version": 1,
+        "account_login": "123456",
+        "broker_server": "DemoBroker-Live",
+        "account_currency": "USD",
+        "snapshot_time": "2026-08-18T08:01:00+00:00",
+        "export_interval_seconds": 60,
+        "positions": [remaining, third],
+    })
+    repository.upsert_mt5_positions(account.id, [_closed("9001")], "positions.csv", "one")
+
+    service.update_logical_trade(
+        account.id,
+        logical_trade_id,
+        ("9003",),
+        "Extended scale-in",
+        now=datetime(2026, 8, 18, 8, 1, tzinfo=timezone.utc),
+    )
+
+    pending = repository.list_pending_logical_trades(account.id)[0]
+    assert set(pending.position_ids) == {"9001", "9003"}
+    assert pending.display_label == "Extended scale-in"
+    assert pending.first_entry_time == "2026-08-18T06:45:00+00:00"
+    report = service.build_report(account.id, now=datetime(2026, 8, 18, 8, 1, tzinfo=timezone.utc))
+    assert any(item.display_label == "#9002" for item in report.logical_trades)
+
+
+def test_new_group_member_must_overlap_a_still_open_member(tmp_path) -> None:
+    repository = _repository(tmp_path)
+    importer = LivePositionImportService(repository)
+    importer.import_snapshot(_two_position_snapshot())
+    account = repository.get_active_mt5_account()
+    assert account is not None
+    service = LivePositionService(repository)
+    logical_trade_id = service.create_logical_trade(
+        account.id,
+        ("9001", "9002"),
+        None,
+        now=datetime(2026, 8, 18, 8, 0, tzinfo=timezone.utc),
+    )
+    importer.import_snapshot(_snapshot(position_id="9003", moment="2026-08-18T08:01:00+00:00"))
+
+    with pytest.raises(ValueError, match="must overlap"):
+        service.update_logical_trade(
+            account.id,
+            logical_trade_id,
+            ("9003",),
+            None,
+            now=datetime(2026, 8, 18, 8, 1, tzinfo=timezone.utc),
+        )
+
+
+def test_live_group_rejects_incompatible_positions_and_stale_grouping(tmp_path) -> None:
+    repository = _repository(tmp_path)
+    importer = LivePositionImportService(repository)
+    payload = _two_position_snapshot()
+    payload["positions"][1]["symbol"] = "GBPUSD"
+    importer.import_snapshot(payload)
+    account = repository.get_active_mt5_account()
+    assert account is not None
+    service = LivePositionService(repository)
+
+    with pytest.raises(ValueError, match="same symbol and direction"):
+        service.create_logical_trade(
+            account.id,
+            ("9001", "9002"),
+            None,
+            now=datetime(2026, 8, 18, 8, 0, tzinfo=timezone.utc),
+        )
+    with pytest.raises(ValueError, match="stale"):
+        service.create_logical_trade(
+            account.id,
+            ("9001", "9002"),
+            None,
+            now=datetime(2026, 8, 18, 8, 3, tzinfo=timezone.utc),
+        )
+
+
+def test_all_open_live_group_can_be_disbanded(tmp_path) -> None:
+    repository = _repository(tmp_path)
+    LivePositionImportService(repository).import_snapshot(_two_position_snapshot())
+    account = repository.get_active_mt5_account()
+    assert account is not None
+    service = LivePositionService(repository)
+    logical_trade_id = service.create_logical_trade(
+        account.id,
+        ("9001", "9002"),
+        None,
+        now=datetime(2026, 8, 18, 8, 0, tzinfo=timezone.utc),
+    )
+
+    service.disband_logical_trade(
+        account.id,
+        logical_trade_id,
+        now=datetime(2026, 8, 18, 8, 0, tzinfo=timezone.utc),
+    )
+
+    assert repository.list_pending_logical_trades(account.id) == []
+    assert [item.display_label for item in service.build_report(
+        account.id, now=datetime(2026, 8, 18, 8, 0, tzinfo=timezone.utc)
+    ).logical_trades] == ["#9001", "#9002"]
 
 
 def test_live_snapshot_accepts_a_small_positive_protective_risk(tmp_path) -> None:
@@ -371,3 +654,78 @@ def test_deleting_an_unimported_account_removes_disposable_live_state(tmp_path) 
     repository.delete_mt5_account(account.id)
 
     assert repository.list_mt5_accounts() == []
+
+
+def test_deleting_an_unimported_account_removes_pending_logical_trade_state(tmp_path) -> None:
+    repository = _repository(tmp_path)
+    LivePositionImportService(repository).import_snapshot(_two_position_snapshot())
+    account = repository.get_active_mt5_account()
+    assert account is not None
+    repository.create_pending_logical_trade(
+        account_id=account.id,
+        position_ids=("9001", "9002"),
+        display_label=None,
+    )
+
+    repository.delete_mt5_account(account.id)
+
+    assert repository.list_mt5_accounts() == []
+
+
+def test_schema_v5_upgrade_creates_pending_group_tables_and_backup(tmp_path) -> None:
+    database_path = tmp_path / "journal.db"
+    repository = SQLiteJournalRepository(database_path)
+    repository.initialize()
+    repository.close()
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("DROP TABLE pending_logical_trade_members")
+        connection.execute("DROP TABLE pending_logical_trades")
+        connection.execute("PRAGMA user_version = 5")
+
+    migrated = SQLiteJournalRepository(database_path)
+    migrated.initialize()
+    migrated.close()
+
+    with sqlite3.connect(database_path) as connection:
+        tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        version = connection.execute("PRAGMA user_version").fetchone()[0]
+    assert {"pending_logical_trades", "pending_logical_trade_members"}.issubset(tables)
+    assert version == 7
+    assert len(list(tmp_path.glob("journal.pre-schema-v7-*.db.bak"))) == 1
+
+
+def test_schema_v6_upgrade_backfills_pending_member_entry_times(tmp_path) -> None:
+    database_path = tmp_path / "journal.db"
+    repository = _repository(tmp_path)
+    LivePositionImportService(repository).import_snapshot(_two_position_snapshot())
+    account = repository.get_active_mt5_account()
+    assert account is not None
+    repository.create_pending_logical_trade(
+        account_id=account.id,
+        position_ids=("9001", "9002"),
+        display_label=None,
+    )
+    repository.close()
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("ALTER TABLE pending_logical_trade_members DROP COLUMN entry_time")
+        connection.execute("PRAGMA user_version = 6")
+
+    migrated = SQLiteJournalRepository(database_path)
+    migrated.initialize()
+
+    pending = migrated.list_pending_logical_trades(account.id)[0]
+    with sqlite3.connect(database_path) as connection:
+        entry_times = {
+            row[0]
+            for row in connection.execute(
+                "SELECT entry_time FROM pending_logical_trade_members ORDER BY mt5_position_id"
+            )
+        }
+        version = connection.execute("PRAGMA user_version").fetchone()[0]
+    assert entry_times == {
+        "2026-08-18T07:00:00+00:00",
+        "2026-08-18T07:05:00+00:00",
+    }
+    assert pending.first_entry_time == "2026-08-18T07:00:00+00:00"
+    assert version == 7
+    assert len(list(tmp_path.glob("journal.pre-schema-v7-*.db.bak"))) == 1

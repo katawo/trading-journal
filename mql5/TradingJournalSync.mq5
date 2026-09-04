@@ -402,6 +402,60 @@ string CompletedRecordId(const ulong position_id,const int ordinal)
    return ordinal==1 ? (string)position_id : (string)position_id+":"+(string)ordinal;
   }
 
+string LiveRecordId(const ulong position_id)
+  {
+   if(!HistorySelectByPosition(position_id))
+      return CompletedRecordId(position_id,1);
+   int ordinal=0;
+   bool active=false;
+   double signed_volume=0.0;
+   for(int index=0;index<HistoryDealsTotal();index++)
+     {
+      ulong ticket=HistoryDealGetTicket((uint)index);
+      long deal_type=HistoryDealGetInteger(ticket,DEAL_TYPE);
+      if(deal_type!=DEAL_TYPE_BUY && deal_type!=DEAL_TYPE_SELL) continue;
+      long entry=HistoryDealGetInteger(ticket,DEAL_ENTRY);
+      double volume=HistoryDealGetDouble(ticket,DEAL_VOLUME);
+      double sign=(deal_type==DEAL_TYPE_BUY ? 1.0 : -1.0);
+      if(entry==DEAL_ENTRY_IN)
+        {
+         if(!active)
+           {
+            ordinal++;
+            active=true;
+            signed_volume=sign*volume;
+           }
+         else
+            signed_volume+=sign*volume;
+         continue;
+        }
+      if(!active) continue;
+      if(entry==DEAL_ENTRY_INOUT)
+        {
+         double open_volume=MathMax(volume-MathAbs(signed_volume),0.0);
+         active=false;
+         signed_volume=0.0;
+         if(open_volume>0.00000001)
+           {
+            ordinal++;
+            active=true;
+            signed_volume=sign*open_volume;
+           }
+         continue;
+        }
+      if(entry==DEAL_ENTRY_OUT || entry==DEAL_ENTRY_OUT_BY)
+        {
+         signed_volume+=sign*MathMin(volume,MathAbs(signed_volume));
+         if(MathAbs(signed_volume)<=0.00000001)
+           {
+            active=false;
+            signed_volume=0.0;
+           }
+        }
+     }
+   return CompletedRecordId(position_id,ordinal>0 ? ordinal : 1);
+  }
+
 bool WriteCompletedRecord(const CompletedPositionRecord &record,const string exported_id,const int ordinal,
                           const int handle,const double account_balance,const int server_utc_offset_minutes,
                           const string &acked_ids[],string &pending_json_rows[],string &pending_ids[])
@@ -729,6 +783,7 @@ bool AppendLivePositionJson(const ulong ticket,string &rows[])
    double stop=PositionGetDouble(POSITION_SL);
    double target=PositionGetDouble(POSITION_TP);
    ulong position_id=(ulong)PositionGetInteger(POSITION_IDENTIFIER);
+   string exported_id=LiveRecordId(position_id);
    double risk=0.0;
    ENUM_ORDER_TYPE order_type=(direction=="long" ? ORDER_TYPE_BUY : ORDER_TYPE_SELL);
    bool valid_stop=(direction=="long" ? stop>0.0 && stop<current_price : stop>current_price);
@@ -745,7 +800,7 @@ bool AppendLivePositionJson(const ulong ticket,string &rows[])
    json+="\"account_login\":\""+JsonEscape((string)AccountInfoInteger(ACCOUNT_LOGIN))+"\",";
    json+="\"broker_server\":\""+JsonEscape(AccountInfoString(ACCOUNT_SERVER))+"\",";
    json+="\"account_currency\":\""+JsonEscape(AccountInfoString(ACCOUNT_CURRENCY))+"\",";
-   json+="\"position_id\":\""+(string)position_id+"\",";
+   json+="\"position_id\":\""+exported_id+"\",";
    json+="\"symbol\":\""+JsonEscape(symbol)+"\",";
    json+="\"direction\":\""+direction+"\",";
    json+="\"entry_time\":\""+ServerTime((datetime)PositionGetInteger(POSITION_TIME))+"\",";
@@ -845,6 +900,7 @@ bool ExportLivePositions(const bool allow_network_push)
       double stop=PositionGetDouble(POSITION_SL);
       double target=PositionGetDouble(POSITION_TP);
       ulong position_id=(ulong)PositionGetInteger(POSITION_IDENTIFIER);
+      string exported_id=LiveRecordId(position_id);
       double risk=0.0, calculated=0.0;
       ENUM_ORDER_TYPE order_type=(direction=="long" ? ORDER_TYPE_BUY : ORDER_TYPE_SELL);
       bool valid_stop=(direction=="long" ? stop>0.0 && stop<current_price : stop>current_price);
@@ -852,7 +908,7 @@ bool ExportLivePositions(const bool allow_network_push)
       if(risk_available) risk=MathMax(0.0,-calculated);
       int digits=SymbolDigits(symbol);
       int volume_digits=VolumeDigits(symbol);
-      FileWrite(handle,"position",TRADING_JOURNAL_LIVE_SCHEMA_VERSION,(string)AccountInfoInteger(ACCOUNT_LOGIN),AccountInfoString(ACCOUNT_SERVER),AccountInfoString(ACCOUNT_CURRENCY),snapshot_time,"",(string)position_id,symbol,direction,ServerTime((datetime)PositionGetInteger(POSITION_TIME)),DoubleToString(entry_price,digits),DoubleToString(current_price,digits),DoubleToString(volume,volume_digits),OptionalNumber(stop,digits),OptionalNumber(target,digits),DoubleToString(PositionGetDouble(POSITION_PROFIT)+PositionGetDouble(POSITION_SWAP),TRADING_JOURNAL_MONEY_DIGITS),(risk_available ? DoubleToString(risk,TRADING_JOURNAL_MONEY_DIGITS) : ""),(string)PositionGetInteger(POSITION_MAGIC));
+      FileWrite(handle,"position",TRADING_JOURNAL_LIVE_SCHEMA_VERSION,(string)AccountInfoInteger(ACCOUNT_LOGIN),AccountInfoString(ACCOUNT_SERVER),AccountInfoString(ACCOUNT_CURRENCY),snapshot_time,"",exported_id,symbol,direction,ServerTime((datetime)PositionGetInteger(POSITION_TIME)),DoubleToString(entry_price,digits),DoubleToString(current_price,digits),DoubleToString(volume,volume_digits),OptionalNumber(stop,digits),OptionalNumber(target,digits),DoubleToString(PositionGetDouble(POSITION_PROFIT)+PositionGetDouble(POSITION_SWAP),TRADING_JOURNAL_MONEY_DIGITS),(risk_available ? DoubleToString(risk,TRADING_JOURNAL_MONEY_DIGITS) : ""),(string)PositionGetInteger(POSITION_MAGIC));
       AppendLivePositionJson(ticket,json_rows);
      }
    FileClose(handle);

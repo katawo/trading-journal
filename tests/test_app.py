@@ -342,9 +342,9 @@ def test_ongoing_page_does_not_claim_positions_are_flat_before_the_first_snapsho
     assert not app.exception
     page_markup = "\n".join(item.value for item in app.markdown)
     assert "#### Exposure snapshot" in page_markup
-    assert "#### Current positions" in page_markup
-    assert page_markup.index("#### Exposure snapshot") < page_markup.index("#### Current positions")
-    assert any("Highest-risk and unprotected positions remain first" in item.value for item in app.caption)
+    assert "#### Current logical trades" in page_markup
+    assert page_markup.index("#### Exposure snapshot") < page_markup.index("#### Current logical trades")
+    assert any("Concurrent positions can be grouped" in item.value for item in app.caption)
     assert all(f'>{label}<' in page_markup for label in ("Unprotected", "Known open risk", "Open positions", "Unrealized P&amp;L"))
     assert "Position data will appear after the first live MT5 snapshot" in page_markup
     assert not any("No open positions in the latest live snapshot" in item.value for item in app.info)
@@ -412,7 +412,7 @@ def test_ongoing_page_displays_today_realized_pnl_separately_from_unrealized_pnl
     )
     assert "#### Today action center" in markup
     assert markup.count('<div class="ongoing-exposure-section dashboard-stat-list">') == 3
-    assert markup.index("Risk buffer") < markup.index("#### Current positions")
+    assert markup.index("Risk buffer") < markup.index("#### Current logical trades")
     assert all(
         metric.label not in {"Unrealized P&L", "Today realized P&L", "Open positions", "Known open risk"}
         for metric in app.metric
@@ -482,9 +482,92 @@ def test_ongoing_page_keeps_the_empty_position_state_in_the_right_panel(monkeypa
     assert "Risk buffer" in markup
     assert "1.00R" in markup
     assert "0% of limit used" in markup
-    assert "#### Current positions" in markup
-    assert markup.index("Risk buffer") < markup.index("#### Current positions")
+    assert "#### Current logical trades" in markup
+    assert markup.index("Risk buffer") < markup.index("#### Current logical trades")
     assert not app.success
+
+
+def test_ongoing_page_groups_concurrent_positions_into_a_live_logical_trade(monkeypatch, tmp_path) -> None:
+    database_path = tmp_path / "journal.db"
+    repository = SQLiteJournalRepository(database_path)
+    repository.initialize()
+    repository.register_mt5_account(
+        display_name="Primary",
+        login="123456",
+        broker_server="DemoBroker-Live",
+        account_currency="USD",
+        export_file_path="",
+        opening_balance="1000",
+    )
+    account = repository.get_active_mt5_account()
+    assert account is not None
+    repository.save_account_risk_policy(
+        account_id=account.id,
+        standard_risk_per_trade_percent="1",
+        maximum_risk_per_trade_percent="1",
+        daily_loss_limit_r="2",
+        weekly_loss_limit_r="4",
+        max_drawdown_percent="10",
+        max_open_risk_r="2",
+        max_consecutive_losses=3,
+        minimum_rr="1.5",
+        correlation_policy=None,
+    )
+    snapshot_time = datetime.now(timezone.utc).isoformat()
+    positions = []
+    for position_id, entry_time in (("9001", "2026-08-18T07:00:00+00:00"), ("9002", "2026-08-18T07:05:00+00:00")):
+        positions.append({
+            "schema_version": 1,
+            "account_login": "123456",
+            "broker_server": "DemoBroker-Live",
+            "account_currency": "USD",
+            "snapshot_time": snapshot_time,
+            "position_id": position_id,
+            "symbol": "EURUSD",
+            "direction": "long",
+            "entry_time": entry_time,
+            "entry_price": "1.1000",
+            "current_price": "1.1010",
+            "volume": "1",
+            "stop_price": "1.0950",
+            "target_price": "1.1100",
+            "net_unrealized_pnl": "10",
+            "risk_to_stop_amount": "5",
+            "magic_number": "10001",
+        })
+    LivePositionImportService(repository).import_snapshot({
+        "schema_version": 1,
+        "account_login": "123456",
+        "broker_server": "DemoBroker-Live",
+        "account_currency": "USD",
+        "snapshot_time": snapshot_time,
+        "export_interval_seconds": 60,
+        "positions": positions,
+    })
+    monkeypatch.setenv("TRADING_JOURNAL_DB", str(database_path))
+
+    app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
+    app.switch_page("app_pages/ongoing.py").run()
+    next(item for item in app.checkbox if item.label.startswith("#9001")).set_value(True).run()
+    next(item for item in app.checkbox if item.label.startswith("#9002")).set_value(True).run()
+    next(item for item in app.button if item.label == "Group selected (2)").click().run()
+
+    next(item for item in app.text_input if item.label == "Trade label (optional)").set_value("London scale-in").run()
+    next(item for item in app.button if item.label == "Confirm grouping").click().run()
+
+    assert not app.exception
+    groups = repository.list_pending_logical_trades(account.id)
+    assert len(groups) == 1
+    assert groups[0].display_label == "London scale-in"
+    assert groups[0].position_ids == ("9001", "9002")
+    assert any("London scale-in" in item.value for item in app.markdown)
+
+    next(item for item in app.button if item.label == "Manage").click().run()
+    next(item for item in app.multiselect if item.label == "Open positions").set_value(["9001"]).run()
+
+    aggregate = next(item.value for item in app.caption if item.value.startswith("Current aggregate:"))
+    assert "0.50R open risk" in aggregate
+    assert "+$10.00 unrealized P&L" in aggregate
 
 
 def test_guidance_page_explains_the_post_trade_three_pillar_workflow(monkeypatch, tmp_path):
