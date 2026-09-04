@@ -327,6 +327,11 @@ def _render_today_trades(overview: TodayOverview, account: AccountListItem) -> N
                 st.caption(f"{tr('Closed')} {closed_at} · {item.display_label}")
                 with st.container(horizontal=True, vertical_alignment="center", gap="small"):
                     st.badge(tr(direction.label), color=direction.color, icon=direction.icon)
+                    st.badge(
+                        tr("1 pos") if item.position_count == 1 else tr("{count} pos", count=item.position_count),
+                        color="blue" if item.position_count > 1 else "gray",
+                        icon=":material/layers:" if item.position_count > 1 else None,
+                    )
                     st.badge(format_currency(item.net_pnl, account.account_currency), color=outcome.color)
                     st.badge(review_label, color=review_color)
                     if item.classification is not None:
@@ -494,14 +499,7 @@ def _render_positions(repo: SQLiteJournalRepository, report, account: AccountLis
                         st.rerun()
                 with st.container(horizontal=True, vertical_alignment="center", gap="small"):
                     position_count = len(item.members)
-                    position_label = tr("1 pos") if position_count == 1 else tr("{count} pos", count=position_count)
                     st.badge(item.direction.title(), color="blue")
-                    st.badge(
-                        position_label,
-                        color="blue" if position_count > 1 else "gray",
-                        icon=":material/layers:" if position_count > 1 else None,
-                        help=", ".join(f"#{member.position_id}" for member in item.members),
-                    )
                     st.badge(
                         tr("{open}/{total} open", open=item.open_count, total=position_count),
                         color="green" if item.open_count == position_count else "orange",

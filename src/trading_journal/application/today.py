@@ -29,6 +29,7 @@ class TodayIssueSummary:
 class TodayTradeSummary:
     trade_id: int
     display_label: str
+    position_count: int
     symbol: str
     direction: str
     closed_at: str
@@ -102,6 +103,7 @@ class TodayService:
                 TodayTradeSummary(
                     trade_id=trade.id,
                     display_label=trade.display_label,
+                    position_count=len(trade.position_ids),
                     symbol=trade.symbol,
                     direction=trade.direction,
                     closed_at=reporting_datetime(
