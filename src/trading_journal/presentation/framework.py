@@ -2143,7 +2143,7 @@ def _render_monitor_process(service: FrameworkService, account: AccountListItem,
     trend = [row for row in service.rolling_score_trend(account.id, window=window) if analysis.start_date <= row[0][:10] <= analysis.end_date]
     if trend:
         with st.container(horizontal=True, vertical_alignment="center", gap="small", width="content"):
-            st.markdown("##### Score trend")
+            st.markdown(f"##### {tr('Score trend')}")
             _render_help_popover("Zone-aligned series follow the selected rolling window.")
         records = []
         for closed, psychology, risk, system, rubric_version in trend:
@@ -2155,12 +2155,14 @@ def _render_monitor_process(service: FrameworkService, account: AccountListItem,
                 f"Trading system · {rubric}": None if system is None else float(system),
             })
         frame = pd.DataFrame(records).groupby("Closed", as_index=True).first()
-        st.line_chart(frame, width="stretch")
+        st.line_chart(frame, height=_MONITOR_CHART_HEIGHT, width="stretch")
     else:
-        st.info("No approved review trend exists in this analysis period.")
-    left, right = st.columns(2)
+        st.info(tr("No approved review trend exists in this analysis period."))
+    left, right = st.container(key="framework-process-columns").columns(2)
     with left:
-        st.markdown("##### Process quality and outcome")
+        with st.container(horizontal=True, vertical_alignment="center", gap="small", width="content"):
+            st.markdown(f"##### {tr('Process quality and outcome')}")
+            _render_help_popover("Only reviewed trades with standard 1R are plotted. A positive result does not prove good process, and a loss does not prove poor process.")
         points = [item for item in analysis.reviewed_points if item.overall_score is not None and item.result_r is not None]
         if points:
             process_score_column = tr("Process score")
@@ -2190,21 +2192,24 @@ def _render_monitor_process(service: FrameworkService, account: AccountListItem,
                 tooltip=[closed_column, direction_column, outcome_column, review_column, process_score_column, result_r_column, classification_column],
             ).properties(height=_MONITOR_CHART_HEIGHT)
             st.altair_chart(chart, width="stretch")
+            # The legend and the "outcome does not prove process" caveat are
+            # reference, not something to re-read on every visit, so they sit
+            # behind the heading's popover instead of under the chart.
             st.caption(tr(
-                "Color: {profit} / {loss} / {breakeven} · Shape: {long} / {short}. Only reviewed trades with standard 1R are plotted. A positive result does not prove good process, and a loss does not prove poor process.",
+                "Color: {profit} / {loss} / {breakeven} · Shape: {long} / {short}.",
                 profit=tr("Profit"), loss=tr("Loss"), breakeven=tr("Breakeven"),
                 long=tr("Long"), short=tr("Short"),
             ))
         else:
-            st.caption("Approve reviews and configure standard risk to compare process score with outcome R.")
+            st.caption(tr("Approve reviews and configure standard risk to compare process score with outcome R."))
     with right:
-        st.markdown("##### Quality/outcome distribution")
+        st.markdown(f"##### {tr('Quality/outcome distribution')}")
         if analysis.classifications:
             classification_column = tr("Classification")
             st.bar_chart(pd.DataFrame({classification_column: [tr(item.label) for item in analysis.classifications], tr("Trades"): [item.count for item in analysis.classifications]}).set_index(classification_column), height=_MONITOR_CHART_HEIGHT, width="stretch")
         else:
-            st.caption("No reviewed classifications in this period.")
-    st.markdown("##### Recurring reviewed issues")
+            st.caption(tr("No reviewed classifications in this period."))
+    st.markdown(f"##### {tr('Recurring reviewed issues')}")
     if analysis.issues:
         issue_column = tr("Issue")
         st.bar_chart(pd.DataFrame({issue_column: [tr(VIOLATION_LABELS.get(item.label, HARD_RULE_LABELS.get(item.label, item.label))) for item in analysis.issues], tr("Trades"): [item.count for item in analysis.issues]}).set_index(issue_column), height=_MONITOR_CHART_HEIGHT, width="stretch")
@@ -2213,7 +2218,7 @@ def _render_monitor_process(service: FrameworkService, account: AccountListItem,
             count=len(analysis.reviewed_points),
         ))
     else:
-        st.caption("No tagged issues in reviewed trades for this period.")
+        st.caption(tr("No tagged issues in reviewed trades for this period."))
 
 
 def _render_monitor_risk(analysis: MonitorAnalysisReport, snapshot: RiskSnapshot, coverage: RiskEvidenceCoverage) -> None:
@@ -2250,7 +2255,7 @@ def _render_monitor_risk(analysis: MonitorAnalysisReport, snapshot: RiskSnapshot
                 drawdown_period=_reset_period_label(snapshot.drawdown_reset_period).lower(),
                 streak_period=_reset_period_label(snapshot.loss_streak_reset_period).lower(),
             ))
-    left, right = st.columns(2)
+    left, right = st.container(key="framework-risk-columns").columns(2)
     with left:
         st.markdown(f'<div class="dashboard-stat-column-head">{escape(tr("Review evidence lifecycle"))}</div>', unsafe_allow_html=True)
         if analysis.lifecycle:
@@ -2270,30 +2275,50 @@ def _render_monitor_risk(analysis: MonitorAnalysisReport, snapshot: RiskSnapshot
     st.caption("These are post-close monitoring signals only; they never place, block, or change MT5 orders.")
 
 
+def _breakdown_column_config(label_column: str, process_score_column: str, win_rate_column: str, average_r_column: str) -> dict:
+    """One table that also reads as the bar chart it replaces.
+
+    A separate bar chart of the process score duplicated the column beside it,
+    costing a full chart's height to show a number the table already had. An
+    in-cell progress bar keeps the visual comparison in the same component.
+    """
+    return {
+        label_column: st.column_config.TextColumn(width="medium"),
+        process_score_column: st.column_config.ProgressColumn(format="%.0f", min_value=0, max_value=100),
+        win_rate_column: st.column_config.NumberColumn(format="%.1f%%"),
+        average_r_column: st.column_config.NumberColumn(format="%+.2fR"),
+    }
+
+
 def _render_monitor_system(analysis: MonitorAnalysisReport) -> None:
-    st.markdown("##### Strategy evidence")
+    st.markdown(f"##### {tr('Strategy evidence')}")
+    process_score_column = tr("Process score")
+    win_rate_column, average_r_column = tr("Win rate"), tr("Average R")
     if analysis.strategies:
-        strategy_column, process_score_column = tr("Strategy"), tr("Process score")
-        win_rate_column, average_r_column = tr("Win rate"), tr("Average R")
+        strategy_column = tr("Strategy")
         frame = pd.DataFrame([{strategy_column: item.label, tr("Reviewed"): item.count, process_score_column: None if item.average_process_score is None else float(item.average_process_score), win_rate_column: None if item.win_rate is None else float(item.win_rate), average_r_column: None if item.average_r is None else float(item.average_r)} for item in analysis.strategies])
-        st.bar_chart(frame.set_index(strategy_column)[[process_score_column]], height=_MONITOR_CHART_HEIGHT, width="stretch")
-        st.dataframe(frame, hide_index=True, width="stretch", column_config={process_score_column: st.column_config.NumberColumn(format="%.0f"), win_rate_column: st.column_config.NumberColumn(format="%.1f%%"), average_r_column: st.column_config.NumberColumn(format="%+.2fR")})
+        st.dataframe(
+            frame, hide_index=True, width="stretch",
+            column_config=_breakdown_column_config(strategy_column, process_score_column, win_rate_column, average_r_column),
+        )
     else:
-        st.caption("No reviewed strategy evidence in this period.")
-    st.markdown("##### Manual-review context")
-    st.caption("Setup, session, and regime are Manual Review fields. Samples below five reviews are directional, not causal evidence.")
+        st.caption(tr("No reviewed strategy evidence in this period."))
+    with st.container(horizontal=True, vertical_alignment="center", gap="small", width="content"):
+        st.markdown(f"##### {tr('Manual-review context')}")
+        _render_help_popover("Setup, session, and regime are Manual Review fields. Samples below five reviews are directional, not causal evidence.")
     tabs = st.tabs(["Setup", "Session", "Market regime"])
     for tab, dimension in zip(tabs, ("setup", "session", "regime"), strict=True):
         with tab:
             rows = analysis.contexts[dimension]
             if not rows:
-                st.caption("Complete Manual Reviews with optional context to populate this report.")
+                st.caption(tr("Complete Manual Reviews with optional context to populate this report."))
                 continue
-            context_column, process_score_column = tr("Context"), tr("Process score")
-            win_rate_column, average_r_column = tr("Win rate"), tr("Average R")
-            frame = pd.DataFrame([{context_column: item.label, tr("Reviews"): item.count, process_score_column: item.average_process_score, win_rate_column: item.win_rate, average_r_column: item.average_r} for item in rows])
-            st.bar_chart(frame.set_index(context_column)[[process_score_column]].astype(float), height=_MONITOR_CHART_HEIGHT, width="stretch")
-            st.dataframe(frame, hide_index=True, width="stretch", column_config={process_score_column: st.column_config.NumberColumn(format="%.0f"), win_rate_column: st.column_config.NumberColumn(format="%.1f%%"), average_r_column: st.column_config.NumberColumn(format="%+.2fR")})
+            context_column = tr("Context")
+            frame = pd.DataFrame([{context_column: item.label, tr("Reviews"): item.count, process_score_column: None if item.average_process_score is None else float(item.average_process_score), win_rate_column: None if item.win_rate is None else float(item.win_rate), average_r_column: None if item.average_r is None else float(item.average_r)} for item in rows])
+            st.dataframe(
+                frame, hide_index=True, width="stretch",
+                column_config=_breakdown_column_config(context_column, process_score_column, win_rate_column, average_r_column),
+            )
 
 
 def _render_framework_focus_action_dialog(

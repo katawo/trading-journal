@@ -878,7 +878,9 @@ def apply_application_style() -> None:
         div.st-key-dashboard-consistency-columns [data-testid="stColumn"] + [data-testid="stColumn"],
         div.st-key-dashboard-process-risk-columns [data-testid="stColumn"] + [data-testid="stColumn"],
         div.st-key-framework-pillar-columns [data-testid="stColumn"] + [data-testid="stColumn"],
-        div.st-key-framework-drivers-columns [data-testid="stColumn"] + [data-testid="stColumn"] {
+        div.st-key-framework-drivers-columns [data-testid="stColumn"] + [data-testid="stColumn"],
+        div.st-key-framework-process-columns [data-testid="stColumn"] + [data-testid="stColumn"],
+        div.st-key-framework-risk-columns [data-testid="stColumn"] + [data-testid="stColumn"] {
             border-left: 1px solid var(--st-border-color, #c8d0c8);
             padding-left: 1rem;
         }
@@ -1048,7 +1050,9 @@ def apply_application_style() -> None:
             div.st-key-dashboard-consistency-columns [data-testid="stColumn"] + [data-testid="stColumn"],
             div.st-key-dashboard-process-risk-columns [data-testid="stColumn"] + [data-testid="stColumn"],
             div.st-key-framework-pillar-columns [data-testid="stColumn"] + [data-testid="stColumn"],
-            div.st-key-framework-drivers-columns [data-testid="stColumn"] + [data-testid="stColumn"] {
+            div.st-key-framework-drivers-columns [data-testid="stColumn"] + [data-testid="stColumn"],
+            div.st-key-framework-process-columns [data-testid="stColumn"] + [data-testid="stColumn"],
+            div.st-key-framework-risk-columns [data-testid="stColumn"] + [data-testid="stColumn"] {
                 border-left: 0;
                 padding-left: 0;
             }
