@@ -289,7 +289,55 @@ def test_cached_dashboard_report_closes_its_temporary_repository(monkeypatch):
         "temporary-dashboard-repository",
         (1, 2, 3, 4),
         7,
+        journal_app._DASHBOARD_PAYLOAD_SHAPE,
     )
 
     assert result == {"account_id": 7}
     assert closed == [True]
+
+
+def test_cached_payload_shape_token_changes_when_a_cached_dataclass_gains_a_field() -> None:
+    """Adding a field must invalidate cached payloads on its own.
+
+    st.cache_data keys on the cached function's own code plus its arguments, not
+    on the dataclasses it serializes, so without the shape token a payload cached
+    before the field existed survives a hot reload and then fails to rebuild.
+    """
+    import dataclasses
+
+    import app as journal_app
+    from trading_journal.application.dashboard import DashboardReport
+
+    before = journal_app._payload_shape_token(DashboardReport)
+    extended = dataclasses.make_dataclass(
+        "DashboardReport",
+        [(field.name, field.type) for field in dataclasses.fields(DashboardReport)] + [("later_metric", str)],
+    )
+
+    assert journal_app._payload_shape_token(extended) != before
+
+
+def test_dashboard_and_framework_payloads_rebuild_from_their_own_cached_shape(tmp_path) -> None:
+    """The rebuild helpers accept exactly what the cached functions produce."""
+    from dataclasses import asdict
+
+    import app as journal_app
+
+    database_path = tmp_path / "journal.db"
+    repository = SQLiteJournalRepository(database_path)
+    repository.initialize()
+    repository.configure_journal(reporting_time_basis="utc")
+    repository.register_mt5_account(
+        display_name="Primary", login="123456", broker_server="DemoBroker-Live",
+        account_currency="USD", export_file_path="", opening_balance="1000",
+    )
+    account = repository.find_active_mt5_account("123456", "DemoBroker-Live")
+    assert account is not None
+
+    from trading_journal.application.dashboard import DashboardService
+
+    dashboard_payload = asdict(DashboardService(repository).build_report(account_id=account.id))
+    framework_payload = asdict(FrameworkService(repository).account_snapshot(account.id))
+
+    assert journal_app._dashboard_report_from_cache_payload(dashboard_payload) is not None
+    assert journal_app._framework_snapshot_from_cache_payload(framework_payload) is not None

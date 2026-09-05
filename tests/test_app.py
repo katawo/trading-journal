@@ -202,7 +202,7 @@ def test_review_save_immediately_invalidates_the_menu_badge_count(monkeypatch, t
     trade = repository.list_closed_trades_for_review(account.id)[0]
     before = journal_app._database_change_token(database_path)
     before_payload = journal_app._cached_account_framework_snapshot(
-        str(database_path), before, account.id
+        str(database_path), before, account.id, journal_app._FRAMEWORK_PAYLOAD_SHAPE
     )
     assert isinstance(before_payload, dict)
     assert before_payload["review_queue_count"] == 1
@@ -226,7 +226,7 @@ def test_review_save_immediately_invalidates_the_menu_badge_count(monkeypatch, t
     after = journal_app._database_change_token(database_path)
     assert after != before
     after_payload = journal_app._cached_account_framework_snapshot(
-        str(database_path), after, account.id
+        str(database_path), after, account.id, journal_app._FRAMEWORK_PAYLOAD_SHAPE
     )
     assert isinstance(after_payload, dict)
     assert after_payload["review_queue_count"] == 0

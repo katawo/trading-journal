@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import os
-from dataclasses import asdict
+from dataclasses import asdict, fields
+from hashlib import sha256
 from html import escape
 from importlib.metadata import version
 import tomllib
@@ -1102,10 +1103,11 @@ def _cached_account_framework_snapshot(
     database_path: str,
     database_change_token: tuple[int, int, int, int],
     account_id: int,
+    payload_shape: str,
 ) -> dict[str, object]:
     """Cache a reload-safe framework payload without combining account histories."""
 
-    del database_change_token
+    del database_change_token, payload_shape
     repo = SQLiteJournalRepository(database_path)
     try:
         return asdict(FrameworkService(repo).account_snapshot(account_id))
@@ -1168,6 +1170,32 @@ def _database_change_token(database_path: Path) -> tuple[int, int, int, int]:
     return values[0], values[1], values[2], values[3]
 
 
+def _payload_shape_token(*types: type) -> str:
+    """Invalidate cached payloads when a cached dataclass gains or loses a field.
+
+    st.cache_data keys on the decorated function's own code plus its arguments,
+    not on the dataclasses that function serializes. A payload cached before a
+    field was added therefore survives a hot reload and then fails to rebuild
+    (`missing 1 required positional argument`) until the cache is cleared by
+    hand. Feeding the current field names in as an argument keys the cache to
+    the payload shape, so adding a field is enough on its own.
+    """
+
+    shape = ";".join(f"{item.__name__}:{','.join(field.name for field in fields(item))}" for item in types)
+    return sha256(shape.encode("utf-8")).hexdigest()[:16]
+
+
+_FRAMEWORK_PAYLOAD_SHAPE = _payload_shape_token(
+    AccountFrameworkSnapshot, FrameworkAlert, FrameworkFocusView, FrameworkFocusProgress,
+    PillarScore, RiskSnapshot, ReadinessAssessment, CoachingRecommendation, CoachingFocusPlan,
+)
+_DASHBOARD_PAYLOAD_SHAPE = _payload_shape_token(
+    DashboardReport, CumulativePoint, TradePerformancePoint, DailyPerformance,
+    StrategyPerformance, PerformanceBreakdown, ConcentrationBreakdown, ConcentrationSide,
+    ConcentrationItem,
+)
+
+
 def build_account_framework_snapshot(
     repo: SQLiteJournalRepository,
     *,
@@ -1178,6 +1206,7 @@ def build_account_framework_snapshot(
             str(repo.database_path),
             _database_change_token(repo.database_path),
             account_id,
+            _FRAMEWORK_PAYLOAD_SHAPE,
         )
     )
 
@@ -1262,8 +1291,9 @@ def _cached_dashboard_report(
     database_path: str,
     database_change_token: tuple[int, int, int, int],
     account_id: int,
+    payload_shape: str,
 ) -> dict[str, object]:
-    del database_change_token
+    del database_change_token, payload_shape
     repo = SQLiteJournalRepository(database_path)
     try:
         return asdict(DashboardService(repo).build_report(account_id=account_id))
@@ -1321,6 +1351,7 @@ def build_dashboard_report(repo: SQLiteJournalRepository, *, account_id: int) ->
             str(repo.database_path),
             _database_change_token(repo.database_path),
             account_id,
+            _DASHBOARD_PAYLOAD_SHAPE,
         )
     )
 
