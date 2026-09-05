@@ -82,6 +82,31 @@ def test_concentration_chart_keeps_profit_and_empty_loss_visible() -> None:
     assert figure.layout.yaxis3.showticklabels is False
 
 
+def test_per_trade_bars_follow_the_reported_outcome_not_the_raw_sign() -> None:
+    """A bar must not read as a win while the table calls the trade breakeven."""
+    values = [Decimal("5"), Decimal("0.4"), Decimal("-0.4"), Decimal("-3")]
+    outcomes = ["profit", "breakeven", "breakeven", "loss"]
+
+    colored = journal_app._pnl_bar_colors(values, outcomes)
+
+    assert colored == [
+        journal_app._CHART_POSITIVE,
+        journal_app._CHART_NEUTRAL,
+        journal_app._CHART_NEUTRAL,
+        journal_app._CHART_NEGATIVE,
+    ]
+
+
+def test_daily_bars_keep_sign_colouring_because_a_day_has_no_outcome() -> None:
+    values = [Decimal("5"), Decimal("0"), Decimal("-3")]
+
+    assert journal_app._pnl_bar_colors(values) == [
+        journal_app._CHART_POSITIVE,
+        journal_app._CHART_POSITIVE,
+        journal_app._CHART_NEGATIVE,
+    ]
+
+
 def test_direction_statistics_format_a_populated_direction() -> None:
     row = breakdown("long", "5", trade_count=3, win_rate="66.666")
 

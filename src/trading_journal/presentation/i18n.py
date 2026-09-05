@@ -268,6 +268,7 @@ VI: dict[str, str] = {
     "Total R": "Tổng R",
     "Win rate": "Tỷ lệ thắng",
     "Loss rate": "Tỷ lệ thua",
+    "Win rate (decided)": "Tỷ lệ thắng (loại hòa vốn)",
     "Breakeven rate": "Tỷ lệ hòa vốn",
     "Profit factor": "Profit Factor",
     "Expectancy": "Expectancy",

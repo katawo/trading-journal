@@ -350,6 +350,19 @@ def _build_concentration_figure(*, profit, loss, currency: str) -> go.Figure:
     return figure
 
 
+def _pnl_bar_colors(values, outcomes=None) -> list[str]:
+    """Colour realized bars by the outcome the rest of the page reports.
+
+    Daily bars have no outcome of their own and stay on the sign of the day's
+    P&L; per-trade bars follow the trade's classification so a bar never reads
+    as a win while the table below calls the same trade a breakeven.
+    """
+    if outcomes is None:
+        return [_CHART_POSITIVE if value >= 0 else _CHART_NEGATIVE for value in values]
+    tones = {"profit": _CHART_POSITIVE, "loss": _CHART_NEGATIVE, "breakeven": _CHART_NEUTRAL}
+    return [tones.get(outcome, _CHART_NEUTRAL) for outcome in outcomes]
+
+
 def _build_performance_history_figure(
     *,
     timeline_x,
@@ -360,6 +373,7 @@ def _build_performance_history_figure(
     pnl_x,
     pnl_values,
     pnl_customdata,
+    pnl_outcomes=None,
     curve_title: str,
     drawdown_title: str,
     pnl_title: str,
@@ -408,7 +422,7 @@ def _build_performance_history_figure(
             x=pnl_x,
             y=pnl_values,
             customdata=pnl_customdata,
-            marker_color=[_CHART_POSITIVE if value >= 0 else _CHART_NEGATIVE for value in pnl_values],
+            marker_color=_pnl_bar_colors(pnl_values, pnl_outcomes),
             marker_line_width=0,
             hovertemplate="%{customdata[0]}<br><b>%{customdata[1]}</b><extra></extra>",
         ),
@@ -616,10 +630,28 @@ def _render_dashboard_statistics(report: DashboardReport, currency: str) -> None
             st.markdown(f'<div class="dashboard-stat-column-head">{tr("Edge quality")}</div>', unsafe_allow_html=True)
             loss_rate = Decimal(report.loss_count * 100) / Decimal(report.trade_count)
             breakeven_rate = Decimal(report.breakeven_count * 100) / Decimal(report.trade_count)
+            # On a typical account this is a rounding error, so it only earns a
+            # slot once breakeven trades actually hold P&L back from the gross
+            # totals - which is exactly when the columns would not add up.
+            breakeven_rows = [] if Decimal(report.breakeven_pnl) == 0 else [(
+                tr("Breakeven P&L"),
+                format_currency(report.breakeven_pnl, currency),
+                _signed_metric_tone(report.breakeven_pnl),
+            )]
+            # Payoff ratio and profit factor are measured over won and lost
+            # trades only, so the payoff-consistent win rate shares that
+            # population. Identical to Win rate without breakeven trades.
+            decided = report.win_count + report.loss_count
+            decided_rows = [] if report.breakeven_count == 0 or decided == 0 else [(
+                tr("Win rate (decided)"),
+                format_percent(Decimal(report.win_count * 100) / Decimal(decided)),
+                "info",
+            )]
             _render_stat_grid([
                 (tr("Win rate"), format_percent(report.win_rate), "info"),
                 (tr("Loss rate"), format_percent(loss_rate), "negative"),
                 (tr("Breakeven rate"), format_percent(breakeven_rate), "neutral"),
+                *decided_rows,
                 (tr("Payoff ratio"), "—" if report.payoff_ratio is None else format_number(report.payoff_ratio, 2), "info"),
                 (
                     tr("Expectancy R"),
@@ -632,11 +664,7 @@ def _render_dashboard_statistics(report: DashboardReport, currency: str) -> None
                     else format_number(report.profit_factor, 2),
                     _profit_factor_metric_tone(report.profit_factor),
                 ),
-                (
-                    tr("Breakeven P&L"),
-                    format_currency(report.breakeven_pnl, currency),
-                    _signed_metric_tone(report.breakeven_pnl),
-                ),
+                *breakeven_rows,
                 (
                     tr("R coverage"),
                     format_percent(Decimal(report.r_trade_count * 100) / Decimal(report.trade_count)),
@@ -646,7 +674,9 @@ def _render_dashboard_statistics(report: DashboardReport, currency: str) -> None
 
         current_streak = "—"
         if report.current_streak_outcome is not None:
-            streak_outcome = {"win": "Win", "loss": "Loss", "breakeven": "Breakeven"}[report.current_streak_outcome]
+            # Breakeven trades are transparent to streaks, so this only ever
+            # reports a win or a loss run.
+            streak_outcome = {"win": "Win", "loss": "Loss"}[report.current_streak_outcome]
             current_streak = f"{format_count(report.current_streak_count)} · {tr(streak_outcome)}"
         st.markdown(
             f'<div class="dashboard-stat-section-head">{tr("Consistency profile")}</div>',
@@ -2384,6 +2414,7 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
         pnl_data = daily.assign(hover_label=daily["date"])
         pnl_x = pnl_data["date"]
         pnl_title = tr("Daily realized P&L")
+        pnl_outcomes = None
     else:
         timeline = per_trade
         timeline_x = timeline["exit_time"]
@@ -2393,6 +2424,7 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
         pnl_data = per_trade
         pnl_x = pnl_data["exit_time"]
         pnl_title = tr("Logical-trade P&L")
+        pnl_outcomes = pnl_data["outcome"]
     curve_is_balance = chart_view == "Daily" and report.ending_balance is not None
     timeline["hover_amount"] = [format_currency(value, currency, signed=not curve_is_balance) for value in timeline[curve_column]]
     pnl_data["hover_amount"] = [format_currency(value, currency) for value in pnl_data["net_pnl"]]
@@ -2411,6 +2443,7 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
         pnl_x=pnl_x,
         pnl_values=pnl_data["net_pnl"],
         pnl_customdata=pnl_data[["hover_label", "hover_amount"]],
+        pnl_outcomes=pnl_outcomes,
         curve_title=curve_title,
         drawdown_title=drawdown_title,
         pnl_title=pnl_title,
