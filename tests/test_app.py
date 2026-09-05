@@ -2437,7 +2437,11 @@ def test_dashboard_renders_graphics_for_imported_trades(monkeypatch, tmp_path):
         '<div class="dashboard-stat-value dashboard-stat-tone-disabled">'
     ) in stat_markup
     assert 'class="dashboard-stat-column-head">Drawdown · Daily close<' in stat_markup
-    assert 'class="dashboard-stat-column-head">Quality<' in stat_markup
+    # Total R moved beside the Realized P&L it normalizes, which left the
+    # Quality column holding only a second copy of Edge quality's profit factor.
+    assert 'class="dashboard-stat-column-head">Quality<' not in stat_markup
+    assert '<div class="dashboard-stat-label">Total R</div>' in stat_markup
+    assert stat_markup.count('<div class="dashboard-stat-label">Profit factor</div>') == 1
     assert 'class="dashboard-stat-section-head">Consistency profile<' in stat_markup
     assert 'class="dashboard-stat-column-head">Activity<' in stat_markup
     section_order = [

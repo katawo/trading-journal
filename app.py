@@ -2356,7 +2356,7 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
         displayed_current_drawdown_percent = report.end_of_day_current_drawdown_percent
 
         snapshot_columns = st.container(key="dashboard-account-risk-columns")
-        capital, performance, drawdown, quality = snapshot_columns.columns(4, gap="medium")
+        capital, performance, drawdown = snapshot_columns.columns(3, gap="medium")
         with capital:
             st.markdown(f'<div class="dashboard-stat-column-head">{tr("Capital")}</div>', unsafe_allow_html=True)
             _render_stat_grid([
@@ -2380,6 +2380,12 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
                     _signed_metric_tone(report.balance_growth_percent),
                 ),
                 (tr("Realized P&L"), format_currency(report.net_pnl, currency), _signed_metric_tone(report.net_pnl)),
+                # The same realized result in risk units, so it reads beside it.
+                (
+                    tr("Total R"),
+                    tr("Awaiting risk") if report.total_r is None else format_r(report.total_r),
+                    _risk_metric_tone(report.total_r, report.trade_count),
+                ),
             ], class_name="dashboard-stat-list")
         with drawdown:
             st.markdown(
@@ -2396,21 +2402,6 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
                     tr("Max drawdown"),
                     _format_drawdown_value(displayed_max_drawdown, displayed_max_drawdown_percent, currency),
                     _signed_metric_tone(-Decimal(displayed_max_drawdown)),
-                ),
-            ], class_name="dashboard-stat-list")
-        with quality:
-            st.markdown(f'<div class="dashboard-stat-column-head">{tr("Quality")}</div>', unsafe_allow_html=True)
-            _render_stat_grid([
-                (
-                    tr("Total R"),
-                    tr("Awaiting risk") if report.total_r is None else format_r(report.total_r),
-                    _risk_metric_tone(report.total_r, report.trade_count),
-                ),
-                (
-                    tr("Profit factor"),
-                    _empty_outcome_label(report.breakeven_count, wins=False) if report.profit_factor is None
-                    else format_number(report.profit_factor, 2),
-                    _profit_factor_metric_tone(report.profit_factor),
                 ),
             ], class_name="dashboard-stat-list")
         # Full coverage is the normal state and said nothing worth a line; the
