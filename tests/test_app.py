@@ -43,9 +43,9 @@ def _review_filter_checkboxes(app):
         "manual_reviewed": next(item for item in app.checkbox if item.label.startswith("Reviewed (")),
         "long": next(item for item in app.checkbox if item.label == "Long"),
         "short": next(item for item in app.checkbox if item.label == "Short"),
-        "win": next(item for item in app.checkbox if item.label == "Win"),
+        "win": next(item for item in app.checkbox if item.label == "Profit"),
         "loss": next(item for item in app.checkbox if item.label == "Loss"),
-        "breakeven": next(item for item in app.checkbox if item.label == "BE"),
+        "breakeven": next(item for item in app.checkbox if item.label == "Breakeven"),
     }
 
 
@@ -2357,7 +2357,8 @@ def test_dashboard_renders_graphics_for_imported_trades(monkeypatch, tmp_path):
         for item in app.markdown
         if '<div class="dashboard-stat-label">Win rate</div>' in item.value
     )
-    assert '<div class="dashboard-stat-label">Breakeven</div>' in edge_quality_markup
+    assert '<div class="dashboard-stat-label">Loss rate</div>' in edge_quality_markup
+    assert '<div class="dashboard-stat-label">Breakeven rate</div>' in edge_quality_markup
     assert any(
         "R coverage: :orange[**0 / 1**] logical trades can be normalized" in item.value
         for item in app.caption

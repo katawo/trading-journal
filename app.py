@@ -430,9 +430,10 @@ def _direction_profile_items(
             (tr("Trades"), format_count(0), "neutral"),
             (tr("Wins (rate)"), f'{format_count(0)} (—)', "neutral"),
             (tr("Losses (rate)"), f'{format_count(0)} (—)', "neutral"),
-            (tr("Breakeven"), format_count(0), "neutral"),
+            (tr("Breakeven (rate)"), f'{format_count(0)} (—)', "neutral"),
         ]
     loss_rate = Decimal(row.loss_count * 100) / Decimal(row.trade_count)
+    breakeven_rate = Decimal(row.breakeven_count * 100) / Decimal(row.trade_count)
     return [
         (tr("Trades"), format_count(row.trade_count), "info"),
         (
@@ -445,7 +446,11 @@ def _direction_profile_items(
             f"{format_count(row.loss_count)} ({format_percent(loss_rate)})",
             _presence_metric_tone(row.loss_count, "negative"),
         ),
-        (tr("Breakeven"), format_count(row.breakeven_count), "neutral"),
+        (
+            tr("Breakeven (rate)"),
+            f"{format_count(row.breakeven_count)} ({format_percent(breakeven_rate)})",
+            "neutral",
+        ),
     ]
 
 
@@ -595,9 +600,12 @@ def _render_dashboard_statistics(report: DashboardReport, currency: str) -> None
             ], class_name="dashboard-stat-list")
         with outcome:
             st.markdown(f'<div class="dashboard-stat-column-head">{tr("Edge quality")}</div>', unsafe_allow_html=True)
+            loss_rate = Decimal(report.loss_count * 100) / Decimal(report.trade_count)
+            breakeven_rate = Decimal(report.breakeven_count * 100) / Decimal(report.trade_count)
             _render_stat_grid([
                 (tr("Win rate"), format_percent(report.win_rate), "info"),
-                (tr("Breakeven"), format_count(report.breakeven_count), "neutral"),
+                (tr("Loss rate"), format_percent(loss_rate), "negative"),
+                (tr("Breakeven rate"), format_percent(breakeven_rate), "neutral"),
                 (tr("Payoff ratio"), "—" if report.payoff_ratio is None else format_number(report.payoff_ratio, 2), "info"),
                 (
                     tr("Expectancy R"),

@@ -92,7 +92,7 @@ def test_direction_statistics_format_a_populated_direction() -> None:
         ("Trades", "3", "info"),
         ("Wins (rate)", "2 (66.7%)", "positive"),
         ("Losses (rate)", "1 (33.3%)", "negative"),
-        ("Breakeven", "0", "neutral"),
+        ("Breakeven (rate)", "0 (0.0%)", "neutral"),
     ]
     assert edge_items == [
         ("Net P&L", "+$5.00", "positive"),
@@ -110,7 +110,7 @@ def test_direction_statistics_keep_an_empty_direction_visible() -> None:
         ("Trades", "0", "neutral"),
         ("Wins (rate)", "0 (—)", "neutral"),
         ("Losses (rate)", "0 (—)", "neutral"),
-        ("Breakeven", "0", "neutral"),
+        ("Breakeven (rate)", "0 (—)", "neutral"),
     ]
     assert edge_items == [
         ("Net P&L", "$0.00", "neutral"),
