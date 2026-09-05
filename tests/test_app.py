@@ -43,6 +43,9 @@ def _review_filter_checkboxes(app):
         "manual_reviewed": next(item for item in app.checkbox if item.label.startswith("Reviewed (")),
         "long": next(item for item in app.checkbox if item.label == "Long"),
         "short": next(item for item in app.checkbox if item.label == "Short"),
+        "win": next(item for item in app.checkbox if item.label == "Win"),
+        "loss": next(item for item in app.checkbox if item.label == "Loss"),
+        "breakeven": next(item for item in app.checkbox if item.label == "BE"),
     }
 
 
@@ -1548,7 +1551,10 @@ def test_framework_renders_a_filtered_review_register(monkeypatch, tmp_path):
     assert review_filters["manual_reviewed"].label == "Reviewed (0)"
     assert review_filters["long"].value is True
     assert review_filters["short"].value is True
-    assert {"Status", "Direction"} <= {item.value for item in app.caption}
+    assert review_filters["win"].value is True
+    assert review_filters["loss"].value is True
+    assert review_filters["breakeven"].value is True
+    assert {"Status", "Direction", "Outcome"} <= {item.value for item in app.caption}
     assert not any(item.label == "Show failed only" for item in app.checkbox)
     assert any(item.label == "Check all" for item in app.checkbox)
     assert any(item.label.startswith("Select LT-") for item in app.checkbox)
@@ -1561,6 +1567,16 @@ def test_framework_renders_a_filtered_review_register(monkeypatch, tmp_path):
     assert any("Automatic risk evidence only counts toward scores once approved" in item.value for item in app.caption)
     assert not any(item.label == "Closed MT5 position" for item in app.selectbox)
     assert not any(item.label == "Save review" for item in app.button)
+
+    review_filters["win"].set_value(False).run()
+    assert any("No requires review trades" in item.value for item in app.info)
+    review_filters = _review_filter_checkboxes(app)
+    review_filters["loss"].set_value(False)
+    review_filters["breakeven"].set_value(False)
+    app.run()
+    assert any("Select at least one outcome filter" in item.value for item in app.info)
+    review_filters = _review_filter_checkboxes(app)
+    review_filters["win"].set_value(True).run()
 
     review_filters["long"].set_value(False).run()
     assert any("No requires review trades" in item.value for item in app.info)

@@ -51,3 +51,14 @@ def test_vietnamese_keeps_familiar_trading_terms(monkeypatch) -> None:
     )
     assert i18n.tr("Daily result range") == "Biên độ kết quả theo ngày"
     assert i18n.tr("Select at least one trading mistake when a criterion fails") == "Chọn ít nhất một lỗi giao dịch khi một tiêu chí không đạt"
+
+
+def test_vietnamese_translates_oversized_revenge_coaching_action(monkeypatch) -> None:
+    monkeypatch.setattr(i18n, "language", lambda: "vi")
+
+    assert i18n.tr(
+        "After a loss, pause before re-entering and keep position size within the written risk plan."
+    ) == (
+        "Sau lệnh lỗ, hãy tạm dừng trước khi vào lại và giữ khối lượng trong giới hạn "
+        "của kế hoạch rủi ro đã ghi."
+    )

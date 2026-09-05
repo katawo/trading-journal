@@ -3716,6 +3716,29 @@ def test_hard_rule_coaching_supersedes_an_active_focus(tmp_path) -> None:
     assert prior.status == "superseded"
 
 
+def test_oversized_revenge_coaching_uses_a_specific_action(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    trade_id = _import_position(repository, account_id, position_id="oversized-revenge")
+    _review(
+        repository,
+        account_id,
+        trade_id,
+        policy,
+        strategy,
+        hard_rules=("oversized_revenge",),
+        action="Pause and reset risk after the loss.",
+    )
+
+    recommendation = FrameworkService(repository).coaching_recommendation(account_id)
+
+    assert recommendation is not None
+    assert recommendation.metric_code == "oversized_revenge"
+    assert recommendation.action_text == (
+        "After a loss, pause before re-entering and keep position size within the written risk plan."
+    )
+
+
 def test_resolved_coach_focus_is_not_reopened_from_the_same_sample(tmp_path) -> None:
     repository, account_id = _repository(tmp_path)
     policy, strategy = _policy(repository, account_id), _strategy(repository)
@@ -3723,6 +3746,26 @@ def test_resolved_coach_focus_is_not_reopened_from_the_same_sample(tmp_path) -> 
     _review(repository, account_id, trade_id, policy, strategy, hard_rules=("stop_widened",), action="Keep the stop fixed.")
     focus = FrameworkService(repository).ensure_coaching_focus(account_id)
     assert focus is not None
+    repository.resolve_framework_focus(focus_id=focus.id, outcome="completed", resolution_note="Recorded the safety lesson.")
+
+    assert FrameworkService(repository).ensure_coaching_focus(account_id) is None
+
+
+def test_resolved_coach_focus_is_not_reopened_after_its_action_text_was_tailored(tmp_path) -> None:
+    """Tailoring a coach focus's wording must not defeat the anti-recycling guard above -
+    only the displayed text should change, not who the focus is attributed to.
+    """
+    repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    trade_id = _import_position(repository, account_id)
+    _review(repository, account_id, trade_id, policy, strategy, hard_rules=("stop_widened",), action="Keep the stop fixed.")
+    focus = FrameworkService(repository).ensure_coaching_focus(account_id)
+    assert focus is not None
+
+    tailored = repository.update_framework_focus_action(focus_id=focus.id, action_text="My own wording for this.")
+    assert tailored.source == "coach"
+    assert tailored.action_customized is True
+
     repository.resolve_framework_focus(focus_id=focus.id, outcome="completed", resolution_note="Recorded the safety lesson.")
 
     assert FrameworkService(repository).ensure_coaching_focus(account_id) is None

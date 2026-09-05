@@ -1140,6 +1140,7 @@ class FrameworkService:
         label = metric_code.replace("_", " ")
         actions = {
             "revenge": "After any loss, pause before the next order and re-check the written setup.",
+            "oversized_revenge": "After a loss, pause before re-entering and keep position size within the written risk plan.",
             "stop_widened": "Keep the original invalidation level; do not widen the stop after entry.",
             "edge_execution": "When the documented edge appears and risk is accepted, execute it without hesitation, chasing, or improvisation.",
             "risk_acceptance": "State the predefined loss before entry and stand aside if you cannot accept that outcome without interference.",

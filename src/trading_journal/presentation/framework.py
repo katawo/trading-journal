@@ -122,6 +122,11 @@ HARD_RULE_LABELS = {
     "stop_widened": "Deliberately widened stop",
     "shutdown_breach": "Traded after hard shutdown",
 }
+RISK_POLICY_STATE_LABELS = {
+    "within_policy": "Within policy",
+    "over_policy": "Over policy",
+    "unavailable": "Unavailable",
+}
 AUTOMATIC_RISK_EVENT_LABELS = {
     "daily_limit": "Daily loss limit",
     "weekly_limit": "Weekly loss limit",
@@ -273,11 +278,7 @@ def _drawdown_metric(value: str | None) -> tuple[str | None, str, str]:
 
 
 def _auto_risk_label(score: TradeProcessScore) -> str:
-    state = {
-        "within_policy": "Within policy",
-        "over_policy": "Over policy",
-        "unavailable": "Unavailable",
-    }.get(score.risk_policy_state, "Unavailable")
+    state = RISK_POLICY_STATE_LABELS.get(score.risk_policy_state, "Unavailable")
     if score.risk_evidence_source == "reviewed_actual_risk":
         return f"{tr('Reviewed actual risk')} · {tr(state)}"
     evidence = score.auto_risk
@@ -847,16 +848,19 @@ def _render_bulk_quick_review_dialog(repo: SQLiteJournalRepository, account: Acc
             _clear_bulk_quick_review(account.id)
             st.rerun()
         return
-    labels = {"within_policy": "Within policy", "over_policy": "Over policy", "unavailable": "Unavailable"}
+    labels = RISK_POLICY_STATE_LABELS
     counts = Counter(score.risk_policy_state for _, score in eligible)
-    st.write(f"Accept automatic risk evidence for **{len(eligible)} selected logical trade(s)**?")
-    st.caption(" · ".join(f"{labels.get(state, state)}: {count}" for state, count in sorted(counts.items())))
+    st.write(tr(
+        "Accept automatic risk evidence for **{count} selected logical trade(s)**?",
+        count=len(eligible),
+    ))
+    st.caption(" · ".join(f"{tr(labels.get(state, state))}: {count}" for state, count in sorted(counts.items())))
     st.dataframe(
         pd.DataFrame(
             [{
-                "Logical trade": f"LT-{trade.id}", "Trade": trade.display_label,
-                "Direction": tr(direction_tag(trade.direction).label), "Outcome": tr(outcome_tag(score.outcome).label),
-                "Policy evidence": labels.get(score.risk_policy_state, score.risk_policy_state),
+                tr("Logical trade"): f"LT-{trade.id}", tr("Trade"): trade.display_label,
+                tr("Direction"): tr(direction_tag(trade.direction).label), tr("Outcome"): tr(outcome_tag(score.outcome).label),
+                tr("Policy evidence"): tr(labels.get(score.risk_policy_state, score.risk_policy_state)),
             } for trade, score in eligible]
         ),
         hide_index=True,
@@ -865,7 +869,7 @@ def _render_bulk_quick_review_dialog(repo: SQLiteJournalRepository, account: Acc
     st.caption(tr("Quick Review saves the displayed automatic evidence as approved review evidence. A Manual Review can still replace it later."))
     with st.container(horizontal=True, horizontal_alignment="right"):
         cancel = st.button(tr("Cancel"), key=f"cancel-bulk-quick-review-{account.id}")
-        confirm = st.button(f"Quick review {len(eligible)} selected", key=f"confirm-bulk-quick-review-{account.id}", type="primary", icon=":material/done_all:")
+        confirm = st.button(tr("Quick review {count} selected", count=len(eligible)), key=f"confirm-bulk-quick-review-{account.id}", type="primary", icon=":material/done_all:")
     if cancel:
         _clear_bulk_quick_review(account.id)
         st.rerun()
@@ -1137,7 +1141,7 @@ def _render_post_trade_review_dialog(repo: SQLiteJournalRepository, account: Acc
                 icon=":material/error:",
             )
         st.markdown(tr("##### Assessment"))
-        st.caption(f"Trading system: **{strategy.name}** (bound to this account)")
+        st.caption(tr("Trading system: **{name}** (bound to this account)", name=strategy.name))
         st.caption(tr("Change any Partial or Fail exceptions, then save once."))
         grades: dict[str, str | None] = {}
         pillar_columns = st.columns(3, gap="small", border=True)
@@ -1309,7 +1313,7 @@ def _render_review_history(repo: SQLiteJournalRepository, account_id: int, trade
     )
     if not superseded:
         return
-    with st.expander(f"Assessment history ({len(superseded)})"):
+    with st.expander(tr("Assessment history ({count})", count=len(superseded))):
         for assessment in superseded:
             positions = ", ".join(f"#{position_id}" for position_id in assessment.assessed_position_ids)
             st.markdown(
@@ -1604,10 +1608,22 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
                     )
                     for direction in ("long", "short")
                 }
+        with st.container(border=True, width="content"):
+            st.caption(tr("Outcome"))
+            with st.container(horizontal=True, gap="small"):
+                outcome_checked = {
+                    outcome: st.checkbox(
+                        tr(outcome_tag(outcome).label),
+                        value=True,
+                        key=f"review-filter-outcome-{outcome}-{account.id}",
+                    )
+                    for outcome in ("profit", "loss", "breakeven")
+                }
     selected_keys = tuple(key for key in filter_order if checked_by_key[key])
     selected_directions = tuple(direction for direction, checked in direction_checked.items() if checked)
+    selected_outcomes = tuple(outcome for outcome, checked in outcome_checked.items() if checked)
     filter_key = f"logical-trade-selection-filter-{account.id}"
-    current_filter = (selected_keys, selected_directions)
+    current_filter = (selected_keys, selected_directions, selected_outcomes)
     previous_filter = st.session_state.get(filter_key)
     if previous_filter is not None and previous_filter != current_filter:
         _clear_logical_trade_selection(account.id)
@@ -1619,6 +1635,7 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
         for trade in ordered
         if review_kind_to_filter_key.get(scores[trade.id].review_kind) in selected_keys_set
         and trade.direction.casefold() in selected_directions
+        and scores[trade.id].outcome in selected_outcomes
     ]
     visible_by_id = {trade.id: trade for trade, _ in visible}
     selected_logical_trade_ids = tuple(
@@ -1724,7 +1741,12 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
             on_click=_change_logical_trade_page,
             args=(account.id, -1, page_count),
         )
-        st.caption(f"Page {current_page} of {page_count} · {len(visible)} logical trade{'s' if len(visible) != 1 else ''}")
+        st.caption(tr(
+            "Page {current} of {pages} · {count} logical trade(s)",
+            current=current_page,
+            pages=page_count,
+            count=len(visible),
+        ))
         st.button(
             "Next",
             key=f"next-logical-trade-page-{account.id}",
@@ -1738,6 +1760,8 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
             st.info(tr("Select at least one review status filter above to see trades."))
         elif not selected_directions:
             st.info(tr("Select at least one direction filter above to see trades."))
+        elif not selected_outcomes:
+            st.info(tr("Select at least one outcome filter above to see trades."))
         else:
             status_text = " / ".join(tr(filter_names[key]).casefold() for key in selected_keys)
             st.info(tr("No {status} trades for this account.", status=status_text))
@@ -1775,7 +1799,7 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
                 if checkbox_key not in st.session_state:
                     st.session_state[checkbox_key] = trade.id in selected_logical_trade_ids
                 select_column.checkbox(
-                    f"Select LT-{trade.id}",
+                    tr("Select LT-{trade_id}", trade_id=trade.id),
                     key=checkbox_key,
                     label_visibility="collapsed",
                     help=(
@@ -2009,7 +2033,11 @@ def _render_monitor(repo: SQLiteJournalRepository, account: AccountListItem) -> 
             return
         start_date, end_date = range_value
     with scope_note:
-        st.caption(f"Analysis: {start_date.isoformat()} to {end_date.isoformat()} · scores and gates always use the rolling reviewed sample.")
+        st.caption(tr(
+            "Analysis: {start} to {end} · scores and gates always use the rolling reviewed sample.",
+            start=start_date.isoformat(),
+            end=end_date.isoformat(),
+        ))
     critical_threshold = repo.get_framework_rule_settings(account.id).repeated_critical_threshold
     st.caption(
         tr(
@@ -2094,43 +2122,55 @@ def _render_monitor_process(service: FrameworkService, account: AccountListItem,
         st.markdown("##### Process quality and outcome")
         points = [item for item in analysis.reviewed_points if item.overall_score is not None and item.result_r is not None]
         if points:
+            process_score_column = tr("Process score")
+            result_r_column = tr("Result R")
+            direction_column = tr("Direction")
+            outcome_column = tr("Outcome")
+            review_column = tr("Review")
+            closed_column = tr("Closed")
+            classification_column = tr("Classification")
             outcome_labels = {
                 "profit": tr("Profit"),
                 "loss": tr("Loss"),
                 "breakeven": tr("Breakeven"),
             }
             frame = pd.DataFrame([{
-                "Process score": float(item.overall_score), "Result R": float(item.result_r),
+                process_score_column: float(item.overall_score), result_r_column: float(item.result_r),
                 "Direction key": item.direction.casefold(), "Outcome key": item.outcome,
-                "Direction": tr(direction_tag(item.direction).label), "Outcome": outcome_labels[item.outcome],
-                "Review": "Manual" if item.review_kind == "manual_review" else "Auto", "Closed": item.closed,
-                "Classification": item.classification or "Unclassified",
+                direction_column: tr(direction_tag(item.direction).label), outcome_column: outcome_labels[item.outcome],
+                review_column: tr("Manual") if item.review_kind == "manual_review" else tr("Auto"), closed_column: item.closed,
+                classification_column: tr(item.classification or "Unclassified"),
             } for item in points])
             chart = alt.Chart(frame).mark_point(filled=True, size=90).encode(
-                x=alt.X("Process score:Q", scale=alt.Scale(domain=[0, 100])),
-                y=alt.Y("Result R:Q"),
+                x=alt.X(process_score_column, type="quantitative", scale=alt.Scale(domain=[0, 100])),
+                y=alt.Y(result_r_column, type="quantitative"),
                 color=alt.Color("Outcome key:N", legend=None, scale=alt.Scale(domain=["profit", "loss", "breakeven"], range=["#0e9163", "#c73545", "#6b7280"])),
                 shape=alt.Shape("Direction key:N", legend=None, scale=alt.Scale(domain=["long", "short"], range=["triangle-up", "triangle-down"])),
-                tooltip=["Closed", "Direction", "Outcome", "Review", "Process score", "Result R", "Classification"],
+                tooltip=[closed_column, direction_column, outcome_column, review_column, process_score_column, result_r_column, classification_column],
             ).properties(height=300)
             st.altair_chart(chart, width="stretch")
-            st.caption(
-                f"Color: {tr('Profit')} / {tr('Loss')} / {tr('Breakeven')} · "
-                f"Shape: {tr('Long')} / {tr('Short')}. Only reviewed trades with standard 1R are plotted. "
-                "A positive result does not prove good process, and a loss does not prove poor process."
-            )
+            st.caption(tr(
+                "Color: {profit} / {loss} / {breakeven} · Shape: {long} / {short}. Only reviewed trades with standard 1R are plotted. A positive result does not prove good process, and a loss does not prove poor process.",
+                profit=tr("Profit"), loss=tr("Loss"), breakeven=tr("Breakeven"),
+                long=tr("Long"), short=tr("Short"),
+            ))
         else:
             st.caption("Approve reviews and configure standard risk to compare process score with outcome R.")
     with right:
         st.markdown("##### Quality/outcome distribution")
         if analysis.classifications:
-            st.bar_chart(pd.DataFrame({"Classification": [item.label for item in analysis.classifications], "Trades": [item.count for item in analysis.classifications]}).set_index("Classification"), width="stretch")
+            classification_column = tr("Classification")
+            st.bar_chart(pd.DataFrame({classification_column: [tr(item.label) for item in analysis.classifications], tr("Trades"): [item.count for item in analysis.classifications]}).set_index(classification_column), width="stretch")
         else:
             st.caption("No reviewed classifications in this period.")
     st.markdown("##### Recurring reviewed issues")
     if analysis.issues:
-        st.bar_chart(pd.DataFrame({"Issue": [VIOLATION_LABELS.get(item.label, HARD_RULE_LABELS.get(item.label, item.label)) for item in analysis.issues], "Trades": [item.count for item in analysis.issues]}).set_index("Issue"), width="stretch")
-        st.caption(f"Counts are across {len(analysis.reviewed_points)} reviewed trade(s) in this period; one trade can carry more than one issue.")
+        issue_column = tr("Issue")
+        st.bar_chart(pd.DataFrame({issue_column: [tr(VIOLATION_LABELS.get(item.label, HARD_RULE_LABELS.get(item.label, item.label))) for item in analysis.issues], tr("Trades"): [item.count for item in analysis.issues]}).set_index(issue_column), width="stretch")
+        st.caption(tr(
+            "Counts are across {count} reviewed trade(s) in this period; one trade can carry more than one issue.",
+            count=len(analysis.reviewed_points),
+        ))
     else:
         st.caption("No tagged issues in reviewed trades for this period.")
 
@@ -2154,21 +2194,24 @@ def _render_monitor_risk(analysis: MonitorAnalysisReport, snapshot: RiskSnapshot
         st.markdown("##### Review evidence lifecycle")
         if analysis.lifecycle:
             labels = {"manual_review": "Manual", "approved_auto_review": "Approved Auto", "auto_review": "Awaiting approval", "needs_approval": "Requires review"}
-            st.bar_chart(pd.DataFrame({"State": [labels.get(item.label, item.label) for item in analysis.lifecycle], "Trades": [item.count for item in analysis.lifecycle]}).set_index("State"), width="stretch")
+            state_column = tr("State")
+            st.bar_chart(pd.DataFrame({state_column: [tr(labels.get(item.label, item.label)) for item in analysis.lifecycle], tr("Trades"): [item.count for item in analysis.lifecycle]}).set_index(state_column), width="stretch")
     with right:
         st.markdown("##### Policy evidence")
         if analysis.policy_states:
-            labels = {"within_policy": "Within policy", "over_policy": "Over policy", "unavailable": "Unavailable"}
-            st.bar_chart(pd.DataFrame({"State": [labels.get(item.label, item.label) for item in analysis.policy_states], "Trades": [item.count for item in analysis.policy_states]}).set_index("State"), width="stretch")
+            state_column = tr("State")
+            st.bar_chart(pd.DataFrame({state_column: [tr(RISK_POLICY_STATE_LABELS.get(item.label, item.label)) for item in analysis.policy_states], tr("Trades"): [item.count for item in analysis.policy_states]}).set_index(state_column), width="stretch")
     st.caption("These are post-close monitoring signals only; they never place, block, or change MT5 orders.")
 
 
 def _render_monitor_system(analysis: MonitorAnalysisReport) -> None:
     st.markdown("##### Strategy evidence")
     if analysis.strategies:
-        frame = pd.DataFrame([{"Strategy": item.label, "Reviewed": item.count, "Process score": None if item.average_process_score is None else float(item.average_process_score), "Win rate": None if item.win_rate is None else float(item.win_rate), "Average R": None if item.average_r is None else float(item.average_r)} for item in analysis.strategies])
-        st.bar_chart(frame.set_index("Strategy")[["Process score"]], width="stretch")
-        st.dataframe(frame, hide_index=True, width="stretch", column_config={"Process score": st.column_config.NumberColumn(format="%.0f"), "Win rate": st.column_config.NumberColumn(format="%.1f%%"), "Average R": st.column_config.NumberColumn(format="%+.2fR")})
+        strategy_column, process_score_column = tr("Strategy"), tr("Process score")
+        win_rate_column, average_r_column = tr("Win rate"), tr("Average R")
+        frame = pd.DataFrame([{strategy_column: item.label, tr("Reviewed"): item.count, process_score_column: None if item.average_process_score is None else float(item.average_process_score), win_rate_column: None if item.win_rate is None else float(item.win_rate), average_r_column: None if item.average_r is None else float(item.average_r)} for item in analysis.strategies])
+        st.bar_chart(frame.set_index(strategy_column)[[process_score_column]], width="stretch")
+        st.dataframe(frame, hide_index=True, width="stretch", column_config={process_score_column: st.column_config.NumberColumn(format="%.0f"), win_rate_column: st.column_config.NumberColumn(format="%.1f%%"), average_r_column: st.column_config.NumberColumn(format="%+.2fR")})
     else:
         st.caption("No reviewed strategy evidence in this period.")
     st.markdown("##### Manual-review context")
@@ -2180,9 +2223,11 @@ def _render_monitor_system(analysis: MonitorAnalysisReport) -> None:
             if not rows:
                 st.caption("Complete Manual Reviews with optional context to populate this report.")
                 continue
-            frame = pd.DataFrame([{"Context": item.label, "Reviews": item.count, "Process score": item.average_process_score, "Win rate": item.win_rate, "Average R": item.average_r} for item in rows])
-            st.bar_chart(frame.set_index("Context")[["Process score"]].astype(float), width="stretch")
-            st.dataframe(frame, hide_index=True, width="stretch", column_config={"Process score": st.column_config.NumberColumn(format="%.0f"), "Win rate": st.column_config.NumberColumn(format="%.1f%%"), "Average R": st.column_config.NumberColumn(format="%+.2fR")})
+            context_column, process_score_column = tr("Context"), tr("Process score")
+            win_rate_column, average_r_column = tr("Win rate"), tr("Average R")
+            frame = pd.DataFrame([{context_column: item.label, tr("Reviews"): item.count, process_score_column: item.average_process_score, win_rate_column: item.win_rate, average_r_column: item.average_r} for item in rows])
+            st.bar_chart(frame.set_index(context_column)[[process_score_column]].astype(float), width="stretch")
+            st.dataframe(frame, hide_index=True, width="stretch", column_config={process_score_column: st.column_config.NumberColumn(format="%.0f"), win_rate_column: st.column_config.NumberColumn(format="%.1f%%"), average_r_column: st.column_config.NumberColumn(format="%+.2fR")})
 
 
 def _render_framework_focus_action_dialog(
@@ -2308,7 +2353,8 @@ def _render_framework_focus(
             if history and not compact:
                 with st.expander(tr("Coaching history")):
                     for item in history[:5]:
-                        st.markdown(f"**{item.status.capitalize()} · {PILLAR_NAMES[item.pillar]}** — {item.action_text}")
+                        action_text = tr(item.action_text) if item.source == "coach" and not item.action_customized else item.action_text
+                        st.markdown(f"**{tr(item.status.capitalize())} · {tr(PILLAR_NAMES[item.pillar])}** — {action_text}")
                         if item.resolution_note:
                             st.caption(item.resolution_note)
         return
@@ -2468,7 +2514,7 @@ def _render_period_reviews(repo: SQLiteJournalRepository, account: AccountListIt
                 with st.container(horizontal=True, vertical_alignment="center", gap="small"):
                     st.markdown(f"**{tr(f'Last completed {status.cadence}')}**")
                     st.badge(status_label, color=status_color)
-                st.caption(f"{status.period_start} to {status.period_end}")
+                st.caption(tr("{start} to {end}", start=status.period_start, end=status.period_end))
                 st.caption(
                     tr(
                         "{reviewed} current-rubric reviewed · {closed} closed",
@@ -2497,7 +2543,7 @@ def _render_period_reviews(repo: SQLiteJournalRepository, account: AccountListIt
             with st.container(border=True):
                 with st.container(horizontal=True, vertical_alignment="center", gap="small"):
                     st.markdown(f"**{tr(f'{status.cadence.capitalize()} review')}**")
-                    st.caption(f"{status.period_start} to {status.period_end}")
+                    st.caption(tr("{start} to {end}", start=status.period_start, end=status.period_end))
                     st.badge(
                         tr("Review due") if status.due else tr("Review trades first"),
                         color="orange" if status.due else "blue",
@@ -2676,18 +2722,18 @@ def _render_risk_policy(repo: SQLiteJournalRepository, account: AccountListItem)
     if funded is None:
         st.warning(tr("Set funded capital in Settings → Account & risk before saving a Risk policy."))
     else:
-        st.info(f"Funded capital: {funded} {account.account_currency}.")
+        st.info(tr("Funded capital: {amount} {currency}.", amount=funded, currency=account.account_currency))
     with st.form(f"account-risk-policy-{account.id}"):
         first, second, third = st.columns(3)
-        standard = first.number_input("Standard risk (1R) (%)", min_value=0.01, value=float(policy.standard_risk_per_trade_percent) if policy else 2.0, step=0.05)
-        maximum = second.number_input("Maximum risk per trade (%)", min_value=0.01, value=float(policy.maximum_risk_per_trade_percent) if policy else 3.0, step=0.05)
-        minimum_rr = third.number_input("Minimum R:R", min_value=0.01, value=float(policy.minimum_rr) if policy else 1.0, step=0.1)
+        standard = first.number_input(tr("Standard risk (1R) (%)"), min_value=0.01, value=float(policy.standard_risk_per_trade_percent) if policy else 2.0, step=0.05)
+        maximum = second.number_input(tr("Maximum risk per trade (%)"), min_value=0.01, value=float(policy.maximum_risk_per_trade_percent) if policy else 3.0, step=0.05)
+        minimum_rr = third.number_input(tr("Minimum R:R"), min_value=0.01, value=float(policy.minimum_rr) if policy else 1.0, step=0.1)
         st.markdown("**Hard limits**")
         first, second, third, fourth = st.columns(4)
-        daily = first.number_input("Daily loss limit (R)", min_value=0.01, value=float(policy.daily_loss_limit_r) if policy else 5.0, step=0.25)
-        weekly = second.number_input("Weekly loss limit (R)", min_value=0.01, value=float(policy.weekly_loss_limit_r) if policy else 20.0, step=0.25)
-        drawdown = third.number_input("Maximum drawdown (%)", min_value=0.01, value=float(policy.max_drawdown_percent) if policy else 30.0, step=0.5)
-        streak = fourth.number_input("Maximum loss streak", min_value=1, value=policy.max_consecutive_losses if policy else 10, step=1)
+        daily = first.number_input(tr("Daily loss limit (R)"), min_value=0.01, value=float(policy.daily_loss_limit_r) if policy else 5.0, step=0.25)
+        weekly = second.number_input(tr("Weekly loss limit (R)"), min_value=0.01, value=float(policy.weekly_loss_limit_r) if policy else 20.0, step=0.25)
+        drawdown = third.number_input(tr("Maximum drawdown (%)"), min_value=0.01, value=float(policy.max_drawdown_percent) if policy else 30.0, step=0.5)
+        streak = fourth.number_input(tr("Maximum loss streak"), min_value=1, value=policy.max_consecutive_losses if policy else 10, step=1)
         first, second = st.columns(2)
         reset_period_options = {tr(label): value for label, value in RESET_PERIOD_LABELS.items()}
         drawdown_reset_label = first.segmented_control(
@@ -2755,14 +2801,19 @@ def _render_risk_policy(repo: SQLiteJournalRepository, account: AccountListItem)
             )
             def confirm_policy_change() -> None:
                 st.warning(
-                    "This replaces the active analytical policy for this account and recalculates all derived historical Risk and R metrics.",
+                    tr("This replaces the active analytical policy for this account and recalculates all derived historical Risk and R metrics."),
                     icon=":material/calculate:",
                 )
                 st.markdown(
-                    f"**Affected:** {preview.affected_logical_trades} logical trades  \n"
-                    f"**Preserved unchanged:** {preview.preserved_assessments} saved assessments and "
-                    f"{preview.preserved_period_reviews} saved weekly/monthly reviews  \n"
-                    "MT5 trades and funded capital are not modified. The prior policy version remains in audit history."
+                    tr("**Affected:** {count} logical trades", count=preview.affected_logical_trades)
+                    + "  \n"
+                    + tr(
+                        "**Preserved unchanged:** {assessments} saved assessments and {reviews} saved weekly/monthly reviews",
+                        assessments=preview.preserved_assessments,
+                        reviews=preview.preserved_period_reviews,
+                    )
+                    + "  \n"
+                    + tr("MT5 trades and funded capital are not modified. The prior policy version remains in audit history.")
                 )
                 confirmed = st.checkbox(
                     tr("I understand current analytics for this account will be recalculated"),

@@ -1341,7 +1341,7 @@ def render_live_sync_freshness(account_key: tuple[str, str] | None = None, *, in
 
 def render_manual_sync_button(repo: SQLiteJournalRepository, *, key: str) -> None:
     actions = st.container(horizontal=True, vertical_alignment="center", gap="medium")
-    sync_requested = actions.button("Sync MT5 now", key=key, icon=":material/sync:")
+    sync_requested = actions.button(tr("Sync MT5 now"), key=key, icon=":material/sync:")
     results = st.session_state.get("auto_sync_results", [])
     if sync_requested:
         with st.spinner(tr("Syncing MT5 now…")):
@@ -1371,7 +1371,7 @@ def render_manual_sync_button(repo: SQLiteJournalRepository, *, key: str) -> Non
 
 
 def render_journal_reporting_settings(repo: SQLiteJournalRepository) -> None:
-    st.markdown("#### Journal behavior")
+    st.markdown(f"#### {tr('Journal behavior')}")
     with st.form("journal-reporting-settings", border=False):
         current = repo.get_journal_settings()
         labels = {"server": "Server Timezone", "utc": "UTC", "local": "Local Timezone"}
@@ -1462,8 +1462,12 @@ def _render_account_onboarding_dialog(repo: SQLiteJournalRepository, strategy_pr
         st.rerun()
 
     st.caption("Complete the three essentials before this account can import trades and become active.")
-    st.progress(step / 3, text=f"Step {step} of 3")
-    step_labels = ("1. System", "2. MT5 account", "3. Risk policy")
+    st.progress(step / 3, text=tr("Step {step} of 3", step=step))
+    step_labels = (
+        f"1. {tr('Trading system')}",
+        f"2. {tr('MT5 account')}",
+        f"3. {tr('Risk policy')}",
+    )
     st.caption(" · ".join(f"**{label}**" if index == step else label for index, label in enumerate(step_labels, start=1)))
     with st.container(border=True):
         if step == 1:
@@ -1497,22 +1501,26 @@ def _render_account_onboarding_dialog(repo: SQLiteJournalRepository, strategy_pr
         elif step == 2:
             st.markdown("###### MT5 account connection")
             first, second = st.columns(2)
-            account_name = first.text_input("Account name", value=value("account-name"), placeholder="e.g. Live account", key=f"{prefix}account-name", on_change=sync, args=("account-name",))
-            currency = second.text_input("Currency", value=value("currency"), max_chars=3, key=f"{prefix}currency", on_change=sync, args=("currency",))
+            account_name = first.text_input(tr("Account name"), value=value("account-name"), placeholder=tr("e.g. Live account"), key=f"{prefix}account-name", on_change=sync, args=("account-name",))
+            currency = second.text_input(tr("Currency"), value=value("currency"), max_chars=3, key=f"{prefix}currency", on_change=sync, args=("currency",))
             first, second = st.columns(2)
-            login = first.text_input("MT5 account ID", value=value("login"), key=f"{prefix}login", on_change=sync, args=("login",))
-            broker = second.text_input("Broker server", value=value("broker"), key=f"{prefix}broker", on_change=sync, args=("broker",))
-            funded_capital = st.text_input("Funded capital", value=value("funded-capital"), placeholder="e.g. 10000", key=f"{prefix}funded-capital", on_change=sync, args=("funded-capital",))
+            login = first.text_input(tr("MT5 account ID"), value=value("login"), key=f"{prefix}login", on_change=sync, args=("login",))
+            broker = second.text_input(tr("Broker server"), value=value("broker"), key=f"{prefix}broker", on_change=sync, args=("broker",))
+            funded_capital = st.text_input(tr("Funded capital"), value=value("funded-capital"), placeholder=tr("e.g. 10000"), key=f"{prefix}funded-capital", on_change=sync, args=("funded-capital",))
             st.warning(tr("Funded capital is a permanent account baseline. It cannot be changed after this account is created."), icon=":material/lock:")
             st.caption("This required baseline anchors account growth, drawdown, and the risk policy. It does not replace MT5 balance history.")
             with st.expander("Advanced: custom export location"):
                 if common_files_location.path is not None:
-                    st.caption(f"Detected Common Files ({common_files_location.source}): {common_files_location.path}")
+                    st.caption(tr(
+                        "Detected Common Files ({source}): {path}",
+                        source=common_files_location.source,
+                        path=common_files_location.path,
+                    ))
                 st.text_input("Custom export path (optional)", value=value("export-path"), placeholder="Default MT5 Common Files path", key=f"{prefix}export-path", on_change=sync, args=("export-path",))
             back, forward = st.columns(2)
-            if back.button("Back", icon=":material/arrow_back:"):
+            if back.button(tr("Back"), icon=":material/arrow_back:"):
                 previous()
-            if forward.button("Continue to risk policy", type="primary", icon=":material/arrow_forward:"):
+            if forward.button(tr("Continue to risk policy"), type="primary", icon=":material/arrow_forward:"):
                 if not account_name.strip() or not login.isdecimal() or not broker.strip():
                     st.error("Enter an account name, numeric MT5 account ID, and broker server.")
                 elif len(currency.strip()) != 3:
@@ -1535,16 +1543,16 @@ def _render_account_onboarding_dialog(repo: SQLiteJournalRepository, strategy_pr
             st.markdown("###### Risk policy")
             st.caption("Review the conservative defaults and adjust them to your written plan. Every limit is required.")
             first, second, third = st.columns(3)
-            first.text_input("Standard risk (1R) %", value=value("standard-risk"), key=f"{prefix}standard-risk")
-            second.text_input("Maximum risk per trade %", value=value("maximum-risk"), key=f"{prefix}maximum-risk")
-            third.text_input("Daily loss limit (R)", value=value("daily-loss"), key=f"{prefix}daily-loss")
+            first.text_input(tr("Standard risk (1R) %"), value=value("standard-risk"), key=f"{prefix}standard-risk")
+            second.text_input(tr("Maximum risk per trade %"), value=value("maximum-risk"), key=f"{prefix}maximum-risk")
+            third.text_input(tr("Daily loss limit (R)"), value=value("daily-loss"), key=f"{prefix}daily-loss")
             first, second, third = st.columns(3)
-            first.text_input("Weekly loss limit (R)", value=value("weekly-loss"), key=f"{prefix}weekly-loss")
-            second.text_input("Maximum drawdown %", value=value("max-drawdown"), key=f"{prefix}max-drawdown")
-            third.text_input("Maximum open risk (R)", value=value("max-open-risk"), key=f"{prefix}max-open-risk")
+            first.text_input(tr("Weekly loss limit (R)"), value=value("weekly-loss"), key=f"{prefix}weekly-loss")
+            second.text_input(tr("Maximum drawdown %"), value=value("max-drawdown"), key=f"{prefix}max-drawdown")
+            third.text_input(tr("Maximum open risk (R)"), value=value("max-open-risk"), key=f"{prefix}max-open-risk")
             first, second = st.columns(2)
-            first.number_input("Maximum consecutive losses", min_value=1, step=1, value=value("max-consecutive-losses"), key=f"{prefix}max-consecutive-losses")
-            second.text_input("Minimum R:R", value=value("minimum-rr"), key=f"{prefix}minimum-rr")
+            first.number_input(tr("Maximum consecutive losses"), min_value=1, step=1, value=value("max-consecutive-losses"), key=f"{prefix}max-consecutive-losses")
+            second.text_input(tr("Minimum R:R"), value=value("minimum-rr"), key=f"{prefix}minimum-rr")
             reset_labels = {tr("Daily"): "daily", tr("Weekly"): "weekly", tr("Monthly"): "monthly", tr("All time"): "all_time"}
             first, second = st.columns(2)
             drawdown_reset = first.segmented_control(
@@ -1564,15 +1572,19 @@ def _render_account_onboarding_dialog(repo: SQLiteJournalRepository, strategy_pr
             st.text_input("Correlation policy (optional)", value=value("correlation-policy"), key=f"{prefix}correlation-policy")
             st.markdown("###### Confirm account setup")
             system_label = profile_by_id[value("strategy-id")].name if value("mode") == "Use saved system" else value("strategy-name")
-            st.caption(f"**System:** {system_label} · **MT5:** {value('login')} · {value('broker')} · **Capital:** {value('funded-capital')} {str(value('currency')).upper()}")
+            st.caption(
+                f"**{tr('Trading system')}:** {system_label} · **MT5:** {value('login')} · "
+                f"{value('broker')} · **{tr('Funded capital')}:** {value('funded-capital')} "
+                f"{str(value('currency')).upper()}"
+            )
             capital_confirmed = st.checkbox(
                 tr("I confirm the funded capital is correct and understand it cannot be changed later"),
                 key=f"{prefix}capital-confirmed",
             )
             back, create = st.columns(2)
-            if back.button("Back", icon=":material/arrow_back:"):
+            if back.button(tr("Back"), icon=":material/arrow_back:"):
                 previous()
-            if create.button("Create and activate account", type="primary", icon=":material/check_circle:", disabled=not capital_confirmed):
+            if create.button(tr("Create and activate account"), type="primary", icon=":material/check_circle:", disabled=not capital_confirmed):
                 try:
                     resolved_export_path = str(value("export-path")).strip() or default_mt5_export_path(str(value("login")))
                     account = repo.create_configured_mt5_account(
@@ -1774,7 +1786,7 @@ def render_mt5_account_settings(repo: SQLiteJournalRepository) -> AccountListIte
             header_status.badge(tr("Active"), color="green", icon=":material/check_circle:")
         else:
             activate_clicked = header_status.button(
-                "Set as active account",
+                tr("Set as active account"),
                 icon=":material/toggle_on:",
                 key=f"set-active-mt5-account-{selected.id}",
             )
@@ -1785,35 +1797,38 @@ def render_mt5_account_settings(repo: SQLiteJournalRepository) -> AccountListIte
                 queue_toast(st.session_state["mt5-account-notice"], icon=":material/toggle_on:")
                 st.rerun()
         if identity_locked:
-            account_editor.caption("MT5 account ID, broker server, and currency are locked because this account already has imported trades. Funded capital is always locked after account creation.")
+            account_editor.caption(tr("MT5 account ID, broker server, and currency are locked because this account already has imported trades. Funded capital is always locked after account creation."))
         with account_editor.form("mt5-account-editor-form", border=False):
             identity, currency, baseline = st.columns([3, 1, 2])
             display_name = identity.text_input(
-                "Account name",
-                placeholder="e.g. Live account, Prop firm eval",
+                tr("Account name"),
+                placeholder=tr("e.g. Live account, Prop firm eval"),
                 key=field_key("display-name"),
             )
-            account_currency = currency.text_input("Currency", max_chars=3, key=field_key("currency"), disabled=identity_locked).upper()
+            account_currency = currency.text_input(tr("Currency"), max_chars=3, key=field_key("currency"), disabled=identity_locked).upper()
             if selected.funded_capital is None:
                 baseline.text_input(
-                    "Funded capital",
-                    placeholder="e.g. 10000",
-                    help="Legacy account repair: this value locks permanently after the first save.",
+                    tr("Funded capital"),
+                    placeholder=tr("e.g. 10000"),
+                    help=tr("Legacy account repair: this value locks permanently after the first save."),
                     key=field_key("funded-capital"),
                 )
             else:
                 baseline.text_input(
                     tr("Funded capital · locked"),
                     value=format_currency(selected.funded_capital, selected.account_currency, signed=False),
-                    help="The immutable basis for growth, drawdown, and Risk limits.",
+                    help=tr("The immutable basis for growth, drawdown, and Risk limits."),
                     disabled=True,
                     key=field_key("funded-capital-locked"),
                 )
             account_id, broker = st.columns(2)
-            login = account_id.text_input("MT5 account ID", key=field_key("login"), disabled=identity_locked)
-            broker_server = broker.text_input("Broker server", key=field_key("broker-server"), disabled=identity_locked)
+            login = account_id.text_input(tr("MT5 account ID"), key=field_key("login"), disabled=identity_locked)
+            broker_server = broker.text_input(tr("Broker server"), key=field_key("broker-server"), disabled=identity_locked)
             if identity_locked:
-                account_editor.caption(f"Trading system: **{selected.strategy_name}** · locked because trades have been imported.")
+                account_editor.caption(tr(
+                    "Trading system: **{name}** · locked because trades have been imported.",
+                    name=selected.strategy_name,
+                ))
             else:
                 strategy_options = dict(profiles_by_id)
                 if selected.strategy_profile_id not in strategy_options:
@@ -1829,7 +1844,7 @@ def render_mt5_account_settings(repo: SQLiteJournalRepository) -> AccountListIte
                 if common_files_location.path is None:
                     st.caption("MT5 Common Files was not detected. Set a custom path or `TRADING_JOURNAL_MT5_COMMON_FILES`.")
                 else:
-                    st.caption(f"Detected Common Files ({common_files_location.source})")
+                    st.caption(tr("Detected Common Files ({source})", source=common_files_location.source))
                     st.caption(str(common_files_location.path))
                 generated_path_placeholder = default_mt5_export_path("000000000").replace("000000000", "<MT5-login>")
                 export_file_path = st.text_input(
@@ -1929,19 +1944,20 @@ def render_review_context_settings(repo: SQLiteJournalRepository) -> None:
             existing = repo.list_review_context_tags(kind, include_inactive=True)
             if existing:
                 st.dataframe(
-                    pd.DataFrame([{"Name": item.name, "Active": item.active} for item in existing]),
+                    pd.DataFrame([{tr("Name"): item.name, tr("Active"): item.active} for item in existing]),
                     hide_index=True,
                     width="stretch",
                 )
             with st.form(f"review-context-{kind}", border=False):
-                name = st.text_input(f"Add {kind}", placeholder=placeholder, width=480)
-                if st.form_submit_button(f"Add {kind}", icon=":material/add:"):
+                add_label = tr("Add {kind}", kind=tr(kind))
+                name = st.text_input(add_label, placeholder=tr(placeholder), width=480)
+                if st.form_submit_button(add_label, icon=":material/add:"):
                     try:
                         repo.save_review_context_tag(kind=kind, name=name)
                     except ValueError as error:
                         st.error(str(error))
                     else:
-                        queue_toast(f"{label[:-1]} added.")
+                        queue_toast(tr("{label} added.", label=tr(label[:-1])))
                         st.rerun()
 
 
@@ -2020,7 +2036,7 @@ def render_strategy_settings(repo: SQLiteJournalRepository) -> None:
 
     with detail:
         strategy_editor = st.container(border=True)
-        strategy_editor.markdown(f"##### {'New strategy' if selected is None else selected.name}")
+        strategy_editor.markdown(f"##### {tr('New strategy') if selected is None else selected.name}")
         with strategy_editor.form("strategy-profile", border=False):
             name = st.text_input("Strategy name", key=field_key("name"))
             description = st.text_area(
@@ -2129,7 +2145,11 @@ def render_strategy_settings(repo: SQLiteJournalRepository) -> None:
                 bound_accounts = [account for account in repo.list_mt5_accounts() if account.strategy_profile_id == selected.id]
                 if bound_accounts:
                     account_names = ", ".join(account.display_name for account in bound_accounts)
-                    st.caption(f"Bound to {len(bound_accounts)} account(s) ({account_names}). Unbind or delete those accounts first to delete this strategy.")
+                    st.caption(tr(
+                        "Bound to {count} account(s) ({names}). Unbind or delete those accounts first to delete this strategy.",
+                        count=len(bound_accounts),
+                        names=account_names,
+                    ))
                 else:
                     st.caption("This strategy has no accounts bound to it. Deleting it permanently removes its definition and any setups.")
                     delete_confirmation_key = f"delete-strategy-confirm-{selected.id}"
@@ -2462,13 +2482,13 @@ def render_strategy_analytics(repo: SQLiteJournalRepository) -> None:
     for account in accounts:
         report = build_dashboard_report(repo, account_id=account.id)
         rows.append({
-            "Account": account.display_name,
-            "Currency": account.account_currency,
-            "Closed trades": report.trade_count,
-            "Win rate": format_percent(report.win_rate),
-            "Total R": "—" if report.total_r is None else format_r(report.total_r),
-            "Realized P&L": format_currency(report.net_pnl, account.account_currency),
-            "Profit factor": "No losses" if report.profit_factor is None else format_number(report.profit_factor, 2),
+            tr("Account"): account.display_name,
+            tr("Currency"): account.account_currency,
+            tr("Closed trades"): report.trade_count,
+            tr("Win rate"): format_percent(report.win_rate),
+            tr("Total R"): "—" if report.total_r is None else format_r(report.total_r),
+            tr("Realized P&L"): format_currency(report.net_pnl, account.account_currency),
+            tr("Profit factor"): tr("No losses") if report.profit_factor is None else format_number(report.profit_factor, 2),
         })
     st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
     st.caption(tr("Use account-level Dashboard and Bearings for execution coaching. This page is a descriptive cross-account comparison of the selected system."))

@@ -793,11 +793,11 @@ def _render_incidents(repo: SQLiteJournalRepository, account: AccountListItem) -
         st.caption(tr("Recent state transitions only; newest event first."))
         frame = pd.DataFrame([
             {
-                "Time": incident.occurred_at,
-                "Event": incident.category.replace("_", " ").title(),
-                "State": incident.state.title(),
-                "Position": incident.position_id or "Account",
-                "Detail": incident.detail,
+                tr("Time"): incident.occurred_at,
+                tr("Event"): tr(incident.category.replace("_", " ").title()),
+                tr("State"): tr(incident.state.title()),
+                tr("Position"): incident.position_id or tr("Account"),
+                tr("Detail"): tr(incident.detail),
             }
             for incident in incidents
         ])

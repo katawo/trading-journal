@@ -535,6 +535,7 @@ class FrameworkFocus(Base):
     rubric_version: Mapped[str] = mapped_column(String(24), nullable=False, default=CURRENT_RUBRIC_VERSION)
     source: Mapped[str] = mapped_column(String(16), nullable=False, default="manual")
     coach_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    action_customized: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     resolution_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[str] = mapped_column(String(64), nullable=False)
     resolved_at: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -900,6 +901,7 @@ class FrameworkFocusView:
     rubric_version: str
     source: str
     coach_reason: str | None
+    action_customized: bool
     resolution_note: str | None
     created_at: str
     resolved_at: str | None
@@ -1004,7 +1006,11 @@ class SQLiteJournalRepository:
                 connection.exec_driver_sql(
                     "ALTER TABLE framework_focuses ADD COLUMN rubric_version VARCHAR(24) NOT NULL DEFAULT 'legacy_v1'"
                 )
-            for column_name, column_type in (("source", "VARCHAR(16) NOT NULL DEFAULT 'manual'"), ("coach_reason", "TEXT")):
+            for column_name, column_type in (
+                ("source", "VARCHAR(16) NOT NULL DEFAULT 'manual'"),
+                ("coach_reason", "TEXT"),
+                ("action_customized", "BOOLEAN NOT NULL DEFAULT 0"),
+            ):
                 if column_name not in focus_columns:
                     connection.exec_driver_sql(f"ALTER TABLE framework_focuses ADD COLUMN {column_name} {column_type}")
             strategy_columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(strategy_profiles)")}
@@ -3432,6 +3438,7 @@ class SQLiteJournalRepository:
             if row is None or row.status != "active":
                 raise ValueError("Active framework focus was not found")
             row.action_text = self._required_text(action_text, "Focus action")
+            row.action_customized = True
             session.flush()
             return self._to_framework_focus_view(row)
 
@@ -3441,7 +3448,7 @@ class SQLiteJournalRepository:
             row.id, row.account_id, row.pillar, row.metric_kind, row.metric_code, row.hypothesis,
             row.action_text, row.baseline_value, row.target_value, row.target_reviews,
             row.starting_manual_reviews, row.status, row.rubric_version, row.source, row.coach_reason,
-            row.resolution_note, row.created_at, row.resolved_at,
+            row.action_customized, row.resolution_note, row.created_at, row.resolved_at,
         )
 
     def save_pillar_roadmap_evidence(
