@@ -139,6 +139,21 @@ def _presence_metric_tone(count: int, tone: _DashboardMetricTone) -> _DashboardM
     return tone if count > 0 else "neutral"
 
 
+def _expectancy_value(report: DashboardReport, currency: str) -> str:
+    """Show what a trade earns in money, with its R normalization alongside.
+
+    The two are the same figure in two units, so they read as one line rather
+    than two rows the eye has to pair up. R coverage in the same block already
+    says how much of the record the R side is measured on.
+    """
+    if report.expectancy is None:
+        return "—"
+    amount = format_currency(report.expectancy, currency)
+    if report.expectancy_r is None:
+        return amount
+    return f"{amount} ({format_r(report.expectancy_r)})"
+
+
 def _empty_outcome_label(breakeven_count: int, *, wins: bool) -> str:
     """Say why a win/loss figure is missing without overclaiming.
 
@@ -608,30 +623,41 @@ def _render_dashboard_statistics(report: DashboardReport, currency: str) -> None
                 format_percent(Decimal(report.win_count * 100) / Decimal(won_or_lost)),
                 "info",
             )]
+            # Three readings, separated so they are not scanned as one list:
+            # how often trades end each way, how much edge that produced, and
+            # what the figures above are measured on.
             _render_stat_grid([
                 (tr("Win rate"), format_percent(report.win_rate), "info"),
                 (tr("Loss rate"), format_percent(loss_rate), "negative"),
                 (tr("Breakeven rate"), format_percent(breakeven_rate), "neutral"),
                 *excl_breakeven_rows,
+            ], class_name="dashboard-stat-list")
+            _render_stat_grid([
                 (tr("Payoff ratio"), "—" if report.payoff_ratio is None else format_number(report.payoff_ratio, 2), "info"),
-                (
-                    tr("Expectancy R"),
-                    tr("Awaiting risk") if report.expectancy_r is None else format_r(report.expectancy_r),
-                    _risk_metric_tone(report.expectancy_r, report.trade_count),
-                ),
                 (
                     tr("Profit factor"),
                     _empty_outcome_label(report.breakeven_count, wins=False) if report.profit_factor is None
                     else format_number(report.profit_factor, 2),
                     _profit_factor_metric_tone(report.profit_factor),
                 ),
-                *breakeven_rows,
                 (
-                    tr("R coverage"),
-                    format_percent(Decimal(report.r_trade_count * 100) / Decimal(report.trade_count)),
-                    _r_coverage_metric_tone(report.r_trade_count, report.trade_count),
+                    tr("Expectancy"),
+                    _expectancy_value(report, currency),
+                    _signed_metric_tone(report.expectancy),
                 ),
             ], class_name="dashboard-stat-list")
+            # R is available for every trade or for none, because the divisor
+            # is the account's funded capital and standard-risk percent rather
+            # than anything per trade. A normal account therefore reads 100%
+            # forever, so the row only appears when R is missing and the R
+            # figures above cannot be trusted.
+            coverage_rows = [] if report.r_trade_count >= report.trade_count else [(
+                tr("R coverage"),
+                format_percent(Decimal(report.r_trade_count * 100) / Decimal(report.trade_count)),
+                _r_coverage_metric_tone(report.r_trade_count, report.trade_count),
+            )]
+            if breakeven_rows or coverage_rows:
+                _render_stat_grid([*breakeven_rows, *coverage_rows], class_name="dashboard-stat-list")
         with profit:
             st.markdown(f'<div class="dashboard-stat-column-head">{tr("Profit")}</div>', unsafe_allow_html=True)
             _render_stat_grid([
@@ -648,9 +674,9 @@ def _render_dashboard_statistics(report: DashboardReport, currency: str) -> None
                     _presence_metric_tone(report.win_count, "positive"),
                 ),
                 (
-                    tr("Best day"),
-                    "—" if report.best_day is None else format_currency(report.best_day, currency),
-                    _signed_metric_tone(report.best_day),
+                    tr("Best trade"),
+                    "—" if report.best_trade is None else format_currency(report.best_trade, currency),
+                    _signed_metric_tone(report.best_trade),
                 ),
             ], class_name="dashboard-stat-list")
         with loss:
@@ -669,9 +695,9 @@ def _render_dashboard_statistics(report: DashboardReport, currency: str) -> None
                     _presence_metric_tone(report.loss_count, "negative"),
                 ),
                 (
-                    tr("Worst day"),
-                    "—" if report.worst_day is None else format_currency(report.worst_day, currency),
-                    _signed_metric_tone(report.worst_day),
+                    tr("Worst trade"),
+                    "—" if report.worst_trade is None else format_currency(report.worst_trade, currency),
+                    _signed_metric_tone(report.worst_trade),
                 ),
             ], class_name="dashboard-stat-list")
 
@@ -710,6 +736,16 @@ def _render_dashboard_statistics(report: DashboardReport, currency: str) -> None
                     tr("Recovery factor"),
                     tr("No drawdown") if report.recovery_factor is None else format_number(report.recovery_factor, 2),
                     "info",
+                ),
+                (
+                    tr("Best day"),
+                    "—" if report.best_day is None else format_currency(report.best_day, currency),
+                    _signed_metric_tone(report.best_day),
+                ),
+                (
+                    tr("Worst day"),
+                    "—" if report.worst_day is None else format_currency(report.worst_day, currency),
+                    _signed_metric_tone(report.worst_day),
                 ),
             ], class_name="dashboard-stat-list")
         with momentum:
@@ -2377,21 +2413,14 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
                     _profit_factor_metric_tone(report.profit_factor),
                 ),
             ], class_name="dashboard-stat-list")
+        # Full coverage is the normal state and said nothing worth a line; the
+        # shortfall is the only case a reader has to act on.
         if report.r_trade_count < report.trade_count:
             st.caption(
                 tr(
                     "R coverage: :orange[**{covered} / {total}**] logical trades can be normalized "
                     "using the account's current standard 1R.",
                     covered=f"{report.r_trade_count:,}",
-                    total=f"{report.trade_count:,}",
-                )
-            )
-        else:
-            st.caption(
-                tr(
-                    "R coverage: :green[**{covered} / {total}**] logical trades can be normalized "
-                    "using the account's current standard 1R.",
-                    covered=f"{report.trade_count:,}",
                     total=f"{report.trade_count:,}",
                 )
             )

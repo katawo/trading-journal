@@ -145,6 +145,10 @@ class DashboardReport:
     profitable_day_count: int
     profitable_day_rate: str
     best_day: str | None
+    # The single largest win and loss, mirroring best_day/worst_day one level
+    # down: those describe a day's total, these a single logical trade.
+    best_trade: str | None
+    worst_trade: str | None
     average_day: str | None
     recovery_factor: str | None
     current_streak_outcome: str | None
@@ -354,6 +358,9 @@ class DashboardService:
         balance_growth_percent = None if starting_balance is None else pnl_total * Decimal("100") / starting_balance
         worst_day = min(daily.values()) if daily else None
         best_day = max(daily.values()) if daily else None
+        trade_pnls = [Decimal(trade.net_pnl) for trade in trades]
+        best_trade = max(trade_pnls) if trade_pnls else None
+        worst_trade = min(trade_pnls) if trade_pnls else None
         average_day = pnl_total / len(daily) if daily else None
         profitable_day_count = sum(value > 0 for value in daily.values())
         profitable_day_rate = Decimal(profitable_day_count * 100) / Decimal(len(daily)) if daily else Decimal("0")
@@ -393,6 +400,8 @@ class DashboardService:
             profitable_day_count=profitable_day_count,
             profitable_day_rate=_decimal_string(profitable_day_rate),
             best_day=None if best_day is None else _decimal_string(best_day),
+            best_trade=None if best_trade is None else _decimal_string(best_trade),
+            worst_trade=None if worst_trade is None else _decimal_string(worst_trade),
             average_day=None if average_day is None else _decimal_string(average_day),
             recovery_factor=None if recovery_factor is None else _decimal_string(recovery_factor),
             current_streak_outcome=current_streak_outcome,

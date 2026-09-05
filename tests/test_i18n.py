@@ -40,13 +40,14 @@ def test_vietnamese_keeps_familiar_trading_terms(monkeypatch) -> None:
     assert i18n.tr("Today's reviewed issues") == "Vấn đề đã đánh giá hôm nay"
     assert i18n.tr("Resolved today") == "Đã hoàn tất hôm nay"
     assert i18n.tr("Edge quality") == "Chất lượng lợi thế"
+    # Only the shortfall caption is rendered now; full coverage says nothing.
     assert i18n.tr(
-        "R coverage: :green[**{covered} / {total}**] logical trades can be normalized "
+        "R coverage: :orange[**{covered} / {total}**] logical trades can be normalized "
         "using the account's current standard 1R.",
-        covered="462",
+        covered="0",
         total="462",
     ) == (
-        "Độ phủ R: :green[**462 / 462**] giao dịch logic có thể được chuẩn hóa "
+        "Độ phủ R: :orange[**0 / 462**] giao dịch logic có thể được chuẩn hóa "
         "bằng 1R tiêu chuẩn hiện tại của tài khoản."
     )
     assert i18n.tr("Daily result range") == "Biên độ kết quả theo ngày"
