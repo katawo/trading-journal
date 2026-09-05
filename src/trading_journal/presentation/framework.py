@@ -22,6 +22,7 @@ from trading_journal.application.framework import (
     MonitorAnalysisReport,
     PillarScore,
     ReadinessAssessment,
+    RiskEvidenceCoverage,
     RiskSnapshot,
     TradeProcessScore,
 )
@@ -257,7 +258,7 @@ def _risk_state_metric(snapshot: RiskSnapshot) -> tuple[str, str, str]:
     return _state_label(snapshot), detail, color
 
 
-def _daily_r_metric(value: str | None) -> tuple[str | None, str, str]:
+def _r_metric(value: str | None) -> tuple[str | None, str, str]:
     if value is None:
         return None, "Unavailable", "gray"
     result = Decimal(value)
@@ -442,7 +443,6 @@ def _render_score_cards(scores: tuple[PillarScore, ...], account: AccountListIte
             delta,
             delta_color=delta_color,
             delta_arrow="off",
-            border=True,
         )
         column.caption(_score_scope_label(score, account))
         if score.status != "ready":
@@ -511,13 +511,16 @@ def _pillar_monitor_status(score: PillarScore) -> tuple[str, str]:
     return tr(score.status.capitalize()), "#0e9163"
 
 
+_TONE_BY_DELTA_COLOR = {"green": "positive", "red": "negative", "orange": "warning", "gray": "neutral"}
+
+
 def _render_framework_stat_grid(items: list[tuple[str, str, str, str]]) -> None:
     cells = "".join(
         '<div class="dashboard-stat">'
         f'<div class="dashboard-stat-label">{escape(label)}</div>'
         f'<div class="dashboard-stat-value dashboard-stat-tone-{tone}">{escape(value)}</div>'
-        f'<div class="dashboard-stat-note">{escape(note)}</div>'
-        "</div>"
+        + ("" if not note else f'<div class="dashboard-stat-note">{escape(note)}</div>')
+        + "</div>"
         for label, value, note, tone in items
     )
     st.markdown(f'<div class="dashboard-stat-grid dashboard-framework-stats">{cells}</div>', unsafe_allow_html=True)
@@ -548,9 +551,9 @@ def render_framework_dashboard(
     policy = repo.get_active_risk_policy(account.id)
     readiness_value, readiness_delta, readiness_color = _readiness_metric(readiness)
     state_value, state_delta, state_color = _risk_state_metric(risk)
-    daily_value, daily_delta, daily_color = _daily_r_metric(risk.daily_r)
+    daily_value, daily_delta, daily_color = _r_metric(risk.daily_r)
     drawdown_value, drawdown_delta, drawdown_color = _drawdown_metric(risk.max_drawdown_percent)
-    tone_by_delta_color = {"green": "positive", "red": "negative", "orange": "warning", "gray": "neutral"}
+    tone_by_delta_color = _TONE_BY_DELTA_COLOR
     with st.container(border=True):
         with st.container(horizontal=True, vertical_alignment="center", gap="small", width="content"):
             st.markdown(tr("#### Process & risk"))
@@ -2013,77 +2016,81 @@ def _render_monitor(repo: SQLiteJournalRepository, account: AccountListItem) -> 
     service = FrameworkService(repo, local_zone=local_zone)
     st.markdown(tr("#### Monitoring"))
     _render_risk_configuration_notice(service, account.id)
-    controls, scope_note = st.columns((2, 3))
-    with controls:
-        window = st.slider(tr("Rolling sample"), min_value=10, max_value=100, value=20, step=5, key=f"framework-window-{account.id}")
-        period = st.segmented_control(tr("Analysis period"), ["This month", "Last 90 days", "All time", "Custom"], format_func=tr, default="Last 90 days", required=True, key=f"framework-analysis-period-{account.id}")
-    today = service.today(account.id)
-    if period == "This month":
-        start_date, end_date = today.replace(day=1), today
-    elif period == "Last 90 days":
-        start_date, end_date = today - timedelta(days=89), today
-    elif period == "All time":
-        dates = [service._trade_date(item.exit_time, item.server_utc_offset_minutes) for item in service.trade_process_scores(account.id)]
-        start_date, end_date = min(dates, default=today), today
-    else:
+    with st.container(border=True):
+        controls, scope_note = st.columns((2, 3))
+        with controls:
+            window = st.slider(tr("Rolling sample"), min_value=10, max_value=100, value=20, step=5, key=f"framework-window-{account.id}")
+            period = st.segmented_control(tr("Analysis period"), ["This month", "Last 90 days", "All time", "Custom"], format_func=tr, default="Last 90 days", required=True, key=f"framework-analysis-period-{account.id}")
+        today = service.today(account.id)
+        if period == "This month":
+            start_date, end_date = today.replace(day=1), today
+        elif period == "Last 90 days":
+            start_date, end_date = today - timedelta(days=89), today
+        elif period == "All time":
+            dates = [service._trade_date(item.exit_time, item.server_utc_offset_minutes) for item in service.trade_process_scores(account.id)]
+            start_date, end_date = min(dates, default=today), today
+        else:
+            with scope_note:
+                range_value = st.date_input("Analysis date range", value=(today - timedelta(days=89), today), key=f"framework-analysis-dates-{account.id}")
+            if not isinstance(range_value, tuple) or len(range_value) != 2:
+                st.info(tr("Choose a start and end date for Monitor analysis."))
+                return
+            start_date, end_date = range_value
         with scope_note:
-            range_value = st.date_input("Analysis date range", value=(today - timedelta(days=89), today), key=f"framework-analysis-dates-{account.id}")
-        if not isinstance(range_value, tuple) or len(range_value) != 2:
-            st.info(tr("Choose a start and end date for Monitor analysis."))
-            return
-        start_date, end_date = range_value
-    with scope_note:
-        st.caption(tr(
-            "Analysis: {start} to {end} · scores and gates always use the rolling reviewed sample.",
-            start=start_date.isoformat(),
-            end=end_date.isoformat(),
-        ))
-    critical_threshold = repo.get_framework_rule_settings(account.id).repeated_critical_threshold
-    st.caption(
-        tr(
-            "Caution triggers after {threshold} repeated critical violations within this window — a smaller window reaches that count sooner.",
-            threshold=critical_threshold,
+            st.caption(tr(
+                "Analysis: {start} to {end} · scores and gates always use the rolling reviewed sample.",
+                start=start_date.isoformat(),
+                end=end_date.isoformat(),
+            ))
+        critical_threshold = repo.get_framework_rule_settings(account.id).repeated_critical_threshold
+        st.caption(
+            tr(
+                "Caution triggers after {threshold} repeated critical violations within this window — a smaller window reaches that count sooner.",
+                threshold=critical_threshold,
+            )
         )
-    )
     scores = service.pillar_scores(account.id, window=int(window))
     readiness = service.readiness(account.id, window=int(window))
     coverage = service.risk_evidence_coverage(account.id, window=int(window))
     analysis = service.monitor_analysis(account.id, start_date=start_date, end_date=end_date, window=int(window))
     _render_rubric_sample_caption(scores, int(window))
     _render_framework_focus(repo, account, service, scores)
-    readiness_value, readiness_delta, readiness_color = _readiness_metric(readiness)
-    st.metric(
-        tr("Overall readiness"), readiness_value, tr(readiness_delta),
-        delta_color=readiness_color, delta_arrow="off", border=True,
-    )
-    st.caption(readiness.detail)
-    with st.container(horizontal=True, gap="small", vertical_alignment="center"):
-        st.metric(tr("Risk checks"), f"{coverage.approved}/{coverage.total}", tr("approved evidence"), border=True)
-        st.metric("Risk pending", str(coverage.pending), border=True)
-        st.metric("Over policy", str(coverage.over_policy), border=True)
-        st.metric("Risk unavailable", str(coverage.unavailable), border=True)
-        _render_help_popover("Approved Quick Risk Checks and Manual Reviews both feed pillar scores, readiness, and roadmap gates.")
-    _render_score_cards(scores, account)
-    _render_pillar_radar(scores)
-    component_rows = [
-        {tr("Pillar"): tr(PILLAR_NAMES[score.pillar]), tr("Metric"): tr(name), tr("Score"): _score_text(value), tr("Scope"): tr(score.scope)}
-        for score in scores for name, value in score.component_scores
-    ]
-    if component_rows:
-        present_names = {name for score in scores for name, _ in score.component_scores}
-        with st.container(horizontal=True, vertical_alignment="center", gap="small", width="content"):
-            st.markdown("##### What drives the current scores")
-            with st.popover(tr("What do these mean?"), icon=":material/help:", width="content"):
-                for name in COMPONENT_DEFINITIONS:
-                    if name in present_names:
-                        st.caption(f"**{tr(name)}** — {tr(COMPONENT_DEFINITIONS[name])}")
-        st.dataframe(pd.DataFrame(component_rows), hide_index=True, width="stretch")
-    _render_monitor_insights(analysis)
+
+    with st.container(border=True):
+        st.markdown(tr("#### Pillar scores & readiness"))
+        readiness_value, readiness_delta, readiness_color = _readiness_metric(readiness)
+        st.metric(
+            tr("Overall readiness"), readiness_value, tr(readiness_delta),
+            delta_color=readiness_color, delta_arrow="off",
+        )
+        st.caption(readiness.detail)
+        _render_score_cards(scores, account)
+        radar_column, drivers_column = st.columns(2, gap="large")
+        with radar_column:
+            _render_pillar_radar(scores)
+        with drivers_column:
+            component_rows = [
+                {tr("Pillar"): tr(PILLAR_NAMES[score.pillar]), tr("Metric"): tr(name), tr("Score"): _score_text(value), tr("Scope"): tr(score.scope)}
+                for score in scores for name, value in score.component_scores
+            ]
+            if component_rows:
+                present_names = {name for score in scores for name, _ in score.component_scores}
+                with st.container(horizontal=True, vertical_alignment="center", gap="small", width="content"):
+                    st.markdown(f'<div class="dashboard-stat-column-head">{escape(tr("What drives the current scores"))}</div>', unsafe_allow_html=True)
+                    with st.popover(tr("What do these mean?"), icon=":material/help:", width="content"):
+                        for name in COMPONENT_DEFINITIONS:
+                            if name in present_names:
+                                st.caption(f"**{tr(name)}** — {tr(COMPONENT_DEFINITIONS[name])}")
+                st.dataframe(pd.DataFrame(component_rows), hide_index=True, width="stretch")
+
+    with st.container(border=True):
+        _render_monitor_insights(analysis)
+
     process_tab, risk_tab, system_tab = st.tabs(["Process & outcomes", "Risk", "System & context"])
     with process_tab:
         _render_monitor_process(service, account, analysis, int(window))
     with risk_tab:
-        _render_monitor_risk(analysis, service.risk_snapshot(account.id))
+        _render_monitor_risk(analysis, service.risk_snapshot(account.id), coverage)
     with system_tab:
         _render_monitor_system(analysis)
     _render_period_reviews(repo, account, service)
@@ -2175,29 +2182,42 @@ def _render_monitor_process(service: FrameworkService, account: AccountListItem,
         st.caption("No tagged issues in reviewed trades for this period.")
 
 
-def _render_monitor_risk(analysis: MonitorAnalysisReport, snapshot: RiskSnapshot) -> None:
-    with st.container(horizontal=True, gap="small"):
-        st.metric("Daily R", "—" if snapshot.daily_r is None else format_r(snapshot.daily_r), border=True)
-        st.metric("Weekly R", "—" if snapshot.weekly_r is None else format_r(snapshot.weekly_r), border=True)
-        st.metric("Max drawdown", "—" if snapshot.max_drawdown_percent is None else format_percent(snapshot.max_drawdown_percent), border=True)
-        st.metric("Loss streak", "—" if snapshot.consecutive_losses is None else str(snapshot.consecutive_losses), border=True)
-    if snapshot.configured:
-        current_drawdown = "—" if snapshot.current_drawdown_percent is None else format_percent(snapshot.current_drawdown_percent)
-        st.caption(tr(
-            "Current drawdown: {current_drawdown}. Max drawdown resets {drawdown_period}; the losing streak resets {streak_period}.",
-            current_drawdown=current_drawdown,
-            drawdown_period=_reset_period_label(snapshot.drawdown_reset_period).lower(),
-            streak_period=_reset_period_label(snapshot.loss_streak_reset_period).lower(),
-        ))
+def _render_monitor_risk(analysis: MonitorAnalysisReport, snapshot: RiskSnapshot, coverage: RiskEvidenceCoverage) -> None:
+    with st.container(border=True):
+        with st.container(horizontal=True, vertical_alignment="center", gap="small", width="content"):
+            st.markdown(tr("#### Risk snapshot"))
+            _render_help_popover("Approved Quick Risk Checks and Manual Reviews both feed pillar scores, readiness, and roadmap gates.")
+        daily_value, daily_delta, daily_color = _r_metric(snapshot.daily_r)
+        weekly_value, weekly_delta, weekly_color = _r_metric(snapshot.weekly_r)
+        drawdown_value, drawdown_delta, drawdown_color = _drawdown_metric(snapshot.max_drawdown_percent)
+        streak_value = "—" if snapshot.consecutive_losses is None else str(snapshot.consecutive_losses)
+        _render_framework_stat_grid([
+            (tr("Daily R"), "—" if daily_value is None else str(daily_value), tr(daily_delta), _TONE_BY_DELTA_COLOR[daily_color]),
+            (tr("Weekly R"), "—" if weekly_value is None else str(weekly_value), tr(weekly_delta), _TONE_BY_DELTA_COLOR[weekly_color]),
+            (tr("Max drawdown"), "—" if drawdown_value is None else str(drawdown_value), tr(drawdown_delta), _TONE_BY_DELTA_COLOR[drawdown_color]),
+            (tr("Loss streak"), streak_value, "", "neutral"),
+            (tr("Risk checks"), f"{coverage.approved}/{coverage.total}", tr("approved evidence"), "info"),
+            (tr("Risk pending"), str(coverage.pending), "", "warning" if coverage.pending else "neutral"),
+            (tr("Over policy"), str(coverage.over_policy), "", "negative" if coverage.over_policy else "neutral"),
+            (tr("Risk unavailable"), str(coverage.unavailable), "", "warning" if coverage.unavailable else "neutral"),
+        ])
+        if snapshot.configured:
+            current_drawdown = "—" if snapshot.current_drawdown_percent is None else format_percent(snapshot.current_drawdown_percent)
+            st.caption(tr(
+                "Current drawdown: {current_drawdown}. Max drawdown resets {drawdown_period}; the losing streak resets {streak_period}.",
+                current_drawdown=current_drawdown,
+                drawdown_period=_reset_period_label(snapshot.drawdown_reset_period).lower(),
+                streak_period=_reset_period_label(snapshot.loss_streak_reset_period).lower(),
+            ))
     left, right = st.columns(2)
     with left:
-        st.markdown("##### Review evidence lifecycle")
+        st.markdown(f'<div class="dashboard-stat-column-head">{escape(tr("Review evidence lifecycle"))}</div>', unsafe_allow_html=True)
         if analysis.lifecycle:
             labels = {"manual_review": "Manual", "approved_auto_review": "Approved Auto", "auto_review": "Awaiting approval", "needs_approval": "Requires review"}
             state_column = tr("State")
             st.bar_chart(pd.DataFrame({state_column: [tr(labels.get(item.label, item.label)) for item in analysis.lifecycle], tr("Trades"): [item.count for item in analysis.lifecycle]}).set_index(state_column), width="stretch")
     with right:
-        st.markdown("##### Policy evidence")
+        st.markdown(f'<div class="dashboard-stat-column-head">{escape(tr("Policy evidence"))}</div>', unsafe_allow_html=True)
         if analysis.policy_states:
             state_column = tr("State")
             st.bar_chart(pd.DataFrame({state_column: [tr(RISK_POLICY_STATE_LABELS.get(item.label, item.label)) for item in analysis.policy_states], tr("Trades"): [item.count for item in analysis.policy_states]}).set_index(state_column), width="stretch")

@@ -506,7 +506,8 @@ def _direction_edge_items(
         ),
         (
             tr("Profit factor"),
-            tr("No losses") if row.profit_factor is None else format_number(row.profit_factor, 2),
+            _empty_outcome_label(row.breakeven_count, wins=False) if row.profit_factor is None
+            else format_number(row.profit_factor, 2),
             _profit_factor_metric_tone(row.profit_factor),
         ),
     ]
@@ -2361,7 +2362,8 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
                 ),
                 (
                     tr("Profit factor"),
-                    tr("No losses") if report.profit_factor is None else format_number(report.profit_factor, 2),
+                    _empty_outcome_label(report.breakeven_count, wins=False) if report.profit_factor is None
+                    else format_number(report.profit_factor, 2),
                     _profit_factor_metric_tone(report.profit_factor),
                 ),
             ], class_name="dashboard-stat-list")
@@ -2580,7 +2582,10 @@ def render_strategy_analytics(repo: SQLiteJournalRepository) -> None:
             tr("Win rate"): format_percent(report.win_rate),
             tr("Total R"): "—" if report.total_r is None else format_r(report.total_r),
             tr("Realized P&L"): format_currency(report.net_pnl, account.account_currency),
-            tr("Profit factor"): tr("No losses") if report.profit_factor is None else format_number(report.profit_factor, 2),
+            tr("Profit factor"): (
+                _empty_outcome_label(report.breakeven_count, wins=False) if report.profit_factor is None
+                else format_number(report.profit_factor, 2)
+            ),
         })
     st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
     st.caption(tr("Use account-level Dashboard and Bearings for execution coaching. This page is a descriptive cross-account comparison of the selected system."))

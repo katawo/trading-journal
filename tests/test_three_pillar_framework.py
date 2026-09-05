@@ -35,7 +35,6 @@ from trading_journal.presentation.framework import (
     _build_pillar_radar_figure,
     _clear_review_dialog,
     _default_policy_adherence_grade,
-    _daily_r_metric,
     _drawdown_metric,
     _focus_metric_text,
     _initialize_assessment_draft,
@@ -45,6 +44,7 @@ from trading_journal.presentation.framework import (
     _readiness_metric,
     _risk_evidence_detail,
     _risk_state_metric,
+    _r_metric,
     render_post_trade_review_dialog,
 )
 
@@ -76,7 +76,7 @@ def test_monitor_metrics_use_semantic_colors_without_treating_status_as_a_trend(
     assert _readiness_metric(incomplete) == (None, "Incomplete", "orange")
     assert _readiness_metric(ready) == ("82%", "Ready", "green")
     assert _risk_state_metric(clear) == ("Clear", "Within limits", "green")
-    assert _daily_r_metric(clear.daily_r) == ("−1.05R", "Loss", "red")
+    assert _r_metric(clear.daily_r) == ("−1.05R", "Loss", "red")
     assert _drawdown_metric(clear.max_drawdown_percent) == ("2.7%", "Current monitoring-period maximum", "gray")
 
 
@@ -145,7 +145,7 @@ def test_shared_review_dialog_reuses_the_callers_reporting_calendar_service(monk
 
 
 def test_monitor_metrics_distinguish_unavailable_values_and_breached_drawdown() -> None:
-    assert _daily_r_metric(None) == (None, "Unavailable", "gray")
+    assert _r_metric(None) == (None, "Unavailable", "gray")
     assert _drawdown_metric(None) == (None, "Unavailable", "gray")
     assert _drawdown_metric("0") == ("0.0%", "No drawdown", "gray")
 

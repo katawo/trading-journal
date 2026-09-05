@@ -77,6 +77,12 @@ VI: dict[str, str] = {
     "At least one protected position has unavailable risk calculation; known risk is only a lower bound.": "Ít nhất một vị thế được bảo vệ không thể tính rủi ro; rủi ro đã biết chỉ là mức tối thiểu.",
     "Known open risk has reached 80% of the account limit.": "Rủi ro đang mở đã biết đã chạm 80% giới hạn tài khoản.",
     "Known open risk is within the account limit.": "Rủi ro đang mở đã biết vẫn trong giới hạn tài khoản.",
+    # Per-position incident details, plus the category and state labels the
+    # incident table derives from those same records.
+    "Open position has no valid protective stop.": "Vị thế đang mở không có stop bảo vệ hợp lệ.",
+    "Protective stop exists, but MT5 could not calculate monetary risk.": "Có stop bảo vệ, nhưng MT5 không tính được giá trị rủi ro bằng tiền.",
+    "Risk Unavailable": "Không tính được rủi ro",
+    "Resolved": "Đã xử lý",
     "No snapshot": "Chưa có ảnh chụp",
     "Ongoing positions": "Vị thế đang mở",
     "Ongoing workspace": "Không gian đang diễn ra",
