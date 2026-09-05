@@ -283,6 +283,7 @@ def test_cached_dashboard_report_closes_its_temporary_repository(monkeypatch):
 
     monkeypatch.setattr(journal_app, "SQLiteJournalRepository", StubRepository)
     monkeypatch.setattr(journal_app, "DashboardService", StubDashboardService)
+    monkeypatch.setattr(journal_app, "asdict", lambda result: {"account_id": result})
 
     result = journal_app._cached_dashboard_report(
         "temporary-dashboard-repository",
@@ -290,5 +291,5 @@ def test_cached_dashboard_report_closes_its_temporary_repository(monkeypatch):
         7,
     )
 
-    assert result == 7
+    assert result == {"account_id": 7}
     assert closed == [True]

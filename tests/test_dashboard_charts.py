@@ -142,10 +142,14 @@ def test_dashboard_visual_vocabulary_styles_kickers_and_period_metadata(monkeypa
 
     css = rendered[0]
     period_css = css.split(".dashboard-period {", maxsplit=1)[1].split("}", maxsplit=1)[0]
+    period_count_css = css.split(".dashboard-period-count {", maxsplit=1)[1].split("}", maxsplit=1)[0]
     assert ".dashboard-kicker" in css
     assert "letter-spacing: 0.18em;" in css
-    assert "text-align: right;" in period_css
+    assert "font-size: 0.78rem;" in period_css
+    assert "text-align: left;" in period_css
     assert "text-transform: uppercase;" in period_css
+    assert "font-size: 0.95rem;" in period_count_css
+    assert "font-weight: 800;" in period_count_css
 
 
 def test_ongoing_exposure_metrics_use_a_vertical_stack(monkeypatch) -> None:

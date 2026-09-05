@@ -198,8 +198,13 @@ def test_review_save_immediately_invalidates_the_menu_badge_count(monkeypatch, t
     )
     trade = repository.list_closed_trades_for_review(account.id)[0]
     before = journal_app._database_change_token(database_path)
-    assert journal_app._cached_account_framework_snapshot(
+    before_payload = journal_app._cached_account_framework_snapshot(
         str(database_path), before, account.id
+    )
+    assert isinstance(before_payload, dict)
+    assert before_payload["review_queue_count"] == 1
+    assert journal_app.build_account_framework_snapshot(
+        repository, account_id=account.id
     ).review_queue_count == 1
 
     repository.save_post_trade_assessment(
@@ -217,8 +222,13 @@ def test_review_save_immediately_invalidates_the_menu_badge_count(monkeypatch, t
 
     after = journal_app._database_change_token(database_path)
     assert after != before
-    assert journal_app._cached_account_framework_snapshot(
+    after_payload = journal_app._cached_account_framework_snapshot(
         str(database_path), after, account.id
+    )
+    assert isinstance(after_payload, dict)
+    assert after_payload["review_queue_count"] == 0
+    assert journal_app.build_account_framework_snapshot(
+        repository, account_id=account.id
     ).review_queue_count == 0
 
 
@@ -2326,6 +2336,16 @@ def test_dashboard_renders_graphics_for_imported_trades(monkeypatch, tmp_path):
     assert not any(item.label == "Breakdown view" for item in app.segmented_control)
     assert 'class="dashboard-stat-section-head">Direction edge<' in stat_markup
     assert 'class="dashboard-stat-column-head">Edge quality<' in stat_markup
+    edge_quality_markup = next(
+        item.value
+        for item in app.markdown
+        if '<div class="dashboard-stat-label">Win rate</div>' in item.value
+    )
+    assert '<div class="dashboard-stat-label">Breakeven</div>' in edge_quality_markup
+    assert any(
+        "R coverage: :orange[**0 / 1**] logical trades can be normalized" in item.value
+        for item in app.caption
+    )
     assert '<th scope="col">Long</th>' in stat_markup
     assert '<th scope="col">Short</th>' in stat_markup
     assert 'class="dashboard-direction-matrix-title">Trade profile<' in stat_markup
@@ -2335,6 +2355,7 @@ def test_dashboard_renders_graphics_for_imported_trades(monkeypatch, tmp_path):
     assert "R coverage · Long" in stat_markup
     assert "Long − Short" not in stat_markup
     assert "#### Account & risk snapshot" in stat_markup
+    assert '<span class="dashboard-period-count">1</span> closed logical trade' in stat_markup
     assert 'class="dashboard-stat-column-head">Capital<' in stat_markup
     assert (
         '<div class="dashboard-stat-label">Funded capital</div>'

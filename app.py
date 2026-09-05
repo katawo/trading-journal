@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import asdict
 from html import escape
 from importlib.metadata import version
 import tomllib
@@ -15,12 +16,38 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 from trading_journal.application.auto_sync import MT5AutoSyncResult, MT5AutoSyncService
-from trading_journal.application.dashboard import DashboardReport, DashboardService, PerformanceBreakdown
-from trading_journal.application.framework import AccountFrameworkSnapshot, FrameworkService
+from trading_journal.application.dashboard import (
+    ConcentrationBreakdown,
+    ConcentrationItem,
+    ConcentrationSide,
+    CumulativePoint,
+    DailyPerformance,
+    DashboardReport,
+    DashboardService,
+    PerformanceBreakdown,
+    StrategyPerformance,
+    TradePerformancePoint,
+)
+from trading_journal.application.framework import (
+    AccountFrameworkSnapshot,
+    CoachingFocusPlan,
+    CoachingRecommendation,
+    FrameworkAlert,
+    FrameworkFocusProgress,
+    FrameworkService,
+    PillarScore,
+    ReadinessAssessment,
+    RiskSnapshot,
+)
 from trading_journal.application.display_time import format_relative_time
 from trading_journal.application.import_mt5 import SUPPORTED_SCHEMA_VERSIONS
 from trading_journal.application.mt5_paths import default_mt5_export_path, find_mt5_common_files
-from trading_journal.infrastructure.sqlite_repository import AccountListItem, JournalDatabaseResetRequiredError, SQLiteJournalRepository
+from trading_journal.infrastructure.sqlite_repository import (
+    AccountListItem,
+    FrameworkFocusView,
+    JournalDatabaseResetRequiredError,
+    SQLiteJournalRepository,
+)
 from trading_journal.presentation.framework import (
     _render_framework_rules,
     _render_help_popover,
@@ -570,6 +597,7 @@ def _render_dashboard_statistics(report: DashboardReport, currency: str) -> None
             st.markdown(f'<div class="dashboard-stat-column-head">{tr("Edge quality")}</div>', unsafe_allow_html=True)
             _render_stat_grid([
                 (tr("Win rate"), format_percent(report.win_rate), "info"),
+                (tr("Breakeven"), format_count(report.breakeven_count), "neutral"),
                 (tr("Payoff ratio"), "—" if report.payoff_ratio is None else format_number(report.payoff_ratio, 2), "info"),
                 (
                     tr("Expectancy R"),
@@ -664,12 +692,17 @@ def apply_application_style() -> None:
         }
         .dashboard-period {
             color: var(--st-gray-color, #667168);
-            font-size: 0.68rem;
+            font-size: 0.78rem;
             font-weight: 600;
             letter-spacing: 0.04em;
             padding: 0.1rem 0 0.35rem;
-            text-align: right;
+            text-align: left;
             text-transform: uppercase;
+        }
+        .dashboard-period-count {
+            color: var(--st-blue-color, #1666a5);
+            font-size: 0.95rem;
+            font-weight: 800;
         }
         .ongoing-live-pulse {
             animation: ongoing-live-twinkle 1.8s ease-in-out infinite;
@@ -1011,15 +1044,56 @@ def _cached_account_framework_snapshot(
     database_path: str,
     database_change_token: tuple[int, int, int, int],
     account_id: int,
-) -> AccountFrameworkSnapshot:
-    """Cache framework analytics without ever combining account histories."""
+) -> dict[str, object]:
+    """Cache a reload-safe framework payload without combining account histories."""
 
     del database_change_token
     repo = SQLiteJournalRepository(database_path)
     try:
-        return FrameworkService(repo).account_snapshot(account_id)
+        return asdict(FrameworkService(repo).account_snapshot(account_id))
     finally:
         repo.close()
+
+
+def _framework_snapshot_from_cache_payload(payload: dict[str, object]) -> AccountFrameworkSnapshot:
+    """Rebuild the current module's dataclasses after a Streamlit hot reload."""
+
+    def values(item: object) -> dict[str, object]:
+        if not isinstance(item, dict):
+            raise TypeError("Framework snapshot cache payload is invalid")
+        return item
+
+    alerts = tuple(FrameworkAlert(**values(item)) for item in payload["alerts"])  # type: ignore[arg-type]
+    focus_payload = payload["focus"]
+    focus = None if focus_payload is None else FrameworkFocusView(**values(focus_payload))  # type: ignore[arg-type]
+    focus_progress_payload = payload["focus_progress"]
+    focus_progress = (
+        None
+        if focus_progress_payload is None
+        else FrameworkFocusProgress(**values(focus_progress_payload))  # type: ignore[arg-type]
+    )
+    pillar_scores = tuple(PillarScore(**values(item)) for item in payload["pillar_scores"])  # type: ignore[arg-type]
+    coaching_plan_payload = payload["coaching_focus_plan"]
+    coaching_plan = None
+    if coaching_plan_payload is not None:
+        coaching_values = values(coaching_plan_payload)
+        coaching_plan = CoachingFocusPlan(  # type: ignore[arg-type]
+            **{
+                **coaching_values,
+                "recommendation": CoachingRecommendation(**values(coaching_values["recommendation"])),  # type: ignore[arg-type]
+            }
+        )
+    return AccountFrameworkSnapshot(
+        account_id=payload["account_id"],  # type: ignore[arg-type]
+        alerts=alerts,
+        review_queue_count=payload["review_queue_count"],  # type: ignore[arg-type]
+        focus=focus,
+        focus_progress=focus_progress,
+        risk=RiskSnapshot(**values(payload["risk"])),  # type: ignore[arg-type]
+        pillar_scores=pillar_scores,
+        readiness=ReadinessAssessment(**values(payload["readiness"])),  # type: ignore[arg-type]
+        coaching_focus_plan=coaching_plan,
+    )
 
 
 def _database_change_token(database_path: Path) -> tuple[int, int, int, int]:
@@ -1041,10 +1115,12 @@ def build_account_framework_snapshot(
     *,
     account_id: int,
 ) -> AccountFrameworkSnapshot:
-    return _cached_account_framework_snapshot(
-        str(repo.database_path),
-        _database_change_token(repo.database_path),
-        account_id,
+    return _framework_snapshot_from_cache_payload(
+        _cached_account_framework_snapshot(
+            str(repo.database_path),
+            _database_change_token(repo.database_path),
+            account_id,
+        )
     )
 
 
@@ -1128,20 +1204,66 @@ def _cached_dashboard_report(
     database_path: str,
     database_change_token: tuple[int, int, int, int],
     account_id: int,
-):
+) -> dict[str, object]:
     del database_change_token
     repo = SQLiteJournalRepository(database_path)
     try:
-        return DashboardService(repo).build_report(account_id=account_id)
+        return asdict(DashboardService(repo).build_report(account_id=account_id))
     finally:
         repo.close()
 
 
-def build_dashboard_report(repo: SQLiteJournalRepository, *, account_id: int):
-    return _cached_dashboard_report(
-        str(repo.database_path),
-        _database_change_token(repo.database_path),
-        account_id,
+def _dashboard_report_from_cache_payload(payload: dict[str, object]) -> DashboardReport:
+    """Rebuild a dashboard report from primitives cached across hot reloads."""
+
+    def values(item: object) -> dict[str, object]:
+        if not isinstance(item, dict):
+            raise TypeError("Dashboard report cache payload is invalid")
+        return item
+
+    concentrations: list[ConcentrationBreakdown] = []
+    for item in payload["concentration"]:  # type: ignore[union-attr]
+        breakdown_values = values(item)
+        sides: dict[str, ConcentrationSide] = {}
+        for side_name in ("profit", "loss"):
+            side_values = values(breakdown_values[side_name])
+            sides[side_name] = ConcentrationSide(  # type: ignore[arg-type]
+                **{
+                    **side_values,
+                    "items": [
+                        ConcentrationItem(**values(entry))  # type: ignore[arg-type]
+                        for entry in side_values["items"]  # type: ignore[union-attr]
+                    ],
+                }
+            )
+        concentrations.append(
+            ConcentrationBreakdown(
+                dimension=breakdown_values["dimension"],  # type: ignore[arg-type]
+                profit=sides["profit"],
+                loss=sides["loss"],
+            )
+        )
+    return DashboardReport(  # type: ignore[arg-type]
+        **{
+            **payload,
+            "cumulative": [CumulativePoint(**values(item)) for item in payload["cumulative"]],
+            "per_trade": [TradePerformancePoint(**values(item)) for item in payload["per_trade"]],
+            "daily": [DailyPerformance(**values(item)) for item in payload["daily"]],
+            "by_strategy": [StrategyPerformance(**values(item)) for item in payload["by_strategy"]],
+            "by_symbol": [PerformanceBreakdown(**values(item)) for item in payload["by_symbol"]],
+            "by_direction": [PerformanceBreakdown(**values(item)) for item in payload["by_direction"]],
+            "concentration": concentrations,
+        }
+    )
+
+
+def build_dashboard_report(repo: SQLiteJournalRepository, *, account_id: int) -> DashboardReport:
+    return _dashboard_report_from_cache_payload(
+        _cached_dashboard_report(
+            str(repo.database_path),
+            _database_change_token(repo.database_path),
+            account_id,
+        )
     )
 
 
@@ -2063,8 +2185,13 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
         st.info(tr("No logical trades have been closed yet."))
         return account
 
-    logical_label = f"{report.trade_count} closed logical trade{'s' if report.trade_count != 1 else ''}"
-    st.markdown(f'<div class="dashboard-period">{tr("All time")} · {logical_label}</div>', unsafe_allow_html=True)
+    logical_label = tr("closed logical trade" if report.trade_count == 1 else "closed logical trades")
+    st.markdown(
+        f'<div class="dashboard-period">{tr("All time")} · '
+        f'<span class="dashboard-period-count">{format_count(report.trade_count)}</span> '
+        f'{logical_label}</div>',
+        unsafe_allow_html=True,
+    )
     with st.container(border=True):
         st.markdown(f"#### {tr('Account & risk snapshot')}")
         displayed_max_drawdown = report.end_of_day_max_drawdown
@@ -2130,9 +2257,23 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
                 ),
             ], class_name="dashboard-stat-list")
         if report.r_trade_count < report.trade_count:
-            st.caption(f"R is based on {report.r_trade_count:,} of {report.trade_count:,} logical trades with an effective planned risk.")
+            st.caption(
+                tr(
+                    "R coverage: :orange[**{covered} / {total}**] logical trades can be normalized "
+                    "using the account's current standard 1R.",
+                    covered=f"{report.r_trade_count:,}",
+                    total=f"{report.trade_count:,}",
+                )
+            )
         else:
-            st.caption(f"All {report.trade_count:,} logical trades have an effective risk value.")
+            st.caption(
+                tr(
+                    "R coverage: :green[**{covered} / {total}**] logical trades can be normalized "
+                    "using the account's current standard 1R.",
+                    covered=f"{report.trade_count:,}",
+                    total=f"{report.trade_count:,}",
+                )
+            )
         if report.starting_balance is None:
             st.caption("Set funded capital in Settings to enable the balance curve, balance growth, and drawdown percentage.")
 
