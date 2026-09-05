@@ -16,6 +16,16 @@ Nhật ký đo lường *chất lượng của một giao dịch đã đóng*, k
 
 Một giao dịch có lãi vẫn có thể là **Lệnh thắng xấu** khi quy trình thất bại. Một giao dịch lỗ nhưng tuân thủ có thể là **Lệnh thua tốt**. P&L và chất lượng quy trình được tách riêng một cách có chủ đích.
 
+Thẻ giao dịch cũng hiển thị nhãn hướng và kết quả: **Mua** hoặc **Bán** lấy từ hướng lệnh MT5 đã nhập. **Lãi**, **Lỗ** hoặc **Hòa vốn** dựa trên kết quả R thực tế sau chi phí và ngưỡng hòa vốn chung của nhật ký trong **Cài đặt**; khi không có bằng chứng 1R, ứng dụng quay lại dùng dấu của P&L ròng. Các nhãn này không làm thay đổi phân loại quy trình hay P&L thực tế.
+
+Giao dịch hòa vốn không được tính là thắng cũng không tính là thua, và mọi chỉ số thắng/thua đều áp dụng quy tắc này như nhau:
+
+- **Chuỗi kết quả** xem giao dịch hòa vốn là trong suốt — nó không kéo dài cũng không đặt lại chuỗi thắng hay chuỗi thua hiện tại. Điều này bao gồm cả bộ đếm **chuỗi lỗ liên tiếp** của Chính sách rủi ro, nên một lệnh hòa vốn không đẩy chuỗi lỗ tiến gần ngưỡng dừng, cũng không xóa chuỗi lỗ đang hình thành.
+- **Tổng lợi nhuận / tổng thua lỗ, lãi trung bình / lỗ trung bình, tỷ lệ lãi/lỗ và profit factor** chỉ tính các giao dịch thắng và thua. P&L của giao dịch hòa vốn được báo cáo riêng ở mục **P&L hòa vốn**, nên `tổng lợi nhuận − tổng thua lỗ + P&L hòa vốn` vẫn khớp với P&L ròng.
+- **Tỷ lệ thắng, Tỷ lệ thua và Tỷ lệ hòa vốn** đều chia cho toàn bộ giao dịch đã đóng, nên ba tỷ lệ cộng lại bằng 100%.
+
+Tiền không bao giờ bị che khỏi việc theo dõi rủi ro: P&L ròng, số dư, drawdown và giới hạn lỗ ngày/tuần vẫn dùng P&L thực tế và tính đầy đủ các giao dịch hòa vốn.
+
 ## Vòng lặp vận hành
 
 ```text

@@ -432,6 +432,7 @@ class FrameworkService:
         self._risk_snapshot_cache: dict[tuple[int, datetime | None], RiskSnapshot] = {}
         self._pillar_score_cache: dict[tuple[int, int, date | None], tuple[PillarScore, ...]] = {}
         self._reporting_time_basis_cache: str | None = None
+        self._breakeven_threshold_cache: int | None = None
         self._framework_rule_settings_cache: dict[int, FrameworkRuleSettingsView] = {}
         self._mt5_accounts_cache: tuple[AccountListItem, ...] | None = None
 
@@ -1929,7 +1930,14 @@ class FrameworkService:
             if state.peak > 0 else Decimal("0")
         )
         state.max_drawdown = max(state.max_drawdown, state.current_drawdown)
-        state.streak = state.streak + 1 if pnl < 0 else 0
+        # A scratch is neither a win nor a loss, so it neither extends a losing
+        # run nor clears one. Keeps this counter on the same basis as the
+        # Dashboard streaks instead of counting sub-band trades as real losses.
+        outcome = classify_trade_outcome(pnl, result_r, self._breakeven_threshold_percent())
+        if outcome == "loss":
+            state.streak += 1
+        elif outcome == "profit":
+            state.streak = 0
         breaches: set[str] = set()
         if state.daily_r[trade_day] <= -Decimal(policy.daily_loss_limit_r) and trade_day not in state.daily_limit_reached_at:
             state.daily_limit_reached_at[trade_day] = occurred_at
@@ -1945,7 +1953,7 @@ class FrameworkService:
             state.loss_streak_limit_reached_at = occurred_at
             state.loss_streak_limit_period = state.streak_period
             breaches.add("loss_streak")
-        if pnl >= 0:
+        if outcome == "profit":
             state.loss_streak_limit_reached_at = None
             state.loss_streak_limit_period = None
         event.update({
@@ -2105,6 +2113,11 @@ class FrameworkService:
         if self._reporting_time_basis_cache is None:
             self._reporting_time_basis_cache = self._repository.get_journal_settings().reporting_time_basis
         return self._reporting_time_basis_cache
+
+    def _breakeven_threshold_percent(self) -> int:
+        if self._breakeven_threshold_cache is None:
+            self._breakeven_threshold_cache = self._repository.get_journal_settings().breakeven_threshold_percent
+        return self._breakeven_threshold_cache
 
     def _cached_framework_rule_settings(self, account_id: int) -> FrameworkRuleSettingsView:
         if account_id not in self._framework_rule_settings_cache:

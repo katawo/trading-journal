@@ -131,6 +131,10 @@ class DashboardReport:
     expectancy_r: str | None
     gross_profit: str
     gross_loss: str
+    # Breakeven trades are neither a win nor a loss, so their P&L stays out of
+    # both gross totals. Reporting it as its own bucket keeps the three
+    # outcomes reconciling: gross_profit - gross_loss + breakeven_pnl = net_pnl.
+    breakeven_pnl: str
     average_win: str | None
     average_loss: str | None
     payoff_ratio: str | None
@@ -224,10 +228,11 @@ class DashboardService:
         losses = sum(outcomes[trade.logical_trade_id] == "loss" for trade in trades)
         breakevens = len(trades) - wins - losses
         win_rate = Decimal(wins * 100) / Decimal(len(trades)) if trades else Decimal("0")
-        winning_pnls = [Decimal(trade.net_pnl) for trade in trades if Decimal(trade.net_pnl) > 0]
-        losing_pnls = [Decimal(trade.net_pnl) for trade in trades if Decimal(trade.net_pnl) < 0]
+        winning_pnls = [Decimal(trade.net_pnl) for trade in trades if outcomes[trade.logical_trade_id] == "profit"]
+        losing_pnls = [Decimal(trade.net_pnl) for trade in trades if outcomes[trade.logical_trade_id] == "loss"]
         gross_profit = sum(winning_pnls, Decimal("0"))
         gross_loss = -sum(losing_pnls, Decimal("0"))
+        breakeven_pnl = pnl_total - gross_profit + gross_loss
         profit_factor = gross_profit / gross_loss if gross_loss > 0 else None
         expectancy = pnl_total / len(trades) if trades else None
         expectancy_r = r_total / len(r_values) if r_total is not None else None
@@ -255,21 +260,25 @@ class DashboardService:
                 next_r = (strategy_r or Decimal("0")) + Decimal(trade.result_r)
             strategies[strategy] = (strategy_pnl + pnl, next_r)
 
+        # Breakeven-classified trades are neither a win nor a loss, so they stay
+        # out of both gross totals the Pareto shares are measured against.
+        won = [trade for trade in trades if outcomes[trade.logical_trade_id] == "profit"]
+        lost = [trade for trade in trades if outcomes[trade.logical_trade_id] == "loss"]
         concentration = [
             ConcentrationBreakdown(
                 dimension="trade",
-                profit=self._concentration_side(trades, lambda trade: f"LT-{trade.logical_trade_id} · {trade.display_label}", positive=True),
-                loss=self._concentration_side(trades, lambda trade: f"LT-{trade.logical_trade_id} · {trade.display_label}", positive=False),
+                profit=self._concentration_side(won, lambda trade: f"LT-{trade.logical_trade_id} · {trade.display_label}", positive=True),
+                loss=self._concentration_side(lost, lambda trade: f"LT-{trade.logical_trade_id} · {trade.display_label}", positive=False),
             ),
             ConcentrationBreakdown(
                 dimension="symbol",
-                profit=self._concentration_side(trades, lambda trade: trade.symbol, positive=True),
-                loss=self._concentration_side(trades, lambda trade: trade.symbol, positive=False),
+                profit=self._concentration_side(won, lambda trade: trade.symbol, positive=True),
+                loss=self._concentration_side(lost, lambda trade: trade.symbol, positive=False),
             ),
             ConcentrationBreakdown(
                 dimension="strategy",
-                profit=self._concentration_side(trades, lambda trade: trade.strategy or "Untagged", positive=True),
-                loss=self._concentration_side(trades, lambda trade: trade.strategy or "Untagged", positive=False),
+                profit=self._concentration_side(won, lambda trade: trade.strategy or "Untagged", positive=True),
+                loss=self._concentration_side(lost, lambda trade: trade.strategy or "Untagged", positive=False),
             ),
         ]
 
@@ -373,6 +382,7 @@ class DashboardService:
             expectancy_r=None if expectancy_r is None else _decimal_string(expectancy_r),
             gross_profit=_decimal_string(gross_profit),
             gross_loss=_decimal_string(gross_loss),
+            breakeven_pnl=_decimal_string(breakeven_pnl),
             average_win=None if average_win is None else _decimal_string(average_win),
             average_loss=None if average_loss is None else _decimal_string(average_loss),
             payoff_ratio=None if payoff_ratio is None else _decimal_string(payoff_ratio),
@@ -458,8 +468,8 @@ class DashboardService:
                 classify_trade_outcome(item.net_pnl, item.result_r, breakeven_threshold_percent)
                 for item in members
             ]
-            winning_pnls = [value for value in pnls if value > 0]
-            losing_pnls = [value for value in pnls if value < 0]
+            winning_pnls = [value for value, outcome in zip(pnls, member_outcomes) if outcome == "profit"]
+            losing_pnls = [value for value, outcome in zip(pnls, member_outcomes) if outcome == "loss"]
             win_count = member_outcomes.count("profit")
             loss_count = member_outcomes.count("loss")
             breakeven_count = len(members) - win_count - loss_count

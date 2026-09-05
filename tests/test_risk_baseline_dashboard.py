@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import date
+from decimal import Decimal
 import sqlite3
 from pathlib import Path
 
@@ -551,7 +552,7 @@ def test_dashboard_calculates_balance_growth_drawdown_and_trade_quality(tmp_path
     assert [(item.label, item.trade_count, item.net_pnl) for item in report.by_direction] == [("long", 2, "15")]
 
 
-def test_dashboard_uses_breakeven_threshold_only_for_categorical_outcomes(tmp_path: Path) -> None:
+def test_dashboard_excludes_breakeven_trades_from_win_and_loss_aggregates(tmp_path: Path) -> None:
     repository = configured_repository(tmp_path, standard_risk_percent="10")
     account = repository.find_active_mt5_account("123456", "DemoBroker-Live")
     assert account is not None
@@ -574,13 +575,53 @@ def test_dashboard_uses_breakeven_threshold_only_for_categorical_outcomes(tmp_pa
         "breakeven", "breakeven", "profit", "loss"
     ]
     assert report.net_pnl == "15"
-    assert report.gross_profit == "21.001"
-    assert report.gross_loss == "6.001"
+    # The +0.5 / -0.5 pair is inside the breakeven band, so neither its profit
+    # nor its loss reaches the gross totals, averages, or profit factor.
+    assert report.gross_profit == "20.501"
+    assert report.gross_loss == "5.501"
     assert report.by_symbol[0].profit_factor == report.profit_factor
+
+    # Averages divide by the same two-win / two-loss populations the counts report.
+    assert report.average_win == "10.2505"
+    assert report.average_loss == "-2.7505"
 
     repository.configure_journal(reporting_time_basis="utc", breakeven_threshold_percent=0)
     exact_zero = DashboardService(repository).build_report()
     assert (exact_zero.win_count, exact_zero.loss_count, exact_zero.breakeven_count) == (3, 3, 0)
+    # With the band closed, the same two trades return to the gross totals.
+    assert exact_zero.gross_profit == "21.001"
+    assert exact_zero.gross_loss == "6.001"
+    assert exact_zero.breakeven_pnl == "0"
+
+
+@pytest.mark.parametrize("threshold", [0, 5, 10, 60])
+def test_dashboard_outcome_buckets_always_reconcile_to_net_pnl(tmp_path: Path, threshold: int) -> None:
+    """Money moved out of the gross totals by the band stays visible.
+
+    Gross profit and gross loss cover only won and lost trades, so without a
+    breakeven bucket the P&L of band-classified trades would silently vanish
+    from a page that also shows net P&L.
+    """
+    repository = configured_repository(tmp_path, standard_risk_percent="10")
+    account = repository.find_active_mt5_account("123456", "DemoBroker-Live")
+    assert account is not None
+    repository.upsert_mt5_positions(
+        account.id,
+        [
+            position("1003", net_pnl="0.4", exit_time="2026-08-03T09:00:00+00:00"),
+            position("1004", net_pnl="-0.4", exit_time="2026-08-04T09:00:00+00:00"),
+            position("1005", net_pnl="5", exit_time="2026-08-05T09:00:00+00:00"),
+            position("1006", net_pnl="-3", exit_time="2026-08-06T09:00:00+00:00"),
+        ],
+        "positions.csv",
+        "reconcile-hash",
+    )
+    repository.configure_journal(reporting_time_basis="utc", breakeven_threshold_percent=threshold)
+
+    report = DashboardService(repository).build_report()
+
+    reconciled = Decimal(report.gross_profit) - Decimal(report.gross_loss) + Decimal(report.breakeven_pnl)
+    assert reconciled == Decimal(report.net_pnl)
 
 
 def test_dashboard_maximum_percentage_drawdown_is_independent_of_maximum_amount(tmp_path: Path) -> None:

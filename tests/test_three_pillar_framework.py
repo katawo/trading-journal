@@ -821,7 +821,14 @@ def test_loss_streak_resets_on_the_configured_reporting_period(
     assert snapshot.loss_streak_reset_period == cadence
 
 
-def test_breakeven_band_does_not_hide_a_real_risk_loss(tmp_path) -> None:
+def test_breakeven_trade_does_not_extend_the_risk_policy_loss_streak(tmp_path) -> None:
+    """A scratch is neither a win nor a loss for streak counting, everywhere.
+
+    The Risk-policy consecutive-loss counter uses the same breakeven band as the
+    Dashboard streaks, so a sub-band result does not advance the loss streak that
+    drives max_consecutive_losses. Its P&L still reaches balance, drawdown, and
+    the daily/weekly R limits, which stay on raw net P&L.
+    """
     repository, account_id = _repository(tmp_path)
     policy, strategy = _policy(
         repository,
@@ -840,7 +847,38 @@ def test_breakeven_band_does_not_hide_a_real_risk_loss(tmp_path) -> None:
 
     assert score.outcome == "breakeven"
     assert score.classification == "Good Breakeven"
-    assert snapshot.consecutive_losses == 1
+    assert snapshot.consecutive_losses == 0
+    # The money itself is never hidden from risk monitoring.
+    assert snapshot.daily_r == "-0.05"
+
+
+def test_breakeven_trade_does_not_reset_the_risk_policy_loss_streak(tmp_path) -> None:
+    """The other half of the same rule: a scratch must not clear a losing run.
+
+    Before the band applied here, any non-negative trade zeroed the counter, so a
+    few cents of profit between real losses silently disarmed the consecutive-loss
+    stop.
+    """
+    repository, account_id = _repository(tmp_path)
+    _policy(
+        repository,
+        account_id,
+        max_consecutive_losses=10,
+        loss_streak_reset_period="all_time",
+    )
+    for index, (pnl, exit_time) in enumerate((
+        ("-10", "2026-08-10T09:00:00+00:00"),
+        ("-10", "2026-08-10T10:00:00+00:00"),
+        ("0.5", "2026-08-10T11:00:00+00:00"),
+        ("-10", "2026-08-10T12:00:00+00:00"),
+    )):
+        _import_position(repository, account_id, position_id=f"streak-{index}", net_pnl=pnl, exit_time=exit_time)
+
+    snapshot = FrameworkService(repository).risk_snapshot(
+        account_id, now=datetime(2026, 8, 10, 13, tzinfo=timezone.utc)
+    )
+
+    assert snapshot.consecutive_losses == 3
 
 
 def test_trade_process_scores_do_not_reload_trade_performance(monkeypatch, tmp_path) -> None:

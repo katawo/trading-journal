@@ -138,6 +138,18 @@ def _presence_metric_tone(count: int, tone: _DashboardMetricTone) -> _DashboardM
     return tone if count > 0 else "neutral"
 
 
+def _empty_outcome_label(breakeven_count: int, *, wins: bool) -> str:
+    """Say why a win/loss figure is missing without overclaiming.
+
+    A configured breakeven band moves small winners and losers out of the win
+    and loss populations, so a plain "No losses" would deny real money that was
+    lost inside the band.
+    """
+    if breakeven_count == 0:
+        return tr("No wins") if wins else tr("No losses")
+    return tr("None outside breakeven")
+
+
 def _profit_factor_metric_tone(value: str | None) -> _DashboardMetricTone:
     if value is None:
         return "neutral"
@@ -564,7 +576,8 @@ def _render_dashboard_statistics(report: DashboardReport, currency: str) -> None
                 (tr("Gross profit"), format_currency(report.gross_profit, currency, signed=False), _signed_metric_tone(report.gross_profit)),
                 (
                     tr("Average win"),
-                    tr("No wins") if report.average_win is None else format_currency(report.average_win, currency),
+                    _empty_outcome_label(report.breakeven_count, wins=True) if report.average_win is None
+                    else format_currency(report.average_win, currency),
                     "neutral" if report.average_win is None else "positive",
                 ),
                 (
@@ -584,7 +597,8 @@ def _render_dashboard_statistics(report: DashboardReport, currency: str) -> None
                 (tr("Gross loss"), format_currency(-Decimal(report.gross_loss), currency), _presence_metric_tone(report.loss_count, "negative")),
                 (
                     tr("Average loss"),
-                    tr("No losses") if report.average_loss is None else format_currency(report.average_loss, currency),
+                    _empty_outcome_label(report.breakeven_count, wins=False) if report.average_loss is None
+                    else format_currency(report.average_loss, currency),
                     "neutral" if report.average_loss is None else "negative",
                 ),
                 (
@@ -614,8 +628,14 @@ def _render_dashboard_statistics(report: DashboardReport, currency: str) -> None
                 ),
                 (
                     tr("Profit factor"),
-                    tr("No losses") if report.profit_factor is None else format_number(report.profit_factor, 2),
+                    _empty_outcome_label(report.breakeven_count, wins=False) if report.profit_factor is None
+                    else format_number(report.profit_factor, 2),
                     _profit_factor_metric_tone(report.profit_factor),
+                ),
+                (
+                    tr("Breakeven P&L"),
+                    format_currency(report.breakeven_pnl, currency),
+                    _signed_metric_tone(report.breakeven_pnl),
                 ),
                 (
                     tr("R coverage"),
@@ -1400,7 +1420,7 @@ def render_journal_reporting_settings(repo: SQLiteJournalRepository) -> None:
             help="Results from minus this percentage of 1R through plus this percentage are classified as Breakeven. Use 0% for exact-zero behavior.",
             width=280,
         )
-        st.caption("This changes outcome labels and win rate. Analytical win/loss streaks ignore breakeven trades. Actual P&L, drawdown, and Risk-policy limits are unchanged.")
+        st.caption("Breakeven trades count as neither a win nor a loss: they are excluded from gross profit/loss, average win/loss, payoff ratio, profit factor, and every streak including the Risk-policy consecutive-loss counter, and are reported as their own Breakeven P&L bucket. They remain in the trade count, so Win rate, Loss rate, and Breakeven rate sum to 100%. Their money still counts in full toward net P&L, drawdown, and the daily/weekly loss limits.")
         submitted = st.form_submit_button("Save journal settings", type="primary", icon=":material/save:")
     if submitted:
         try:

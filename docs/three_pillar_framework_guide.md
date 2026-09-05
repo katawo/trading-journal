@@ -16,9 +16,15 @@ The journal measures the *quality of a completed trade*, not only its P&L. It is
 
 A profitable trade can be a **Bad Win** when its process failed. A compliant losing trade can be a **Good Loss**. P&L and process quality are intentionally separate.
 
-Trade cards and detail views also show factual direction and outcome tags: **Long** or **Short** comes from the imported MT5 direction. **Profit**, **Loss**, or **Breakeven** uses realized result R after costs and the journal-wide breakeven threshold in **Settings → Review context**; without usable 1R evidence, the app falls back to the sign of net P&L. These labels do not change the independent process classification, actual P&L, or Risk-policy monitoring.
+Trade cards and detail views also show factual direction and outcome tags: **Long** or **Short** comes from the imported MT5 direction. **Profit**, **Loss**, or **Breakeven** uses realized result R after costs and the journal-wide breakeven threshold in **Settings → Review context**; without usable 1R evidence, the app falls back to the sign of net P&L. These labels do not change the independent process classification or actual P&L.
 
-Dashboard win/loss streaks treat breakeven trades as transparent: a breakeven neither extends nor resets the current win or loss streak. An all-breakeven sample has no win/loss streak.
+A breakeven trade is neither a win nor a loss, and every win/loss measure applies that rule the same way:
+
+- **Streaks** treat a breakeven as transparent — it neither extends nor resets the current win or loss streak. This includes the Risk-policy **consecutive-loss** counter, so a sub-band scratch neither advances your loss-streak stop nor clears one that is building. An all-breakeven sample has no win/loss streak.
+- **Gross profit / gross loss, average win / average loss, payoff ratio, and profit factor** cover only won and lost trades. The P&L of breakeven trades is reported separately as **Breakeven P&L**, so `gross profit − gross loss + breakeven P&L` still reconciles to net P&L.
+- **Win rate, Loss rate, and Breakeven rate** all divide by every closed trade, so the three sum to 100%.
+
+Money is never hidden from risk monitoring: net P&L, balance, drawdown, and the daily/weekly loss limits stay on raw realized P&L and include breakeven trades in full.
 
 ## Operating loop
 
