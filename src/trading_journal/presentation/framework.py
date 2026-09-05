@@ -164,7 +164,11 @@ COMPONENT_DEFINITIONS = {
 
 
 def _account_label(account: AccountListItem) -> str:
-    return f"{account.display_name} · {account.login} · {account.broker_server}"
+    # An account named after its own login would otherwise print the number twice.
+    parts = [account.display_name, account.login, account.broker_server]
+    if account.display_name.strip() == account.login.strip():
+        parts.pop(0)
+    return " · ".join(parts)
 
 
 def _reset_period_label(value: str) -> str:
@@ -396,18 +400,42 @@ def _format_execution_number(value: str, *, reference: str | None = None) -> str
     return text.rstrip("0").rstrip(".") if "." in text else text
 
 
-def _score_scope_label(score: PillarScore, account: AccountListItem) -> str:
-    """Describe the evidence scope without implying that a pillar is an aggregate."""
+def _shared_scope_label(scores: tuple[PillarScore, ...], account: AccountListItem) -> str:
+    """State the evidence scope once, without implying a pillar is an aggregate.
+
+    Each pillar is scored on the selected account only. Repeating the account
+    under all three columns said that three times and crowded out the numbers,
+    so the columns carry the scores and this line carries the scope.
+    """
     label = _account_label(account)
-    if score.pillar == "risk":
-        return tr("Account: {account}", account=label)
-    if score.pillar == "system":
-        return tr("System: {account}", account=label)
-    return tr("Psychology: {account}", account=label)
+    if len({score.scope for score in scores}) == 1:
+        return tr("Every pillar is scored on this account only: {account}", account=label)
+    return tr("Each pillar is scored on its own evidence for this account only: {account}", account=label)
 
 
-def _render_score_cards(scores: tuple[PillarScore, ...], account: AccountListItem) -> None:
-    for column, score in zip(st.columns(len(scores), gap="small"), scores, strict=True):
+def _render_score_cards(
+    scores: tuple[PillarScore, ...],
+    account: AccountListItem,
+    *,
+    readiness: ReadinessAssessment | None = None,
+) -> None:
+    # Every pillar is scored on the selected account alone. Saying so once keeps
+    # that anti-aggregation point without repeating the account under all three.
+    details = [tr(score.detail) for score in scores if score.status != "ready"]
+    shared_detail = details[0] if len(details) == len(scores) and len(set(details)) == 1 else None
+    # Readiness reads as the summary of the three pillars beside it, so it shares
+    # their row instead of stacking its own metric and caption above them.
+    count = len(scores) + (1 if readiness is not None else 0)
+    columns = list(st.container(key="framework-pillar-columns").columns(count, gap="small"))
+    if readiness is not None:
+        readiness_value, readiness_delta, readiness_color = _readiness_metric(readiness)
+        columns[0].metric(
+            tr("Overall readiness"), readiness_value, tr(readiness_delta),
+            delta_color=readiness_color, delta_arrow="off",
+        )
+        columns[0].caption(readiness.detail)
+        columns = columns[1:]
+    for column, score in zip(columns, scores, strict=True):
         if score.hard_block:
             label = "FAIL"
             delta_color = "red"
@@ -444,9 +472,11 @@ def _render_score_cards(scores: tuple[PillarScore, ...], account: AccountListIte
             delta_color=delta_color,
             delta_arrow="off",
         )
-        column.caption(_score_scope_label(score, account))
-        if score.status != "ready":
+        if score.status != "ready" and shared_detail is None:
             column.caption(tr(score.detail))
+    if shared_detail is not None:
+        st.caption(shared_detail)
+    st.caption(_shared_scope_label(scores, account))
 
 
 def _build_pillar_radar_figure(scores: tuple[PillarScore, ...]) -> go.Figure:
@@ -512,6 +542,9 @@ def _pillar_monitor_status(score: PillarScore) -> tuple[str, str]:
 
 
 _TONE_BY_DELTA_COLOR = {"green": "positive", "red": "negative", "orange": "warning", "gray": "neutral"}
+# Monitor charts are read side by side for comparison, so they share one
+# compact height instead of each taking Streamlit's tall default.
+_MONITOR_CHART_HEIGHT = 220
 
 
 def _render_framework_stat_grid(items: list[tuple[str, str, str, str]]) -> None:
@@ -612,7 +645,7 @@ def render_framework_dashboard(
                     status, _ = _pillar_monitor_status(score)
                     st.markdown(f"**{tr(PILLAR_NAMES[score.pillar])} · {status}**")
                     st.caption(tr(score.detail))
-                    st.caption(_score_scope_label(score, account))
+                st.caption(_shared_scope_label(tuple(non_ready_scores), account))
 
 
 def _render_framework_page_header(repo: SQLiteJournalRepository) -> AccountListItem | None:
@@ -2019,7 +2052,14 @@ def _render_monitor(repo: SQLiteJournalRepository, account: AccountListItem) -> 
     with st.container(border=True):
         controls, scope_note = st.columns((2, 3))
         with controls:
-            window = st.slider(tr("Rolling sample"), min_value=10, max_value=100, value=20, step=5, key=f"framework-window-{account.id}")
+            window = st.slider(
+                tr("Rolling sample"), min_value=10, max_value=100, value=20, step=5,
+                key=f"framework-window-{account.id}",
+                help=tr(
+                    "Caution triggers after {threshold} repeated critical violations within this window — a smaller window reaches that count sooner.",
+                    threshold=repo.get_framework_rule_settings(account.id).repeated_critical_threshold,
+                ),
+            )
             period = st.segmented_control(tr("Analysis period"), ["This month", "Last 90 days", "All time", "Custom"], format_func=tr, default="Last 90 days", required=True, key=f"framework-analysis-period-{account.id}")
         today = service.today(account.id)
         if period == "This month":
@@ -2036,36 +2076,26 @@ def _render_monitor(repo: SQLiteJournalRepository, account: AccountListItem) -> 
                 st.info(tr("Choose a start and end date for Monitor analysis."))
                 return
             start_date, end_date = range_value
-        with scope_note:
-            st.caption(tr(
-                "Analysis: {start} to {end} · scores and gates always use the rolling reviewed sample.",
-                start=start_date.isoformat(),
-                end=end_date.isoformat(),
-            ))
-        critical_threshold = repo.get_framework_rule_settings(account.id).repeated_critical_threshold
-        st.caption(
-            tr(
-                "Caution triggers after {threshold} repeated critical violations within this window — a smaller window reaches that count sooner.",
-                threshold=critical_threshold,
-            )
-        )
     scores = service.pillar_scores(account.id, window=int(window))
     readiness = service.readiness(account.id, window=int(window))
     coverage = service.risk_evidence_coverage(account.id, window=int(window))
     analysis = service.monitor_analysis(account.id, start_date=start_date, end_date=end_date, window=int(window))
-    _render_rubric_sample_caption(scores, int(window))
+    with scope_note:
+        # One line for both scopes: the charts' analysis period and the rolling
+        # sample the scores and gates use, which are different populations.
+        st.caption(tr(
+            "Analysis {start} to {end} · scores and gates use the rolling sample of {reviewed}/{window} reviewed trades.",
+            start=start_date.isoformat(),
+            end=end_date.isoformat(),
+            reviewed=min((score.sample_size for score in scores), default=0),
+            window=int(window),
+        ))
     _render_framework_focus(repo, account, service, scores)
 
     with st.container(border=True):
         st.markdown(tr("#### Pillar scores & readiness"))
-        readiness_value, readiness_delta, readiness_color = _readiness_metric(readiness)
-        st.metric(
-            tr("Overall readiness"), readiness_value, tr(readiness_delta),
-            delta_color=readiness_color, delta_arrow="off",
-        )
-        st.caption(readiness.detail)
-        _render_score_cards(scores, account)
-        radar_column, drivers_column = st.columns(2, gap="large")
+        _render_score_cards(scores, account, readiness=readiness)
+        radar_column, drivers_column = st.container(key="framework-drivers-columns").columns(2, gap="large")
         with radar_column:
             _render_pillar_radar(scores)
         with drivers_column:
@@ -2158,7 +2188,7 @@ def _render_monitor_process(service: FrameworkService, account: AccountListItem,
                 color=alt.Color("Outcome key:N", legend=None, scale=alt.Scale(domain=["profit", "loss", "breakeven"], range=["#0e9163", "#c73545", "#6b7280"])),
                 shape=alt.Shape("Direction key:N", legend=None, scale=alt.Scale(domain=["long", "short"], range=["triangle-up", "triangle-down"])),
                 tooltip=[closed_column, direction_column, outcome_column, review_column, process_score_column, result_r_column, classification_column],
-            ).properties(height=300)
+            ).properties(height=_MONITOR_CHART_HEIGHT)
             st.altair_chart(chart, width="stretch")
             st.caption(tr(
                 "Color: {profit} / {loss} / {breakeven} · Shape: {long} / {short}. Only reviewed trades with standard 1R are plotted. A positive result does not prove good process, and a loss does not prove poor process.",
@@ -2171,13 +2201,13 @@ def _render_monitor_process(service: FrameworkService, account: AccountListItem,
         st.markdown("##### Quality/outcome distribution")
         if analysis.classifications:
             classification_column = tr("Classification")
-            st.bar_chart(pd.DataFrame({classification_column: [tr(item.label) for item in analysis.classifications], tr("Trades"): [item.count for item in analysis.classifications]}).set_index(classification_column), width="stretch")
+            st.bar_chart(pd.DataFrame({classification_column: [tr(item.label) for item in analysis.classifications], tr("Trades"): [item.count for item in analysis.classifications]}).set_index(classification_column), height=_MONITOR_CHART_HEIGHT, width="stretch")
         else:
             st.caption("No reviewed classifications in this period.")
     st.markdown("##### Recurring reviewed issues")
     if analysis.issues:
         issue_column = tr("Issue")
-        st.bar_chart(pd.DataFrame({issue_column: [tr(VIOLATION_LABELS.get(item.label, HARD_RULE_LABELS.get(item.label, item.label))) for item in analysis.issues], tr("Trades"): [item.count for item in analysis.issues]}).set_index(issue_column), width="stretch")
+        st.bar_chart(pd.DataFrame({issue_column: [tr(VIOLATION_LABELS.get(item.label, HARD_RULE_LABELS.get(item.label, item.label))) for item in analysis.issues], tr("Trades"): [item.count for item in analysis.issues]}).set_index(issue_column), height=_MONITOR_CHART_HEIGHT, width="stretch")
         st.caption(tr(
             "Counts are across {count} reviewed trade(s) in this period; one trade can carry more than one issue.",
             count=len(analysis.reviewed_points),
@@ -2226,12 +2256,12 @@ def _render_monitor_risk(analysis: MonitorAnalysisReport, snapshot: RiskSnapshot
         if analysis.lifecycle:
             labels = {"manual_review": "Manual", "approved_auto_review": "Approved Auto", "auto_review": "Awaiting approval", "needs_approval": "Requires review"}
             state_column = tr("State")
-            st.bar_chart(pd.DataFrame({state_column: [tr(labels.get(item.label, item.label)) for item in analysis.lifecycle], tr("Trades"): [item.count for item in analysis.lifecycle]}).set_index(state_column), width="stretch")
+            st.bar_chart(pd.DataFrame({state_column: [tr(labels.get(item.label, item.label)) for item in analysis.lifecycle], tr("Trades"): [item.count for item in analysis.lifecycle]}).set_index(state_column), height=_MONITOR_CHART_HEIGHT, width="stretch")
     with right:
         st.markdown(f'<div class="dashboard-stat-column-head">{escape(tr("Policy evidence"))}</div>', unsafe_allow_html=True)
         if analysis.policy_states:
             state_column = tr("State")
-            st.bar_chart(pd.DataFrame({state_column: [tr(RISK_POLICY_STATE_LABELS.get(item.label, item.label)) for item in analysis.policy_states], tr("Trades"): [item.count for item in analysis.policy_states]}).set_index(state_column), width="stretch")
+            st.bar_chart(pd.DataFrame({state_column: [tr(RISK_POLICY_STATE_LABELS.get(item.label, item.label)) for item in analysis.policy_states], tr("Trades"): [item.count for item in analysis.policy_states]}).set_index(state_column), height=_MONITOR_CHART_HEIGHT, width="stretch")
     st.caption(tr(
         "Both charts count the analysis period {start} to {end}, not the rolling sample above.",
         start=analysis.start_date,
@@ -2246,7 +2276,7 @@ def _render_monitor_system(analysis: MonitorAnalysisReport) -> None:
         strategy_column, process_score_column = tr("Strategy"), tr("Process score")
         win_rate_column, average_r_column = tr("Win rate"), tr("Average R")
         frame = pd.DataFrame([{strategy_column: item.label, tr("Reviewed"): item.count, process_score_column: None if item.average_process_score is None else float(item.average_process_score), win_rate_column: None if item.win_rate is None else float(item.win_rate), average_r_column: None if item.average_r is None else float(item.average_r)} for item in analysis.strategies])
-        st.bar_chart(frame.set_index(strategy_column)[[process_score_column]], width="stretch")
+        st.bar_chart(frame.set_index(strategy_column)[[process_score_column]], height=_MONITOR_CHART_HEIGHT, width="stretch")
         st.dataframe(frame, hide_index=True, width="stretch", column_config={process_score_column: st.column_config.NumberColumn(format="%.0f"), win_rate_column: st.column_config.NumberColumn(format="%.1f%%"), average_r_column: st.column_config.NumberColumn(format="%+.2fR")})
     else:
         st.caption("No reviewed strategy evidence in this period.")
@@ -2262,7 +2292,7 @@ def _render_monitor_system(analysis: MonitorAnalysisReport) -> None:
             context_column, process_score_column = tr("Context"), tr("Process score")
             win_rate_column, average_r_column = tr("Win rate"), tr("Average R")
             frame = pd.DataFrame([{context_column: item.label, tr("Reviews"): item.count, process_score_column: item.average_process_score, win_rate_column: item.win_rate, average_r_column: item.average_r} for item in rows])
-            st.bar_chart(frame.set_index(context_column)[[process_score_column]].astype(float), width="stretch")
+            st.bar_chart(frame.set_index(context_column)[[process_score_column]].astype(float), height=_MONITOR_CHART_HEIGHT, width="stretch")
             st.dataframe(frame, hide_index=True, width="stretch", column_config={process_score_column: st.column_config.NumberColumn(format="%.0f"), win_rate_column: st.column_config.NumberColumn(format="%.1f%%"), average_r_column: st.column_config.NumberColumn(format="%+.2fR")})
 
 

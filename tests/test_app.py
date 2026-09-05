@@ -1353,9 +1353,9 @@ def test_monitor_tab_shows_early_estimate_not_incomplete_for_a_partial_sample(mo
     assert "Incomplete" not in psychology.delta
     assert any(item.label == "Overall readiness" for item in app.metric)
     captions = {item.value for item in app.caption}
-    assert "Psychology: Primary · 123456 · DemoBroker-Live" in captions
-    assert "Account: Primary · 123456 · DemoBroker-Live" in captions
-    assert "System: Primary · 123456 · DemoBroker-Live" in captions
+    # The scope is stated once for all three pillars rather than under each.
+    assert "Every pillar is scored on this account only: Primary · 123456 · DemoBroker-Live" in captions
+    assert not any(value.startswith(("Psychology: ", "Account: ", "System: ")) for value in captions)
     markdown = {item.value for item in app.markdown}
     assert any("Ongoing periods" in value for value in markdown)
     assert any("Latest completed periods" in value for value in markdown)
