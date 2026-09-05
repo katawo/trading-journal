@@ -676,9 +676,10 @@ def _render_dashboard_statistics(report: DashboardReport, currency: str) -> None
 
         current_streak = "—"
         if report.current_streak_outcome is not None:
-            # Breakeven trades are transparent to streaks, so this only ever
-            # reports a win or a loss run.
-            streak_outcome = {"win": "Win", "loss": "Loss"}[report.current_streak_outcome]
+            # Streaks are transparent to breakeven trades, so this reports a win
+            # or a loss run; the third key is kept so a future rule change can
+            # only be wrong, never a KeyError that breaks the whole page.
+            streak_outcome = {"win": "Win", "loss": "Loss", "breakeven": "Breakeven"}[report.current_streak_outcome]
             current_streak = f"{format_count(report.current_streak_count)} · {tr(streak_outcome)}"
         st.markdown(
             f'<div class="dashboard-stat-section-head">{tr("Consistency profile")}</div>',

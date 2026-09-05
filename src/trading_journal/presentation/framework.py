@@ -2082,6 +2082,10 @@ def _render_monitor(repo: SQLiteJournalRepository, account: AccountListItem) -> 
                             if name in present_names:
                                 st.caption(f"**{tr(name)}** — {tr(COMPONENT_DEFINITIONS[name])}")
                 st.dataframe(pd.DataFrame(component_rows), hide_index=True, width="stretch")
+            else:
+                # The two-column split would otherwise leave this half blank on
+                # an account with nothing scored yet.
+                st.caption(tr("Component scores appear once reviewed trades cover them."))
 
     with st.container(border=True):
         _render_monitor_insights(analysis)
@@ -2201,6 +2205,13 @@ def _render_monitor_risk(analysis: MonitorAnalysisReport, snapshot: RiskSnapshot
             (tr("Over policy"), str(coverage.over_policy), "", "negative" if coverage.over_policy else "neutral"),
             (tr("Risk unavailable"), str(coverage.unavailable), "", "warning" if coverage.unavailable else "neutral"),
         ])
+        # These four count the rolling reviewed sample while the charts below
+        # count the analysis period, so the same words can carry different
+        # numbers. Name each scope rather than letting them look comparable.
+        st.caption(tr(
+            "Evidence counts above cover the rolling sample of {count} reviewed trade(s).",
+            count=coverage.total,
+        ))
         if snapshot.configured:
             current_drawdown = "—" if snapshot.current_drawdown_percent is None else format_percent(snapshot.current_drawdown_percent)
             st.caption(tr(
@@ -2221,6 +2232,11 @@ def _render_monitor_risk(analysis: MonitorAnalysisReport, snapshot: RiskSnapshot
         if analysis.policy_states:
             state_column = tr("State")
             st.bar_chart(pd.DataFrame({state_column: [tr(RISK_POLICY_STATE_LABELS.get(item.label, item.label)) for item in analysis.policy_states], tr("Trades"): [item.count for item in analysis.policy_states]}).set_index(state_column), width="stretch")
+    st.caption(tr(
+        "Both charts count the analysis period {start} to {end}, not the rolling sample above.",
+        start=analysis.start_date,
+        end=analysis.end_date,
+    ))
     st.caption("These are post-close monitoring signals only; they never place, block, or change MT5 orders.")
 
 
@@ -2338,7 +2354,9 @@ def _render_framework_focus(
         with st.container(border=True):
             kind = {"manual_evidence": "Reviewed evidence", "component": "Pillar component", "criterion": "Criterion", "violation": "Issue"}[focus.metric_kind]
             st.markdown(f"**{tr(PILLAR_NAMES[focus.pillar])} · {tr(kind)}**")
-            st.write(tr(focus.action_text))
+            # Only the coach's own wording is canonical English worth translating;
+            # once tailored it is the user's text and must be shown verbatim.
+            st.write(tr(focus.action_text) if focus.source == "coach" and not focus.action_customized else focus.action_text)
             st.caption(f"{tr('Why now:')} {tr(focus.coach_reason or focus.hypothesis)}")
             opened_relative = format_relative_time_localized(format_relative_time(datetime.fromisoformat(focus.created_at)))
             st.caption(tr("Focus opened {relative} · progress advances only as you review trades, not automatically each day.", relative=opened_relative))

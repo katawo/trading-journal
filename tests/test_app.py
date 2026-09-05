@@ -82,6 +82,8 @@ class Service:
             metric_kind="component",
             action_text="Pause after a loss and re-check the setup.",
             coach_reason="Repeated reviewed issue.",
+            source="coach",
+            action_customized=False,
             hypothesis="",
             created_at="2026-08-20T08:00:00+00:00",
             baseline_value="55",
@@ -126,6 +128,62 @@ _render_framework_focus(
     assert not resolution_app.exception
     assert [field.label for field in resolution_app.text_area] == ["Focus reflection"]
     assert [control.label for control in resolution_app.segmented_control] == ["Focus outcome"]
+
+
+def test_tailored_coaching_action_is_shown_verbatim_under_vietnamese():
+    """A focus the user reworded must not be run through the translator.
+
+    tr() falls back to a substring pass over _PHRASES for any string with no
+    exact entry, so translating free-form user text rewrites fragments of it.
+    The active focus card missed this guard once already while the history list
+    had it, so drive the real renderer rather than the condition.
+    """
+    script = """
+from types import SimpleNamespace
+import streamlit as st
+from trading_journal.presentation.framework import _render_framework_focus
+
+# Scope the locale to this AppTest's own session; patching i18n.language would
+# leak Vietnamese into every later test in the process.
+st.session_state["display_language"] = "vi"
+
+TAILORED = "Stand aside until the London open of the session."
+
+
+class Repo:
+    def list_framework_focuses(self, account_id):
+        return []
+
+
+class Service:
+    def ensure_coaching_focus(self, account_id):
+        return None
+
+    def focus_progress(self, account_id):
+        focus = SimpleNamespace(
+            id=41, pillar="psychology", metric_kind="component",
+            action_text=TAILORED, coach_reason="Repeated reviewed issue.",
+            source="coach", action_customized=True, hypothesis="",
+            created_at="2026-08-20T08:00:00+00:00",
+            baseline_value="55", target_value="70",
+        )
+        progress = SimpleNamespace(
+            current_value="70", reviews_completed=5, target_reviews=5, ready_to_evaluate=True,
+        )
+        return focus, progress
+
+
+_render_framework_focus(
+    Repo(), SimpleNamespace(id=7), Service(), (), compact=True, show_heading=False,
+)
+"""
+    app = AppTest.from_string(script).run()
+
+    assert not app.exception
+    tailored = "Stand aside until the London open of the session."
+    written = [str(item.value) for item in app.markdown]
+    # "of" and "session" are _PHRASES keys, so a translated render would mangle it.
+    assert any(tailored == value for value in written), written
 
 
 def test_trade_duration_uses_compact_review_table_units():
