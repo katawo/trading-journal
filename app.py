@@ -599,19 +599,20 @@ def _render_dashboard_statistics(report: DashboardReport, currency: str) -> None
                 _signed_metric_tone(report.breakeven_pnl),
             )]
             # Payoff ratio and profit factor are measured over won and lost
-            # trades only, so the payoff-consistent win rate shares that
-            # population. Identical to Win rate without breakeven trades.
-            decided = report.win_count + report.loss_count
-            decided_rows = [] if report.breakeven_count == 0 or decided == 0 else [(
-                tr("Win rate (decided)"),
-                format_percent(Decimal(report.win_count * 100) / Decimal(decided)),
+            # trades only, so the win rate that can be read against them shares
+            # that population. Identical to Win rate when nothing scratched,
+            # which is why it only appears alongside breakeven trades.
+            won_or_lost = report.win_count + report.loss_count
+            excl_breakeven_rows = [] if report.breakeven_count == 0 or won_or_lost == 0 else [(
+                tr("Win rate (excl. breakeven)"),
+                format_percent(Decimal(report.win_count * 100) / Decimal(won_or_lost)),
                 "info",
             )]
             _render_stat_grid([
                 (tr("Win rate"), format_percent(report.win_rate), "info"),
                 (tr("Loss rate"), format_percent(loss_rate), "negative"),
                 (tr("Breakeven rate"), format_percent(breakeven_rate), "neutral"),
-                *decided_rows,
+                *excl_breakeven_rows,
                 (tr("Payoff ratio"), "—" if report.payoff_ratio is None else format_number(report.payoff_ratio, 2), "info"),
                 (
                     tr("Expectancy R"),
