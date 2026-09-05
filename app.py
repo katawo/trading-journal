@@ -585,49 +585,7 @@ def _render_dashboard_statistics(report: DashboardReport, currency: str) -> None
         st.markdown(f"#### {tr('Trade outcomes')}")
         st.caption(tr("Outcome statistics use the all-time closed logical-trade record."))
         outcome_columns = st.container(key="dashboard-outcome-columns")
-        profit, loss, outcome = outcome_columns.columns(3, gap="medium")
-        with profit:
-            st.markdown(f'<div class="dashboard-stat-column-head">{tr("Profit")}</div>', unsafe_allow_html=True)
-            _render_stat_grid([
-                (tr("Gross profit"), format_currency(report.gross_profit, currency, signed=False), _signed_metric_tone(report.gross_profit)),
-                (
-                    tr("Average win"),
-                    _empty_outcome_label(report.breakeven_count, wins=True) if report.average_win is None
-                    else format_currency(report.average_win, currency),
-                    "neutral" if report.average_win is None else "positive",
-                ),
-                (
-                    tr("Wins"),
-                    format_count(report.win_count),
-                    _presence_metric_tone(report.win_count, "positive"),
-                ),
-                (
-                    tr("Best day"),
-                    "—" if report.best_day is None else format_currency(report.best_day, currency),
-                    _signed_metric_tone(report.best_day),
-                ),
-            ], class_name="dashboard-stat-list")
-        with loss:
-            st.markdown(f'<div class="dashboard-stat-column-head">{tr("Loss")}</div>', unsafe_allow_html=True)
-            _render_stat_grid([
-                (tr("Gross loss"), format_currency(-Decimal(report.gross_loss), currency), _presence_metric_tone(report.loss_count, "negative")),
-                (
-                    tr("Average loss"),
-                    _empty_outcome_label(report.breakeven_count, wins=False) if report.average_loss is None
-                    else format_currency(report.average_loss, currency),
-                    "neutral" if report.average_loss is None else "negative",
-                ),
-                (
-                    tr("Losses"),
-                    format_count(report.loss_count),
-                    _presence_metric_tone(report.loss_count, "negative"),
-                ),
-                (
-                    tr("Worst day"),
-                    "—" if report.worst_day is None else format_currency(report.worst_day, currency),
-                    _signed_metric_tone(report.worst_day),
-                ),
-            ], class_name="dashboard-stat-list")
+        outcome, profit, loss = outcome_columns.columns(3, gap="medium")
         with outcome:
             st.markdown(f'<div class="dashboard-stat-column-head">{tr("Edge quality")}</div>', unsafe_allow_html=True)
             loss_rate = Decimal(report.loss_count * 100) / Decimal(report.trade_count)
@@ -671,6 +629,48 @@ def _render_dashboard_statistics(report: DashboardReport, currency: str) -> None
                     tr("R coverage"),
                     format_percent(Decimal(report.r_trade_count * 100) / Decimal(report.trade_count)),
                     _r_coverage_metric_tone(report.r_trade_count, report.trade_count),
+                ),
+            ], class_name="dashboard-stat-list")
+        with profit:
+            st.markdown(f'<div class="dashboard-stat-column-head">{tr("Profit")}</div>', unsafe_allow_html=True)
+            _render_stat_grid([
+                (tr("Gross profit"), format_currency(report.gross_profit, currency, signed=False), _signed_metric_tone(report.gross_profit)),
+                (
+                    tr("Average win"),
+                    _empty_outcome_label(report.breakeven_count, wins=True) if report.average_win is None
+                    else format_currency(report.average_win, currency),
+                    "neutral" if report.average_win is None else "positive",
+                ),
+                (
+                    tr("Wins"),
+                    format_count(report.win_count),
+                    _presence_metric_tone(report.win_count, "positive"),
+                ),
+                (
+                    tr("Best day"),
+                    "—" if report.best_day is None else format_currency(report.best_day, currency),
+                    _signed_metric_tone(report.best_day),
+                ),
+            ], class_name="dashboard-stat-list")
+        with loss:
+            st.markdown(f'<div class="dashboard-stat-column-head">{tr("Loss")}</div>', unsafe_allow_html=True)
+            _render_stat_grid([
+                (tr("Gross loss"), format_currency(-Decimal(report.gross_loss), currency), _presence_metric_tone(report.loss_count, "negative")),
+                (
+                    tr("Average loss"),
+                    _empty_outcome_label(report.breakeven_count, wins=False) if report.average_loss is None
+                    else format_currency(report.average_loss, currency),
+                    "neutral" if report.average_loss is None else "negative",
+                ),
+                (
+                    tr("Losses"),
+                    format_count(report.loss_count),
+                    _presence_metric_tone(report.loss_count, "negative"),
+                ),
+                (
+                    tr("Worst day"),
+                    "—" if report.worst_day is None else format_currency(report.worst_day, currency),
+                    _signed_metric_tone(report.worst_day),
                 ),
             ], class_name="dashboard-stat-list")
 
