@@ -286,6 +286,11 @@ def test_settings_groups_reporting_accounts_risk_strategies_and_review_rules(mon
     app.switch_page("app_pages/settings.py").run()
 
     assert [tab.label for tab in app.tabs] == ["Account & risk", "Strategies", "Review context", "Review rules"]
+    delta = next(item for item in app.number_input if item.label == "Breakeven threshold (% of 1R)")
+    assert delta.value == 5
+    delta.set_value(10)
+    next(item for item in app.button if item.label == "Save journal settings").click().run()
+    assert SQLiteJournalRepository(tmp_path / "journal.db").get_journal_settings().breakeven_threshold_percent == 10
     next(item for item in app.button if item.label == "New account").click().run()
 
     assert any(item.label == "Strategy name" for item in app.text_input)
@@ -295,7 +300,7 @@ def test_settings_groups_reporting_accounts_risk_strategies_and_review_rules(mon
     assert all(item.label != "Default risk (1R)" for item in app.number_input)
     assert all(item.label != "Apply a default planned-risk baseline to all trades" for item in app.checkbox)
     assert any("calendar used for reports and limits" in item.value for item in app.caption)
-    assert any(item.label == "Save calendar" for item in app.button)
+    assert any(item.label == "Save journal settings" for item in app.button)
 
 
 def test_workspace_navigation_switches_from_settings_back_to_dashboard(monkeypatch, tmp_path):

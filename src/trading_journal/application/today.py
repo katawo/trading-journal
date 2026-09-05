@@ -34,6 +34,7 @@ class TodayTradeSummary:
     direction: str
     closed_at: str
     net_pnl: str
+    outcome: str
     review_kind: str
     classification: str | None
     violation_codes: tuple[str, ...]
@@ -113,6 +114,7 @@ class TodayService:
                         local_zone=self._local_zone,
                     ).isoformat(),
                     net_pnl=trade.net_pnl,
+                    outcome=score.outcome,
                     review_kind=score.review_kind,
                     classification=score.classification,
                     violation_codes=(

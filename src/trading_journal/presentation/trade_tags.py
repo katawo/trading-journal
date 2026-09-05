@@ -19,8 +19,15 @@ def direction_tag(direction: str) -> TradeTag:
     return TradeTag("Long", "blue", ":material/trending_up:")
 
 
-def outcome_tag(net_pnl: str | Decimal) -> TradeTag:
-    value = Decimal(net_pnl)
+def outcome_tag(outcome: str | Decimal) -> TradeTag:
+    normalized = str(outcome).casefold()
+    if normalized in {"profit", "win"}:
+        return TradeTag("Profit", "green", ":material/arrow_upward:")
+    if normalized == "loss":
+        return TradeTag("Loss", "red", ":material/arrow_downward:")
+    if normalized == "breakeven":
+        return TradeTag("Breakeven", "gray", ":material/horizontal_rule:")
+    value = Decimal(outcome)
     if value > 0:
         return TradeTag("Profit", "green", ":material/arrow_upward:")
     if value < 0:

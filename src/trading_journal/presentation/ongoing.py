@@ -319,7 +319,7 @@ def _render_today_trades(overview: TodayOverview, account: AccountListItem) -> N
         with st.container(border=True):
             detail, action = st.columns([4, 1], vertical_alignment="center")
             direction = direction_tag(item.direction)
-            outcome = outcome_tag(item.net_pnl)
+            outcome = outcome_tag(item.outcome)
             review_label, review_color = _review_label(item)
             with detail:
                 st.markdown(f"**LT-{item.trade_id} · {item.symbol}**")

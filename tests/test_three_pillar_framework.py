@@ -821,6 +821,44 @@ def test_loss_streak_resets_on_the_configured_reporting_period(
     assert snapshot.loss_streak_reset_period == cadence
 
 
+def test_breakeven_band_does_not_hide_a_real_risk_loss(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(
+        repository,
+        account_id,
+        max_consecutive_losses=10,
+        loss_streak_reset_period="all_time",
+    ), _strategy(repository)
+    trade_id = _import_position(repository, account_id, net_pnl="-0.5")
+    _review(repository, account_id, trade_id, policy, strategy)
+
+    service = FrameworkService(repository)
+    score = service.trade_process_scores(account_id)[0]
+    snapshot = service.risk_snapshot(
+        account_id, now=datetime(2026, 8, 10, 12, tzinfo=timezone.utc)
+    )
+
+    assert score.outcome == "breakeven"
+    assert score.classification == "Good Breakeven"
+    assert snapshot.consecutive_losses == 1
+
+
+def test_trade_process_scores_do_not_reload_trade_performance(monkeypatch, tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    trade_id = _import_position(repository, account_id, net_pnl="-0.5")
+    _review(repository, account_id, trade_id, policy, strategy)
+    monkeypatch.setattr(
+        repository,
+        "list_trade_performance",
+        lambda account_id=None: pytest.fail("Score construction must reuse its loaded trade history"),
+    )
+
+    score = FrameworkService(repository).trade_process_scores(account_id)[0]
+
+    assert score.outcome == "breakeven"
+
+
 @pytest.mark.parametrize(
     ("cadence", "first_exit", "second_exit", "expected_drawdown"),
     [

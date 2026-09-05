@@ -11,6 +11,7 @@ from typing import cast
 
 from trading_journal.application.reporting_time import reporting_date, reporting_datetime
 from trading_journal.domain.review_taxonomy import canonical_violation_code, violation_pillars, violation_sort_key
+from trading_journal.domain.trade_outcomes import TradeOutcome, classify_trade_outcome
 
 from trading_journal.infrastructure.sqlite_repository import (
     CURRENT_RUBRIC_VERSION,
@@ -197,6 +198,7 @@ class TradeProcessScore:
     session_snapshot: str | None = None
     regime_snapshot: str | None = None
     direction: str = "long"
+    outcome: TradeOutcome = "breakeven"
 
 
 @dataclass(frozen=True)
@@ -839,7 +841,7 @@ class FrameworkService:
         rows: list[ContextBreakdown] = []
         for label, items in sorted(buckets.items()):
             scores = [Decimal(item.overall_score) for item in items if item.overall_score is not None]
-            wins = sum(Decimal(item.net_pnl) > 0 for item in items)
+            wins = sum(item.outcome == "profit" for item in items)
             r_values = [
                 Decimal(performance[item.trade_id].result_r)
                 for item in items
@@ -870,7 +872,7 @@ class FrameworkService:
                 trade_id=item.trade_id,
                 closed=reporting_datetime(item.exit_time, item.server_utc_offset_minutes, self._reporting_time_basis()).isoformat(),
                 direction=item.direction,
-                outcome="profit" if Decimal(item.net_pnl) > 0 else "loss" if Decimal(item.net_pnl) < 0 else "breakeven",
+                outcome=item.outcome,
                 review_kind=item.review_kind,
                 rubric_version=item.rubric_version,
                 overall_score=item.overall_score,
@@ -917,12 +919,12 @@ class FrameworkService:
             for label, bucket in sorted(buckets.items()):
                 quality = [Decimal(item.overall_score) for item in bucket if item.overall_score is not None]
                 r_values = [Decimal(item.result_r) for item in bucket if item.result_r is not None]
-                wins = sum(value > 0 for value in r_values)
+                wins = sum(item.outcome == "profit" for item in bucket)
                 rows.append(MonitorBreakdown(
                     label=label,
                     count=len(bucket),
                     average_process_score=None if not quality else _decimal_text(sum(quality, Decimal("0")) / len(quality)),
-                    win_rate=None if not r_values else _decimal_text(Decimal(wins * 100) / len(r_values)),
+                    win_rate=_decimal_text(Decimal(wins * 100) / len(bucket)),
                     average_r=None if not r_values else _decimal_text(sum(r_values, Decimal("0")) / len(r_values)),
                 ))
             return tuple(rows)
@@ -1378,6 +1380,8 @@ class FrameworkService:
         active_policy = self._repository.get_active_risk_policy(account_id)
         funded = self._repository.get_account_funded_capital(account_id)
         account_strategy = self._repository.get_account_strategy(account_id)
+        standard_risk = self._standard_risk_amount(funded, active_policy)
+        breakeven_threshold_percent = self._repository.get_journal_settings().breakeven_threshold_percent
         events = self._historical_risk_events(account_id, tuple(trades))
         scores = tuple(
             self._trade_process_score(
@@ -1388,6 +1392,11 @@ class FrameworkService:
                 account_strategy,
                 funded,
                 active_policy,
+                classify_trade_outcome(
+                    trade.net_pnl,
+                    None if standard_risk <= 0 else Decimal(trade.net_pnl) / standard_risk,
+                    breakeven_threshold_percent,
+                ),
                 tuple(events[trade.id]["events"]),
                 tuple(events[trade.id]["shutdown_candidates"]),
             )
@@ -1545,6 +1554,7 @@ class FrameworkService:
         account_strategy: StrategyProfileView,
         funded: str | None,
         active_policy: AccountRiskPolicyView | None,
+        outcome: TradeOutcome,
         automatic_risk_events: tuple[str, ...],
         shutdown_candidates: tuple[str, ...],
     ) -> TradeProcessScore:
@@ -1572,7 +1582,7 @@ class FrameworkService:
                 system = self._pillar_score_from_grades(grades, "system", rubric_version)
                 overall = (psychology + risk + system) / Decimal("3")
                 quality = self._quality_status(overall, "PASS")
-                classification = self._classification(Decimal(trade.net_pnl), quality)
+                classification = self._classification(outcome, quality)
             else:
                 psychology = risk = system = overall = None
                 quality = classification = None
@@ -1610,6 +1620,7 @@ class FrameworkService:
                 session_snapshot=None,
                 regime_snapshot=None,
                 direction=trade.direction,
+                outcome=outcome,
             )
         psychology = self._trade_pillar_score(assessment, "psychology")
         risk = self._trade_pillar_score(assessment, "risk")
@@ -1626,7 +1637,7 @@ class FrameworkService:
         status = "FAIL" if hard_rules else "PASS"
         overall = (psychology + risk + system) / Decimal("3")
         quality_status = self._quality_status(overall, status)
-        classification = self._classification(Decimal(trade.net_pnl), quality_status)
+        classification = self._classification(outcome, quality_status)
         return TradeProcessScore(
             account_id, trade.id, trade.net_pnl, trade.exit_time, trade.server_utc_offset_minutes, "reviewed", "manual_review", assessment.criterion_grades, _decimal_text(psychology), _decimal_text(risk), _decimal_text(system), _decimal_text(overall), status, quality_status, classification,
             psychology_hard,
@@ -1647,6 +1658,7 @@ class FrameworkService:
             session_snapshot=assessment.session_snapshot,
             regime_snapshot=assessment.regime_snapshot,
             direction=trade.direction,
+            outcome=outcome,
         )
 
     @staticmethod
@@ -1688,14 +1700,18 @@ class FrameworkService:
         return "good" if overall >= GOOD_PROCESS_SCORE else "needs_improvement"
 
     @staticmethod
-    def _classification(net_pnl: Decimal, quality_status: str) -> str:
+    def _classification(outcome: TradeOutcome, quality_status: str) -> str:
         quality = {
             "good": "Good",
             "needs_improvement": "Needs improvement",
             "bad": "Bad",
         }[quality_status]
-        outcome = "Win" if net_pnl > 0 else "Loss" if net_pnl < 0 else "Breakeven"
-        return f"{quality} {outcome}"
+        outcome_label = {
+            "profit": "Win",
+            "loss": "Loss",
+            "breakeven": "Breakeven",
+        }[outcome]
+        return f"{quality} {outcome_label}"
 
     @staticmethod
     def _risk_policy_state(amount: str | None, policy_limit: str | None) -> str:

@@ -16,7 +16,9 @@ The journal measures the *quality of a completed trade*, not only its P&L. It is
 
 A profitable trade can be a **Bad Win** when its process failed. A compliant losing trade can be a **Good Loss**. P&L and process quality are intentionally separate.
 
-Trade cards and detail views also show factual direction and outcome tags: **Long** or **Short** comes from the imported MT5 direction, while **Profit**, **Loss**, or **Breakeven** comes from realized net P&L after costs. These labels do not change the independent process classification.
+Trade cards and detail views also show factual direction and outcome tags: **Long** or **Short** comes from the imported MT5 direction. **Profit**, **Loss**, or **Breakeven** uses realized result R after costs and the journal-wide breakeven threshold in **Settings → Review context**; without usable 1R evidence, the app falls back to the sign of net P&L. These labels do not change the independent process classification, actual P&L, or Risk-policy monitoring.
+
+Dashboard win/loss streaks treat breakeven trades as transparent: a breakeven neither extends nor resets the current win or loss streak. An all-breakeven sample has no win/loss streak.
 
 ## Operating loop
 

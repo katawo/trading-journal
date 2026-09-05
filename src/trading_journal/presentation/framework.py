@@ -855,7 +855,7 @@ def _render_bulk_quick_review_dialog(repo: SQLiteJournalRepository, account: Acc
         pd.DataFrame(
             [{
                 "Logical trade": f"LT-{trade.id}", "Trade": trade.display_label,
-                "Direction": tr(direction_tag(trade.direction).label), "Outcome": tr(outcome_tag(trade.net_pnl).label),
+                "Direction": tr(direction_tag(trade.direction).label), "Outcome": tr(outcome_tag(score.outcome).label),
                 "Policy evidence": labels.get(score.risk_policy_state, score.risk_policy_state),
             } for trade, score in eligible]
         ),
@@ -923,7 +923,7 @@ def _begin_logical_trade_disband(repo: SQLiteJournalRepository, account: Account
 
 def _render_imported_execution(repo: SQLiteJournalRepository, account: AccountListItem, trade, score: TradeProcessScore) -> bool:  # type: ignore[no-untyped-def]
     direction = direction_tag(trade.direction)
-    outcome = outcome_tag(trade.net_pnl)
+    outcome = outcome_tag(score.outcome)
     risk_source, separator, risk_state = _auto_risk_label(score).partition(" · ")
     risk_color = {
         "within_policy": "green",
@@ -1785,7 +1785,7 @@ def _render_review_register(repo: SQLiteJournalRepository, account: AccountListI
                     args=(account.id, trade.id, visible_trade_ids),
                 )
                 direction = direction_tag(trade.direction)
-                outcome = outcome_tag(trade.net_pnl)
+                outcome = outcome_tag(score.outcome)
                 position_count = len(trade.position_ids)
                 position_label = tr("1 pos") if position_count == 1 else tr("{count} pos", count=position_count)
                 with trade_column:

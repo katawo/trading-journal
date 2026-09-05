@@ -11,7 +11,7 @@ import pytest
 
 from trading_journal.application.live_positions import LivePositionImportService, LivePositionService
 from trading_journal.domain.models import MT5PositionExport
-from trading_journal.infrastructure.sqlite_repository import SQLiteJournalRepository
+from trading_journal.infrastructure.sqlite_repository import CURRENT_SCHEMA_VERSION, SQLiteJournalRepository
 from trading_journal.presentation.ongoing import (
     ONGOING_REFRESH_INTERVAL_SECONDS,
     _compact_stat_html,
@@ -691,8 +691,8 @@ def test_schema_v5_upgrade_creates_pending_group_tables_and_backup(tmp_path) -> 
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
         version = connection.execute("PRAGMA user_version").fetchone()[0]
     assert {"pending_logical_trades", "pending_logical_trade_members"}.issubset(tables)
-    assert version == 7
-    assert len(list(tmp_path.glob("journal.pre-schema-v7-*.db.bak"))) == 1
+    assert version == CURRENT_SCHEMA_VERSION
+    assert len(list(tmp_path.glob(f"journal.pre-schema-v{CURRENT_SCHEMA_VERSION}-*.db.bak"))) == 1
 
 
 def test_schema_v6_upgrade_backfills_pending_member_entry_times(tmp_path) -> None:
@@ -728,5 +728,5 @@ def test_schema_v6_upgrade_backfills_pending_member_entry_times(tmp_path) -> Non
         "2026-08-18T07:05:00+00:00",
     }
     assert pending.first_entry_time == "2026-08-18T07:00:00+00:00"
-    assert version == 7
-    assert len(list(tmp_path.glob("journal.pre-schema-v7-*.db.bak"))) == 1
+    assert version == CURRENT_SCHEMA_VERSION
+    assert len(list(tmp_path.glob(f"journal.pre-schema-v{CURRENT_SCHEMA_VERSION}-*.db.bak"))) == 1

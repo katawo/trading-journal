@@ -1249,7 +1249,7 @@ def render_manual_sync_button(repo: SQLiteJournalRepository, *, key: str) -> Non
 
 
 def render_journal_reporting_settings(repo: SQLiteJournalRepository) -> None:
-    st.markdown("#### Reporting calendar")
+    st.markdown("#### Journal behavior")
     with st.form("journal-reporting-settings", border=False):
         current = repo.get_journal_settings()
         labels = {"server": "Server Timezone", "utc": "UTC", "local": "Local Timezone"}
@@ -1261,11 +1261,24 @@ def render_journal_reporting_settings(repo: SQLiteJournalRepository) -> None:
             width="content",
         )
         st.caption("Choose the calendar used for reports and limits. Server Timezone follows the MT5 broker clock.")
-        submitted = st.form_submit_button("Save calendar", type="primary", icon=":material/save:")
+        breakeven_threshold = st.number_input(
+            "Breakeven threshold (% of 1R)",
+            min_value=0,
+            max_value=100,
+            value=current.breakeven_threshold_percent,
+            step=1,
+            help="Results from minus this percentage of 1R through plus this percentage are classified as Breakeven. Use 0% for exact-zero behavior.",
+            width=280,
+        )
+        st.caption("This changes outcome labels and win rate. Analytical win/loss streaks ignore breakeven trades. Actual P&L, drawdown, and Risk-policy limits are unchanged.")
+        submitted = st.form_submit_button("Save journal settings", type="primary", icon=":material/save:")
     if submitted:
         try:
             with st.spinner(tr("Saving…")):
-                repo.configure_journal(reporting_time_basis=next(key for key, label in labels.items() if label == selected))
+                repo.configure_journal(
+                    reporting_time_basis=next(key for key, label in labels.items() if label == selected),
+                    breakeven_threshold_percent=int(breakeven_threshold),
+                )
         except ValueError as error:
             st.error(str(error))
         else:
@@ -1789,7 +1802,7 @@ def render_review_context_settings(repo: SQLiteJournalRepository) -> None:
         ("session", "Sessions", "e.g. London"),
         ("regime", "Market regimes", "e.g. Trending"),
     ):
-        with st.container(border=True):
+        with st.container(border=True, width=760):
             st.markdown(f"##### {label}")
             existing = repo.list_review_context_tags(kind, include_inactive=True)
             if existing:
@@ -1799,7 +1812,7 @@ def render_review_context_settings(repo: SQLiteJournalRepository) -> None:
                     width="stretch",
                 )
             with st.form(f"review-context-{kind}", border=False):
-                name = st.text_input(f"Add {kind}", placeholder=placeholder)
+                name = st.text_input(f"Add {kind}", placeholder=placeholder, width=480)
                 if st.form_submit_button(f"Add {kind}", icon=":material/add:"):
                     try:
                         repo.save_review_context_tag(kind=kind, name=name)
@@ -2149,7 +2162,7 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
         [item.__dict__ for item in report.per_trade],
         columns=[
             "sequence", "logical_trade_id", "display_label", "position_ids", "position_count", "exit_time", "position_id",
-            "symbol", "direction", "net_pnl", "result_r", "strategy", "cumulative_pnl", "balance", "drawdown", "drawdown_percent",
+            "symbol", "direction", "net_pnl", "result_r", "outcome", "strategy", "cumulative_pnl", "balance", "drawdown", "drawdown_percent",
         ],
     )
     daily = pd.DataFrame([item.__dict__ for item in report.daily])
@@ -2265,7 +2278,7 @@ def render_dashboard(repo: SQLiteJournalRepository) -> AccountListItem | None:
                     ],
                     tr("Symbol"): per_trade["symbol"],
                     tr("Direction"): [tr(direction_tag(value).label) for value in per_trade["direction"]],
-                    tr("Outcome"): [tr(outcome_tag(value).label) for value in per_trade["net_pnl"]],
+                    tr("Outcome"): [tr(outcome_tag(value).label) for value in per_trade["outcome"]],
                     f"P&L ({currency})": [format_currency(value, currency) for value in per_trade["net_pnl"]],
                     tr("Result R"): ["—" if value is None else format_r(value) for value in per_trade["result_r"]],
                     tr("Post-close drawdown"): [format_currency(-Decimal(value), currency) for value in per_trade["drawdown"]],

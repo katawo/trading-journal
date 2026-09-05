@@ -93,6 +93,46 @@ def test_fresh_journal_settings_schema_excludes_monthly_target(tmp_path: Path) -
     assert not hasattr(repository.get_journal_settings(), "monthly_target")
     assert "default_planned_risk_amount" not in columns
     assert not hasattr(repository.get_journal_settings(), "default_planned_risk_amount")
+    assert "breakeven_threshold_percent" in columns
+    assert repository.get_journal_settings().breakeven_threshold_percent == 5
+
+
+def test_journal_breakeven_threshold_persists_and_validates(tmp_path: Path) -> None:
+    repository = SQLiteJournalRepository(tmp_path / "journal.db")
+    repository.initialize()
+    repository.configure_journal(reporting_time_basis="utc", breakeven_threshold_percent=10)
+
+    assert repository.get_journal_settings().breakeven_threshold_percent == 10
+    with pytest.raises(ValueError, match="between 0 and 100"):
+        repository.configure_journal(reporting_time_basis="utc", breakeven_threshold_percent=101)
+    with pytest.raises(ValueError, match="integer between 0 and 100"):
+        repository.configure_journal(reporting_time_basis="utc", breakeven_threshold_percent=True)
+    with pytest.raises(ValueError, match="integer between 0 and 100"):
+        repository.configure_journal(  # type: ignore[arg-type]
+            reporting_time_basis="utc",
+            breakeven_threshold_percent=5.5,
+        )
+
+
+def test_schema_v7_adds_breakeven_threshold_with_five_percent_default(tmp_path: Path) -> None:
+    database_path = tmp_path / "journal.db"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "CREATE TABLE journal_settings ("
+            "id INTEGER PRIMARY KEY, reporting_time_basis VARCHAR(16) NOT NULL, "
+            "display_language VARCHAR(2) NOT NULL DEFAULT 'en', default_strategy_name VARCHAR(100), "
+            "default_strategy_profile_id INTEGER, active_mt5_account_id INTEGER)"
+        )
+        connection.execute("INSERT INTO journal_settings (id, reporting_time_basis) VALUES (1, 'utc')")
+        connection.execute("CREATE TABLE framework_rule_settings (mt5_account_id INTEGER PRIMARY KEY)")
+        connection.execute("PRAGMA user_version = 7")
+
+    repository = SQLiteJournalRepository(database_path)
+    repository.initialize()
+
+    assert repository.get_journal_settings().breakeven_threshold_percent == 5
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 8
 
 
 def test_risk_policy_schema_drops_pretrade_balance_evidence_flag(tmp_path: Path) -> None:
@@ -410,8 +450,8 @@ def test_dashboard_concentration_handles_profit_only_loss_only_and_breakeven_sam
     assert breakeven_breakdown.profit.items == []
     assert breakeven_breakdown.loss.items == []
     assert breakeven_only.expectancy_r == "0"
-    assert breakeven_only.current_streak_outcome == "breakeven"
-    assert breakeven_only.current_streak_count == 1
+    assert breakeven_only.current_streak_outcome is None
+    assert breakeven_only.current_streak_count == 0
 
 
 def test_dashboard_expectancy_r_uses_only_trades_with_r_coverage(tmp_path: Path, monkeypatch) -> None:
@@ -511,6 +551,38 @@ def test_dashboard_calculates_balance_growth_drawdown_and_trade_quality(tmp_path
     assert [(item.label, item.trade_count, item.net_pnl) for item in report.by_direction] == [("long", 2, "15")]
 
 
+def test_dashboard_uses_breakeven_threshold_only_for_categorical_outcomes(tmp_path: Path) -> None:
+    repository = configured_repository(tmp_path, standard_risk_percent="10")
+    account = repository.find_active_mt5_account("123456", "DemoBroker-Live")
+    assert account is not None
+    repository.upsert_mt5_positions(
+        account.id,
+        [
+            position("1003", net_pnl="0.5", exit_time="2026-08-03T09:00:00+00:00"),
+            position("1004", net_pnl="-0.5", exit_time="2026-08-04T09:00:00+00:00"),
+            position("1005", net_pnl="0.501", exit_time="2026-08-05T09:00:00+00:00"),
+            position("1006", net_pnl="-0.501", exit_time="2026-08-06T09:00:00+00:00"),
+        ],
+        "positions.csv",
+        "breakeven-threshold-hash",
+    )
+
+    report = DashboardService(repository).build_report()
+
+    assert (report.win_count, report.loss_count, report.breakeven_count) == (2, 2, 2)
+    assert [point.outcome for point in report.per_trade[-4:]] == [
+        "breakeven", "breakeven", "profit", "loss"
+    ]
+    assert report.net_pnl == "15"
+    assert report.gross_profit == "21.001"
+    assert report.gross_loss == "6.001"
+    assert report.by_symbol[0].profit_factor == report.profit_factor
+
+    repository.configure_journal(reporting_time_basis="utc", breakeven_threshold_percent=0)
+    exact_zero = DashboardService(repository).build_report()
+    assert (exact_zero.win_count, exact_zero.loss_count, exact_zero.breakeven_count) == (3, 3, 0)
+
+
 def test_dashboard_maximum_percentage_drawdown_is_independent_of_maximum_amount(tmp_path: Path) -> None:
     repository = configured_repository(tmp_path, standard_risk_percent="10")
     account = repository.find_active_mt5_account("123456", "DemoBroker-Live")
@@ -566,6 +638,27 @@ def test_dashboard_statistics_handle_breakevens_streaks_and_breakdowns(tmp_path:
         ("long", 4, 3, 1),
         ("short", 2, 0, 1),
     ]
+
+
+def test_dashboard_win_loss_streaks_ignore_breakeven_trades(tmp_path: Path) -> None:
+    repository = configured_repository(tmp_path, standard_risk_percent="10")
+    account = repository.find_active_mt5_account("123456", "DemoBroker-Live")
+    assert account is not None
+    repository.upsert_mt5_positions(
+        account.id,
+        [
+            position("1003", net_pnl="-0.5", exit_time="2026-08-03T09:00:00+00:00"),
+            position("1004", net_pnl="-5", exit_time="2026-08-04T09:00:00+00:00"),
+        ],
+        "positions.csv",
+        "streak-ignores-breakeven-hash",
+    )
+
+    report = DashboardService(repository).build_report()
+
+    assert report.current_streak_outcome == "loss"
+    assert report.current_streak_count == 2
+    assert report.longest_loss_streak == 2
 
 
 def test_dashboard_service_returns_realized_pnl_for_a_reporting_day(monkeypatch, tmp_path: Path) -> None:

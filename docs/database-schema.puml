@@ -18,6 +18,7 @@ entity "journal_settings" as journal_settings {
   --
   reporting_time_basis : VARCHAR(16)
   display_language : VARCHAR(2)
+  breakeven_threshold_percent : INTEGER
   default_strategy_name : VARCHAR(100)?
   default_strategy_profile_id : INTEGER? <<FK>>
   active_mt5_account_id : INTEGER? <<FK>>

@@ -6,6 +6,7 @@ from decimal import Decimal
 from typing import Callable
 
 from trading_journal.application.reporting_time import reporting_date, reporting_datetime
+from trading_journal.domain.trade_outcomes import classify_trade_outcome
 from trading_journal.infrastructure.sqlite_repository import (
     SQLiteJournalRepository,
     TradePerformanceItem,
@@ -43,6 +44,7 @@ class TradePerformancePoint:
     direction: str
     net_pnl: str
     result_r: str | None
+    outcome: str
     strategy: str | None
     cumulative_pnl: str
     balance: str | None
@@ -204,14 +206,22 @@ class DashboardService:
             for trade in all_trades
             if start is None or end is None or start <= self._trade_date(trade, time_basis) <= end
         ]
+        outcomes = {
+            trade.logical_trade_id: classify_trade_outcome(
+                trade.net_pnl,
+                trade.result_r,
+                settings.breakeven_threshold_percent,
+            )
+            for trade in trades
+        }
 
         # Every completed-trade fact uses the same current logical-trade
         # chronology. Regrouping therefore recalculates the complete report.
         pnl_total = sum((Decimal(trade.net_pnl) for trade in trades), Decimal("0"))
         r_values = [Decimal(trade.result_r) for trade in trades if trade.result_r is not None]
         r_total = sum(r_values, Decimal("0")) if r_values else None
-        wins = sum(Decimal(trade.net_pnl) > 0 for trade in trades)
-        losses = sum(Decimal(trade.net_pnl) < 0 for trade in trades)
+        wins = sum(outcomes[trade.logical_trade_id] == "profit" for trade in trades)
+        losses = sum(outcomes[trade.logical_trade_id] == "loss" for trade in trades)
         breakevens = len(trades) - wins - losses
         win_rate = Decimal(wins * 100) / Decimal(len(trades)) if trades else Decimal("0")
         winning_pnls = [Decimal(trade.net_pnl) for trade in trades if Decimal(trade.net_pnl) > 0]
@@ -224,7 +234,10 @@ class DashboardService:
         average_win = gross_profit / len(winning_pnls) if winning_pnls else None
         average_loss = sum(losing_pnls, Decimal("0")) / len(losing_pnls) if losing_pnls else None
         payoff_ratio = average_win / -average_loss if average_win is not None and average_loss is not None else None
-        current_streak_outcome, current_streak_count, longest_win_streak, longest_loss_streak = self._streaks(trades)
+        current_streak_outcome, current_streak_count, longest_win_streak, longest_loss_streak = self._streaks(
+            trades,
+            settings.breakeven_threshold_percent,
+        )
         daily: dict[str, Decimal] = {}
         daily_r: dict[str, Decimal] = {}
         strategies: dict[str, tuple[Decimal, Decimal | None]] = {}
@@ -298,6 +311,7 @@ class DashboardService:
                     direction=trade.direction,
                     net_pnl=_decimal_string(trade_pnl),
                     result_r=trade.result_r,
+                    outcome=outcomes[trade.logical_trade_id],
                     strategy=trade.strategy,
                     cumulative_pnl=_decimal_string(trade_tracker.cumulative_pnl),
                     balance=None if trade_tracker.balance is None else _decimal_string(trade_tracker.balance),
@@ -387,13 +401,19 @@ class DashboardService:
                 )
                 for strategy, (pnl, total_r) in sorted(strategies.items())
             ],
-            by_symbol=self._performance_breakdowns(trades, lambda trade: trade.symbol),
-            by_direction=self._performance_breakdowns(trades, lambda trade: trade.direction),
+            by_symbol=self._performance_breakdowns(
+                trades, lambda trade: trade.symbol, settings.breakeven_threshold_percent
+            ),
+            by_direction=self._performance_breakdowns(
+                trades, lambda trade: trade.direction, settings.breakeven_threshold_percent
+            ),
             concentration=concentration,
         )
 
     @staticmethod
-    def _streaks(trades: list[TradePerformanceItem]) -> tuple[str | None, int, int, int]:
+    def _streaks(
+        trades: list[TradePerformanceItem], breakeven_threshold_percent: int
+    ) -> tuple[str | None, int, int, int]:
         current_outcome: str | None = None
         current_count = 0
         win_streak = 0
@@ -401,8 +421,12 @@ class DashboardService:
         longest_win_streak = 0
         longest_loss_streak = 0
         for trade in trades:
-            pnl = Decimal(trade.net_pnl)
-            outcome = "win" if pnl > 0 else "loss" if pnl < 0 else "breakeven"
+            classified = classify_trade_outcome(
+                trade.net_pnl, trade.result_r, breakeven_threshold_percent
+            )
+            if classified == "breakeven":
+                continue
+            outcome = "win" if classified == "profit" else classified
             if outcome == current_outcome:
                 current_count += 1
             else:
@@ -416,15 +440,13 @@ class DashboardService:
                 loss_streak += 1
                 win_streak = 0
                 longest_loss_streak = max(longest_loss_streak, loss_streak)
-            else:
-                win_streak = 0
-                loss_streak = 0
         return current_outcome, current_count, longest_win_streak, longest_loss_streak
 
     @staticmethod
     def _performance_breakdowns(
         trades: list[TradePerformanceItem],
         label_for: Callable[[TradePerformanceItem], str],
+        breakeven_threshold_percent: int,
     ) -> list[PerformanceBreakdown]:
         grouped: dict[str, list[TradePerformanceItem]] = {}
         for trade in trades:
@@ -432,10 +454,14 @@ class DashboardService:
         results: list[PerformanceBreakdown] = []
         for label, members in sorted(grouped.items(), key=lambda item: item[0].casefold()):
             pnls = [Decimal(item.net_pnl) for item in members]
+            member_outcomes = [
+                classify_trade_outcome(item.net_pnl, item.result_r, breakeven_threshold_percent)
+                for item in members
+            ]
             winning_pnls = [value for value in pnls if value > 0]
             losing_pnls = [value for value in pnls if value < 0]
-            win_count = len(winning_pnls)
-            loss_count = len(losing_pnls)
+            win_count = member_outcomes.count("profit")
+            loss_count = member_outcomes.count("loss")
             breakeven_count = len(members) - win_count - loss_count
             gross_profit = sum(winning_pnls, Decimal("0"))
             gross_loss = -sum(losing_pnls, Decimal("0"))
