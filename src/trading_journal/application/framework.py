@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, deque
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta, timezone, tzinfo
@@ -35,6 +35,7 @@ PILLAR_NAMES = {"psychology": "Psychology", "risk": "Risk management", "system":
 GRADE_VALUES = {"pass": Decimal("100"), "partial": Decimal("50"), "fail": Decimal("0")}
 GOOD_PROCESS_SCORE = Decimal("70")
 REVIEWED_KINDS = frozenset({"approved_auto_review", "manual_review"})
+AUTOMATIC_KINDS = frozenset({"auto_review", "approved_auto_review"})
 TRADE_WEIGHTS = {
     "psychology": (("edge_execution", Decimal("0.35")), ("risk_acceptance", Decimal("0.25")), ("probability_mindset", Decimal("0.20")), ("outcome_independence", Decimal("0.20"))),
     "risk": (("policy_adherence", Decimal("0.35")), ("position_size_accuracy", Decimal("0.20")), ("stop_discipline", Decimal("0.25")), ("exposure_limit_compliance", Decimal("0.20"))),
@@ -417,6 +418,51 @@ class PillarRoadmapStatus:
     items: tuple[RoadmapItemStatus, ...]
 
 
+@dataclass(frozen=True)
+class _SampleTotals:
+    """The prefix aggregates one pillar score needs, at one point in an account's history."""
+
+    sample: tuple[TradeProcessScore, ...]
+    reviewed_count: int
+    automatic: int
+    unreviewed: int
+
+
+class _SampleAccumulator:
+    """Roll the prefix aggregates forward one trade at a time.
+
+    A pillar score needs the trailing rolling sample plus three whole-history
+    counts. Recomputing those by rescanning the prefix — once per pillar, and
+    again per point in the score trend — is what made rolling_score_trend
+    quadratic. Accumulating instead keeps every caller linear.
+    """
+
+    def __init__(self, window: int) -> None:
+        self._trailing: deque[TradeProcessScore] = deque(maxlen=window)
+        self._reviewed_count = 0
+        self._automatic = 0
+        self._unreviewed = 0
+
+    def add(self, item: TradeProcessScore) -> None:
+        if item.review_kind in REVIEWED_KINDS and item.rubric_version == CURRENT_RUBRIC_VERSION:
+            self._trailing.append(item)
+            self._reviewed_count += 1
+        if item.review_kind in AUTOMATIC_KINDS:
+            self._automatic += 1
+        if item.review_kind not in REVIEWED_KINDS:
+            self._unreviewed += 1
+
+    def totals(self) -> _SampleTotals:
+        return _SampleTotals(tuple(self._trailing), self._reviewed_count, self._automatic, self._unreviewed)
+
+
+def _sample_totals(scores: tuple[TradeProcessScore, ...], window: int) -> _SampleTotals:
+    accumulator = _SampleAccumulator(window)
+    for item in scores:
+        accumulator.add(item)
+    return accumulator.totals()
+
+
 class FrameworkService:
     """Purely advisory calculations over persisted closed-trade reviews."""
 
@@ -469,10 +515,11 @@ class FrameworkService:
         historical_events: dict[int, dict[str, object]],
         window: int,
     ) -> tuple[PillarScore, ...]:
+        totals = _sample_totals(account_scores, window)
         return (
-            self._period_pillar_score("psychology", account_scores, window, "Selected account"),
-            self._period_pillar_score("risk", account_scores, window, "Selected account", historical_events),
-            self._period_pillar_score("system", account_scores, window, "Selected account"),
+            self._period_pillar_score("psychology", totals, window, "Selected account"),
+            self._period_pillar_score("risk", totals, window, "Selected account", historical_events),
+            self._period_pillar_score("system", totals, window, "Selected account"),
         )
 
     def readiness(self, account_id: int, *, window: int = 20, as_of: date | None = None) -> ReadinessAssessment:
@@ -793,25 +840,20 @@ class FrameworkService:
     ) -> tuple[tuple[str, str | None, str | None, str | None, str], ...]:
         """Historical rolling scores for the current Zone-aligned rubric."""
         account_scores, historical_events = self._account_trade_scores(account_id)
+        time_basis = self._reporting_time_basis()
+        accumulator = _SampleAccumulator(window)
         points: list[tuple[str, str | None, str | None, str | None, str]] = []
-        for index, trade in enumerate(account_scores):
+        for trade in account_scores:
+            accumulator.add(trade)
             if trade.review_kind not in REVIEWED_KINDS:
                 continue
-            closed = reporting_datetime(trade.exit_time, trade.server_utc_offset_minutes, self._reporting_time_basis()).isoformat()
-            values_by_pillar = {
-                item.pillar: item.score
-                for item in self._pillar_scores_from_sample(
-                    account_scores[:index + 1], historical_events, window
-                )
-            }
-            psychology = values_by_pillar["psychology"]
-            risk = values_by_pillar["risk"]
-            system = values_by_pillar["system"]
+            totals = accumulator.totals()
+            closed = reporting_datetime(trade.exit_time, trade.server_utc_offset_minutes, time_basis).isoformat()
             points.append((
                 closed,
-                psychology,
-                risk,
-                system,
+                self._period_pillar_score("psychology", totals, window, "Selected account").score,
+                self._period_pillar_score("risk", totals, window, "Selected account", historical_events).score,
+                self._period_pillar_score("system", totals, window, "Selected account").score,
                 trade.rubric_version or CURRENT_RUBRIC_VERSION,
             ))
         return tuple(points)
@@ -1410,7 +1452,7 @@ class FrameworkService:
     def _period_pillar_score(
         self,
         pillar: str,
-        scores: tuple[TradeProcessScore, ...],
+        totals: _SampleTotals,
         window: int,
         scope: str,
         historical_events: dict[int, dict[str, object]] | None = None,
@@ -1418,18 +1460,12 @@ class FrameworkService:
         # A reviewed trade is either a one-click approval of normalized MT5
         # evidence or a full Manual Review. Both use persisted criterion grades
         # and have equal weight in framework scoring and maturity gates.
-        reviewed = [
-            item
-            for item in scores
-            if item.review_kind in REVIEWED_KINDS and item.rubric_version == CURRENT_RUBRIC_VERSION
-        ]
-        sample = reviewed[-window:]
-        automatic = sum(item.review_kind in {"auto_review", "approved_auto_review"} for item in scores)
-        unreviewed = sum(item.review_kind not in REVIEWED_KINDS for item in scores)
+        # The caller accumulates those counts in one pass; see _SampleAccumulator.
+        sample = totals.sample
         if not sample:
             detail = "No Zone-aligned post-trade review evidence yet."
             return PillarScore(
-                pillar, None, None, "incomplete", 0, 0, unreviewed, automatic,
+                pillar, None, None, "incomplete", 0, 0, totals.unreviewed, totals.automatic,
                 False, 0, (), detail, scope,
             )
         components = self._period_components(pillar, sample, historical_events)
@@ -1461,14 +1497,14 @@ class FrameworkService:
             )
         return PillarScore(
             pillar, None if score is None else _decimal_text(score), None if raw is None else _decimal_text(raw),
-            status, len(reviewed), len(sample), unreviewed, automatic, hard_block, critical,
+            status, totals.reviewed_count, len(sample), totals.unreviewed, totals.automatic, hard_block, critical,
             formatted, detail, scope,
         )
 
     def _period_components(
         self,
         pillar: str,
-        sample: list[TradeProcessScore],
+        sample: Sequence[TradeProcessScore],
         historical_events: dict[int, dict[str, object]] | None,
     ) -> tuple[tuple[str, Decimal | None], ...]:
         grades = {item.trade_id: item.criterion_grades for item in sample if item.criterion_grades is not None}

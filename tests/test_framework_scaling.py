@@ -55,9 +55,18 @@ def build_scored_account(tmp_path: Path, *, total: int, reviewed: int) -> tuple[
     return repository, account.id
 
 
-def _time_rolling_trend(tmp_path: Path, *, total: int, reviewed: int) -> float:
+def _time_warm_rolling_trend(tmp_path: Path, *, total: int, reviewed: int) -> float:
+    """Time a second `rolling_score_trend` call on an already-warmed service.
+
+    The first call populates `FrameworkService._account_score_cache`, which
+    holds the linear database load and score construction. Timing only the
+    second call isolates the scoring loop itself from that cache-fill cost —
+    a cold measurement dilutes the quadratic term enough to pass even with
+    the rescan bug present.
+    """
     repository, account_id = build_scored_account(tmp_path, total=total, reviewed=reviewed)
     service = FrameworkService(repository)
+    service.rolling_score_trend(account_id)
     started = time.perf_counter()
     service.rolling_score_trend(account_id)
     return time.perf_counter() - started
@@ -65,14 +74,16 @@ def _time_rolling_trend(tmp_path: Path, *, total: int, reviewed: int) -> float:
 
 @pytest.mark.perf
 def test_rolling_score_trend_scales_linearly_in_reviewed_trades(tmp_path: Path) -> None:
-    """Doubling the reviewed history must not quadruple the work.
+    """Tripling the reviewed history must not scale the work by ~9x.
 
-    Quadratic scoring lands near 4.0; linear scoring near 2.0. The 2.8 bound
-    catches a regression while tolerating a noisy machine.
+    Quadratic scoring predicts ~9x for a 3x input increase; linear scoring
+    predicts ~3x. The 4.0 bound sits between the two, so it fails against the
+    quadratic implementation while comfortably tolerating a noisy machine
+    around the linear result.
     """
-    small = _time_rolling_trend(tmp_path / "small", total=1000, reviewed=400)
-    large = _time_rolling_trend(tmp_path / "large", total=2000, reviewed=800)
-    assert large / small < 2.8, f"rolling_score_trend scaled {large / small:.1f}x for 2x the reviewed trades"
+    small = _time_warm_rolling_trend(tmp_path / "small", total=1000, reviewed=300)
+    large = _time_warm_rolling_trend(tmp_path / "large", total=2000, reviewed=900)
+    assert large / small < 4.0, f"rolling_score_trend scaled {large / small:.1f}x for 3x the reviewed trades"
 
 
 EXPECTED_PILLAR_SCORES = {'psychology': ('100', '100', 'ready', 60, 20, 142, 131), 'risk': ('100', '100', 'ready', 60, 20, 142, 131), 'system': ('70', '70', 'ready', 60, 20, 142, 131)}
