@@ -215,6 +215,88 @@ def _render_stat_grid(
     st.markdown(f'<div class="{classes}">{cells}</div>', unsafe_allow_html=True)
 
 
+def _win_rate_popover_details(
+    *,
+    win_count: int,
+    loss_count: int,
+    breakeven_count: int,
+) -> tuple[str, str]:
+    """Explain the visible all-trade rate and its decisive-trade comparison."""
+
+    trade_count = win_count + loss_count + breakeven_count
+    shown_rate = Decimal("0") if trade_count == 0 else Decimal(win_count * 100) / Decimal(trade_count)
+    shown = tr(
+        "Shown: {rate} = {wins} wins ÷ {total} closed trades. Breakevens stay in the denominator, "
+        "so Win + Loss + Breakeven = 100%.",
+        rate=format_percent(shown_rate),
+        wins=format_count(win_count),
+        total=format_count(trade_count),
+    )
+    decisive_count = win_count + loss_count
+    if decisive_count == 0:
+        comparison = tr("Excluding breakevens is unavailable because there are no wins or losses.")
+    else:
+        decisive_rate = Decimal(win_count * 100) / Decimal(decisive_count)
+        comparison = tr(
+            "Excluding breakevens: {rate} = {wins} wins ÷ {decisive} wins and losses.",
+            rate=format_percent(decisive_rate),
+            wins=format_count(win_count),
+            decisive=format_count(decisive_count),
+        )
+        if breakeven_count == 0:
+            comparison += " " + tr("There are no breakeven trades, so both rates are identical.")
+    return shown, comparison
+
+
+def _render_outcome_rates(report: DashboardReport, loss_rate: Decimal, breakeven_rate: Decimal) -> None:
+    """Keep one visible win rate and place the alternate denominator on demand."""
+
+    shown_detail, comparison_detail = _win_rate_popover_details(
+        win_count=report.win_count,
+        loss_count=report.loss_count,
+        breakeven_count=report.breakeven_count,
+    )
+    win_row = st.container(
+        key="dashboard-win-rate-row",
+        horizontal=True,
+        vertical_alignment="center",
+        gap="small",
+    )
+    label = win_row.container(
+        key="dashboard-win-rate-label",
+        horizontal=True,
+        vertical_alignment="center",
+        gap="small",
+        width="stretch",
+    )
+    label.markdown(
+        f'<div class="dashboard-stat-label">{escape(tr("Win rate"))}</div>',
+        unsafe_allow_html=True,
+    )
+    with label.popover(
+        ":material/help:",
+        type="tertiary",
+        help=tr("Win rate details"),
+        key="dashboard-win-rate-help",
+        width="content",
+    ):
+        st.markdown(f"**{tr('Win rate details')}**")
+        st.caption(shown_detail)
+        st.caption(comparison_detail)
+    win_row.markdown(
+        '<div class="dashboard-stat-value dashboard-stat-inline-value dashboard-stat-tone-info">'
+        f'{escape(format_percent(report.win_rate))}</div>',
+        unsafe_allow_html=True,
+    )
+    _render_stat_grid(
+        [
+            (tr("Loss rate"), format_percent(loss_rate), "negative"),
+            (tr("Breakeven rate"), format_percent(breakeven_rate), "neutral"),
+        ],
+        class_name="dashboard-stat-list dashboard-outcome-rate-rest",
+    )
+
+
 def style_chart(figure: go.Figure, *, yaxis_title: str, currency: str | None = None) -> go.Figure:
     """Keep data semantics while Streamlit supplies the active chart theme.
 
@@ -615,25 +697,9 @@ def _render_dashboard_statistics(report: DashboardReport, currency: str) -> None
                 format_currency(report.breakeven_pnl, currency),
                 _signed_metric_tone(report.breakeven_pnl),
             )]
-            # Payoff ratio and profit factor are measured over won and lost
-            # trades only, so the win rate that can be read against them shares
-            # that population. Identical to Win rate when nothing scratched,
-            # which is why it only appears alongside breakeven trades.
-            won_or_lost = report.win_count + report.loss_count
-            excl_breakeven_rows = [] if report.breakeven_count == 0 or won_or_lost == 0 else [(
-                tr("Win rate (excl. breakeven)"),
-                format_percent(Decimal(report.win_count * 100) / Decimal(won_or_lost)),
-                "info",
-            )]
-            # Three readings, separated so they are not scanned as one list:
-            # how often trades end each way, how much edge that produced, and
-            # what the figures above are measured on.
-            _render_stat_grid([
-                (tr("Win rate"), format_percent(report.win_rate), "info"),
-                (tr("Loss rate"), format_percent(loss_rate), "negative"),
-                (tr("Breakeven rate"), format_percent(breakeven_rate), "neutral"),
-                *excl_breakeven_rows,
-            ], class_name="dashboard-stat-list")
+            # Keep one canonical visible rate. The less common wins/(wins+losses)
+            # denominator remains available beside it without competing in the list.
+            _render_outcome_rates(report, loss_rate, breakeven_rate)
             _render_stat_grid([
                 (tr("Payoff ratio"), "—" if report.payoff_ratio is None else format_number(report.payoff_ratio, 2), "info"),
                 (
@@ -904,6 +970,24 @@ def apply_application_style() -> None:
         .dashboard-stat-list .dashboard-stat-value {
             margin-top: 0;
             text-align: right;
+        }
+        div.st-key-dashboard-win-rate-row {
+            min-height: 1.6rem;
+            padding-top: 0.35rem;
+        }
+        div.st-key-dashboard-win-rate-row [data-testid="stHorizontalBlock"] {
+            gap: 0.25rem;
+        }
+        div.st-key-dashboard-win-rate-row [data-testid="stPopover"] button {
+            min-height: 1rem;
+            padding: 0;
+        }
+        .dashboard-stat-inline-value {
+            margin-top: 0;
+            text-align: right;
+        }
+        .dashboard-outcome-rate-rest {
+            padding-top: 0;
         }
         .dashboard-stat-section-head {
             border-top: 1px solid var(--st-border-color, #c8d0c8);

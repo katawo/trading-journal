@@ -26,6 +26,37 @@ def breakdown(label: str, net_pnl: str, *, trade_count: int = 4, win_rate: str =
     )
 
 
+def test_win_rate_popover_distinguishes_all_trades_from_decisive_trades() -> None:
+    shown, comparison = journal_app._win_rate_popover_details(
+        win_count=236,
+        loss_count=173,
+        breakeven_count=53,
+    )
+
+    assert shown == (
+        "Shown: 51.1% = 236 wins ÷ 462 closed trades. Breakevens stay in the denominator, "
+        "so Win + Loss + Breakeven = 100%."
+    )
+    assert comparison == "Excluding breakevens: 57.7% = 236 wins ÷ 409 wins and losses."
+
+
+def test_win_rate_popover_explains_equal_and_unavailable_comparisons() -> None:
+    _shown, no_breakevens = journal_app._win_rate_popover_details(
+        win_count=2,
+        loss_count=1,
+        breakeven_count=0,
+    )
+    all_breakeven, unavailable = journal_app._win_rate_popover_details(
+        win_count=0,
+        loss_count=0,
+        breakeven_count=3,
+    )
+
+    assert no_breakevens.endswith("There are no breakeven trades, so both rates are identical.")
+    assert all_breakeven.startswith("Shown: 0.0% = 0 wins ÷ 3 closed trades.")
+    assert unavailable == "Excluding breakevens is unavailable because there are no wins or losses."
+
+
 def test_performance_history_combines_level_drawdown_and_outcomes_on_one_axis() -> None:
     figure = journal_app._build_performance_history_figure(
         timeline_x=["2026-08-01", "2026-08-02"],

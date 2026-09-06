@@ -40,6 +40,13 @@ def test_vietnamese_keeps_familiar_trading_terms(monkeypatch) -> None:
     assert i18n.tr("Today's reviewed issues") == "Vấn đề đã đánh giá hôm nay"
     assert i18n.tr("Resolved today") == "Đã hoàn tất hôm nay"
     assert i18n.tr("Edge quality") == "Chất lượng lợi thế"
+    assert i18n.tr("Win rate details") == "Chi tiết tỷ lệ thắng"
+    assert i18n.tr(
+        "Excluding breakevens: {rate} = {wins} wins ÷ {decisive} wins and losses.",
+        rate="57,7%",
+        wins="236",
+        decisive="409",
+    ) == "Không tính hòa vốn: 57,7% = 236 lệnh thắng ÷ 409 lệnh thắng và thua."
     # Only the shortfall caption is rendered now; full coverage says nothing.
     assert i18n.tr(
         "R coverage: :orange[**{covered} / {total}**] logical trades can be normalized "

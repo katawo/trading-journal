@@ -2466,13 +2466,17 @@ def test_dashboard_renders_graphics_for_imported_trades(monkeypatch, tmp_path):
     assert not any(item.label == "Breakdown view" for item in app.segmented_control)
     assert 'class="dashboard-stat-section-head">Direction edge<' in stat_markup
     assert 'class="dashboard-stat-column-head">Edge quality<' in stat_markup
-    edge_quality_markup = next(
-        item.value
+    assert any(
+        '<div class="dashboard-stat-label">Win rate</div>' in item.value
         for item in app.markdown
-        if '<div class="dashboard-stat-label">Win rate</div>' in item.value
     )
-    assert '<div class="dashboard-stat-label">Loss rate</div>' in edge_quality_markup
-    assert '<div class="dashboard-stat-label">Breakeven rate</div>' in edge_quality_markup
+    assert any("dashboard-stat-inline-value" in item.value for item in app.markdown)
+    outcome_markup = "\n".join(item.value for item in app.markdown)
+    assert '<div class="dashboard-stat-label">Loss rate</div>' in outcome_markup
+    assert '<div class="dashboard-stat-label">Breakeven rate</div>' in outcome_markup
+    assert '<div class="dashboard-stat-label">Win rate (excl. breakeven)</div>' not in outcome_markup
+    # AppTest does not expose popover triggers, but it does retain their content.
+    assert any("There are no breakeven trades, so both rates are identical." in item.value for item in app.caption)
     assert any(
         "R coverage: :orange[**0 / 1**] logical trades can be normalized" in item.value
         for item in app.caption
