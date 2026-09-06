@@ -79,7 +79,7 @@ Never present profitability as guaranteed. Do not silently enable live trading o
 
 If the repository includes an `mql5/` directory or a MetaTrader 5 bridge, treat that boundary with the same rigor as a broker adapter — see `references/mql5-integration.md`. MQL5-side and Python-side representations of price, volume, and time often diverge silently; do not assume they match without checking. Some MT5 bridges are strictly read-only (import-only, no orders, no stored broker credentials) — check the repo's domain-conventions doc before assuming any order/execution capability is in scope, and never add a write-back path to MT5 without an explicit request.
 
-If the application is a post-trade journal/review tool built around a scoring framework (e.g. a multi-pillar assessment like Psychology/Risk/Trading System) rather than an execution or backtesting platform, load `references/framework-and-journal-domain.md` — the correctness concerns there (snapshot immutability, revision-based corrections, R-multiple risk gating, per-account scoping) differ from the order/position/backtest concerns below and are just as easy to violate.
+If the application is a post-trade journal/review tool built around a scoring framework (e.g. a multi-pillar assessment like Psychology/Risk/Trading System) rather than an execution or backtesting platform, load `references/framework-and-journal-domain.md` — the correctness concerns there (snapshot immutability, active-assessment correction behavior, metric-specific R conventions, per-account scoping) differ from the order/position/backtest concerns below and are just as easy to violate.
 
 ## Solution-Architecture Responsibilities
 
@@ -152,7 +152,7 @@ Before finishing a meaningful change, check:
 - New dependencies are justified.
 - User-visible errors are actionable without exposing sensitive details.
 - If MQL5/MetaTrader is involved: symbol, volume, price, and time conventions are reconciled at the boundary, not assumed identical to the Python side; and the bridge's actual capability (read-only import vs. execution-capable) matches what the repo's domain-conventions doc states — no order/write path has been added to what was designed read-only.
-- If the app involves a scoring/review framework: rule-result snapshots aren't silently recomputed, corrections create revisions rather than overwriting, and R-multiple/risk-based metrics exclude trades with unknown risk rather than estimating it.
+- If the app involves this scoring/review framework: rule-result snapshots aren't silently recomputed; corrections overwrite one active assessment while regrouping alone supersedes it; Dashboard/Monitor and daily/weekly replay use policy-standard 1R; and policy-compliance evidence requires known per-trade risk.
 - Secrets (broker credentials, API keys) are not present in `.streamlit/secrets.toml`, config files, or anywhere under source control.
 
 ## Decision Style
@@ -173,7 +173,7 @@ Read `references/streamlit-fullstack.md` when implementing Streamlit state, cach
 
 Read `references/mql5-integration.md` when working on Expert Advisors/indicators, the MetaTrader terminal, or any Python↔MQL5 data/order bridge.
 
-Read `references/framework-and-journal-domain.md` when working on trade scoring/review frameworks, post-trade assessments, R-multiple/risk-known gating, logical-trade grouping, or per-account currency scoping — domain rules distinct from live order execution.
+Read `references/framework-and-journal-domain.md` when working on trade scoring/review frameworks, post-trade assessments, policy-compliance risk evidence, policy-standard reporting R, logical-trade grouping, or per-account currency scoping — domain rules distinct from live order execution.
 
 ## Example Requests
 
@@ -188,4 +188,4 @@ Read `references/framework-and-journal-domain.md` when working on trade scoring/
 - "Reconcile trades logged by the MQL5 EA with what the journal shows in Python."
 - "Add a new page under app_pages/ without duplicating the position-sizing logic."
 - "Add a new field to a post-trade assessment without breaking snapshot immutability for past assessments."
-- "Extend the R-multiple calculation to a new known-risk source and make sure unknown-risk trades stay excluded."
+- "Extend policy-compliance evidence to a new known-risk source without changing Dashboard and Monitor's policy-standard reporting R."

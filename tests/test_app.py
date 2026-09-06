@@ -1,5 +1,6 @@
 from pathlib import Path
 import csv
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
@@ -212,6 +213,60 @@ def test_database_change_token_includes_sqlite_wal_changes(monkeypatch, tmp_path
     assert after != before
     assert after[:2] == before[:2]
     assert after[3] > before[3]
+
+
+def test_framework_snapshot_cache_keys_by_viewer_zone_and_closes_repositories(monkeypatch, tmp_path):
+    import app as journal_app
+
+    @dataclass(frozen=True)
+    class Snapshot:
+        account_id: int
+        zone_name: str | None
+
+    opened = []
+    zones = []
+
+    class Repository:
+        def __init__(self, database_path):
+            self.database_path = database_path
+            self.closed = False
+            opened.append(self)
+
+        def close(self):
+            self.closed = True
+
+    class Service:
+        def __init__(self, repository, *, local_zone=None):
+            self.repository = repository
+            self.local_zone = local_zone
+            zones.append(None if local_zone is None else str(local_zone))
+
+        def account_snapshot(self, account_id):
+            return Snapshot(account_id, None if self.local_zone is None else str(self.local_zone))
+
+    monkeypatch.setattr(journal_app, "SQLiteJournalRepository", Repository)
+    monkeypatch.setattr(journal_app, "FrameworkService", Service)
+    journal_app._cached_account_framework_snapshot.clear()
+    token = (1, 2, 3, 4)
+    database_path = str(tmp_path / "journal.db")
+
+    ho_chi_minh = journal_app._cached_account_framework_snapshot(
+        database_path, token, 7, journal_app._FRAMEWORK_PAYLOAD_SHAPE, "Asia/Ho_Chi_Minh"
+    )
+    new_york = journal_app._cached_account_framework_snapshot(
+        database_path, token, 7, journal_app._FRAMEWORK_PAYLOAD_SHAPE, "America/New_York"
+    )
+    repeated = journal_app._cached_account_framework_snapshot(
+        database_path, token, 7, journal_app._FRAMEWORK_PAYLOAD_SHAPE, "Asia/Ho_Chi_Minh"
+    )
+
+    assert ho_chi_minh["zone_name"] == "Asia/Ho_Chi_Minh"
+    assert new_york["zone_name"] == "America/New_York"
+    assert repeated == ho_chi_minh
+    assert zones == ["Asia/Ho_Chi_Minh", "America/New_York"]
+    assert len(opened) == 2
+    assert all(repository.closed for repository in opened)
+    journal_app._cached_account_framework_snapshot.clear()
 
 
 def test_review_save_immediately_invalidates_the_menu_badge_count(monkeypatch, tmp_path):
@@ -1536,6 +1591,7 @@ def test_framework_renders_a_filtered_review_register(monkeypatch, tmp_path):
     # Saving the assessment can create an alert after the badge cache is
     # invalidated; AppTest cannot mount the v2 browser component.
     monkeypatch.setattr("trading_journal.presentation.global_alert_bubble.render_global_alert_bubble", lambda **kwargs: None)
+    monkeypatch.setattr("trading_journal.presentation.browser_timezone.browser_timezone", lambda: None)
     database_path = tmp_path / "journal.db"
     repository = SQLiteJournalRepository(database_path)
     repository.initialize()

@@ -40,7 +40,7 @@ from trading_journal.infrastructure.sqlite_repository import (
 )
 from trading_journal.presentation.i18n import format_relative_time_localized, queue_toast, tr
 from trading_journal.presentation.formatting import format_count, format_currency, format_exposure_r, format_percent, format_r, format_score
-from trading_journal.presentation.browser_timezone import browser_timezone
+from trading_journal.presentation.browser_timezone import current_browser_timezone
 from trading_journal.presentation.trade_tags import direction_tag, outcome_tag
 
 
@@ -353,7 +353,13 @@ def _automatic_risk_monitoring_detail(score: TradeProcessScore) -> str | None:
 def _reporting_time(repo: SQLiteJournalRepository, value: str, server_utc_offset_minutes: int) -> str:
     """Show execution time in the same calendar used for reports and alerts."""
     basis = repo.get_journal_settings().reporting_time_basis
-    return reporting_datetime(value, server_utc_offset_minutes, basis).strftime("%Y-%m-%d %H:%M:%S")
+    local_zone = current_browser_timezone() if basis == "local" else None
+    return reporting_datetime(
+        value,
+        server_utc_offset_minutes,
+        basis,
+        local_zone=local_zone,
+    ).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _compact_execution_window(entry: str, exit_: str, duration: str) -> str:
@@ -683,7 +689,9 @@ def render_framework_improve_page(repo: SQLiteJournalRepository) -> None:
 
 
 def _render_post_trade_review(repo: SQLiteJournalRepository, account: AccountListItem) -> None:
-    service = FrameworkService(repo)
+    settings = repo.get_journal_settings()
+    local_zone = current_browser_timezone() if settings.reporting_time_basis == "local" else None
+    service = FrameworkService(repo, local_zone=local_zone)
     st.markdown("#### Closed-trade reviews")
     profiles = [repo.get_account_strategy(account.id)]
     trades = repo.list_closed_trades_for_review(account.id)
@@ -2045,7 +2053,7 @@ def render_post_trade_review_dialog(
 
 def _render_monitor(repo: SQLiteJournalRepository, account: AccountListItem) -> None:
     settings = repo.get_journal_settings()
-    local_zone = browser_timezone() if settings.reporting_time_basis == "local" else None
+    local_zone = current_browser_timezone() if settings.reporting_time_basis == "local" else None
     service = FrameworkService(repo, local_zone=local_zone)
     st.markdown(tr("#### Monitoring"))
     _render_risk_configuration_notice(service, account.id)
@@ -2736,7 +2744,9 @@ def _render_period_reviews(repo: SQLiteJournalRepository, account: AccountListIt
 
 
 def _render_roadmap(repo: SQLiteJournalRepository, account: AccountListItem) -> None:
-    service = FrameworkService(repo)
+    settings = repo.get_journal_settings()
+    local_zone = current_browser_timezone() if settings.reporting_time_basis == "local" else None
+    service = FrameworkService(repo, local_zone=local_zone)
     statuses = {item.pillar: item for item in service.roadmap_status(account.id)}
     with st.container(horizontal=True, vertical_alignment="center", gap="small", width="content"):
         st.markdown("#### Readiness roadmap")

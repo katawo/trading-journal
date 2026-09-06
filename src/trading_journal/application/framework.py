@@ -848,7 +848,12 @@ class FrameworkService:
             if trade.review_kind not in REVIEWED_KINDS:
                 continue
             totals = accumulator.totals()
-            closed = reporting_datetime(trade.exit_time, trade.server_utc_offset_minutes, time_basis).isoformat()
+            closed = reporting_datetime(
+                trade.exit_time,
+                trade.server_utc_offset_minutes,
+                time_basis,
+                local_zone=self._local_zone,
+            ).isoformat()
             points.append((
                 closed,
                 self._period_pillar_score("psychology", totals, window, "Selected account").score,
@@ -913,7 +918,12 @@ class FrameworkService:
         points = tuple(
             MonitorAnalysisPoint(
                 trade_id=item.trade_id,
-                closed=reporting_datetime(item.exit_time, item.server_utc_offset_minutes, self._reporting_time_basis()).isoformat(),
+                closed=reporting_datetime(
+                    item.exit_time,
+                    item.server_utc_offset_minutes,
+                    self._reporting_time_basis(),
+                    local_zone=self._local_zone,
+                ).isoformat(),
                 direction=item.direction,
                 outcome=item.outcome,
                 review_kind=item.review_kind,

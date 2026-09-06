@@ -13,7 +13,7 @@ from trading_journal.application.framework import FrameworkService, PILLAR_NAMES
 from trading_journal.application.live_positions import LivePositionService
 from trading_journal.application.today import TodayOverview, TodayService, TodayTradeSummary
 from trading_journal.infrastructure.sqlite_repository import AccountListItem, SQLiteJournalRepository
-from trading_journal.presentation.browser_timezone import browser_timezone
+from trading_journal.presentation.browser_timezone import current_browser_timezone
 from trading_journal.presentation.formatting import format_currency, format_exposure_r, format_percent, format_r
 from trading_journal.presentation.framework import (
     HARD_RULE_LABELS,
@@ -414,7 +414,7 @@ def _render_today_coaching(
 
 def _render_today_action_center(repo: SQLiteJournalRepository, account: AccountListItem) -> None:
     settings = repo.get_journal_settings()
-    local_zone = browser_timezone() if settings.reporting_time_basis == "local" else None
+    local_zone = current_browser_timezone() if settings.reporting_time_basis == "local" else None
     framework = FrameworkService(repo, local_zone=local_zone)
     framework.ensure_coaching_focus(account.id)
     overview = TodayService(repo, local_zone=local_zone, framework=framework).build(account.id)

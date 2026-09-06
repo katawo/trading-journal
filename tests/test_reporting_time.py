@@ -118,3 +118,22 @@ def test_local_basis_groups_dashboard_days_by_the_supplied_zone(tmp_path: Path) 
     report = DashboardService(repository, local_zone=ZoneInfo("Asia/Ho_Chi_Minh")).build_report(account_id=account_id)
 
     assert [item.date for item in report.daily] == ["2026-08-11"]
+
+
+def test_local_realized_pnl_uses_the_same_day_boundary_as_dashboard_report(tmp_path: Path) -> None:
+    repository, account_id = _repository(tmp_path)
+    repository.configure_journal(reporting_time_basis="local")
+    export_path = tmp_path / "positions.csv"
+    _write_v5_export(export_path, exit_time="2026-08-10T22:00:00+00:00")
+    MT5ImportService(repository).import_csv(export_path)
+    dashboard = DashboardService(repository, local_zone=ZoneInfo("Asia/Ho_Chi_Minh"))
+
+    report = dashboard.build_report(
+        account_id=account_id,
+        start_date="2026-08-11",
+        end_date="2026-08-11",
+    )
+
+    assert report.net_pnl == "98"
+    assert dashboard.realized_pnl_on(date(2026, 8, 11), account_id) == report.net_pnl
+    assert dashboard.realized_pnl_on(date(2026, 8, 10), account_id) == "0"

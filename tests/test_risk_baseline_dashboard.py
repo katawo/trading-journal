@@ -160,7 +160,9 @@ def test_risk_policy_schema_drops_pretrade_balance_evidence_flag(tmp_path: Path)
 def test_account_policy_supplies_r_and_preserves_imported_policy_context(tmp_path: Path) -> None:
     repository = configured_repository(tmp_path, standard_risk_percent="10")
 
-    before = {trade.position_id: trade for trade in repository.list_trades()}
+    account = repository.find_active_mt5_account("123456", "DemoBroker-Live")
+    assert account is not None
+    before = {trade.position_id: trade for trade in repository.list_account_trades(account.id)}
     assert before["1001"].effective_risk == "10"
     assert before["1001"].risk_source == "Risk policy v1 standard risk"
     assert before["1001"].result_r == "2"
@@ -168,8 +170,6 @@ def test_account_policy_supplies_r_and_preserves_imported_policy_context(tmp_pat
     assert before["1002"].risk_source == "Risk policy v1 standard risk"
     assert before["1002"].result_r == "-0.5"
 
-    account = repository.find_active_mt5_account("123456", "DemoBroker-Live")
-    assert account is not None
     repository.save_account_risk_policy(
         account_id=account.id,
         standard_risk_per_trade_percent="20",
@@ -190,12 +190,42 @@ def test_account_policy_supplies_r_and_preserves_imported_policy_context(tmp_pat
         "positions.csv",
         "updated-policy-hash",
     )
-    after = {trade.position_id: trade for trade in repository.list_trades()}
+    after = {trade.position_id: trade for trade in repository.list_account_trades(account.id)}
     assert after["1001"].result_r == "1"
     assert after["1002"].result_r == "-0.25"
     assert after["1003"].effective_risk == "20"
     assert after["1003"].risk_source == "Risk policy v2 standard risk"
     assert after["1003"].result_r == "1"
+
+
+def test_list_account_trades_never_returns_another_accounts_positions(tmp_path: Path) -> None:
+    repository = configured_repository(tmp_path)
+    primary = repository.find_active_mt5_account("123456", "DemoBroker-Live")
+    assert primary is not None
+    repository.register_mt5_account(
+        display_name="Secondary",
+        login="654321",
+        broker_server="DemoBroker-Live",
+        account_currency="USD",
+        export_file_path="",
+        opening_balance="100",
+    )
+    secondary = repository.find_active_mt5_account("654321", "DemoBroker-Live")
+    assert secondary is not None
+    secondary_position = position(
+        "secondary-1", net_pnl="7", exit_time="2026-08-03T09:00:00+00:00"
+    ).model_copy(
+        update={"account_login": "654321"},
+    )
+    repository.upsert_mt5_positions(
+        secondary.id,
+        [secondary_position],
+        "secondary.csv",
+        "secondary-hash",
+    )
+
+    assert {trade.position_id for trade in repository.list_account_trades(primary.id)} == {"1001", "1002"}
+    assert {trade.position_id for trade in repository.list_account_trades(secondary.id)} == {"secondary-1"}
 
 
 def test_replacing_active_policy_requires_current_confirmation(tmp_path: Path) -> None:

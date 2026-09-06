@@ -5,7 +5,7 @@ description: Review the current diff against this repo's non-negotiable domain r
 Run `git diff` (staged and unstaged) and review the changes specifically against the "Domain conventions to preserve" section of `CLAUDE.md`. For each rule below, state explicitly whether the diff violates it, is unrelated to it, or correctly handles it — don't just give a general thumbs up:
 
 - MT5 stays read-only: no new order/write path, no stored MT5 password.
-- R-multiples only from known risk (recorded SL, real-loss estimate, or opt-in captured pre-trade balance) — never inferred from outcome, never silently defaulted.
+- Policy-compliance evidence requires known per-trade risk (recorded SL, real-loss estimate, or opt-in captured pre-trade balance), while Dashboard/Monitor R and daily/weekly replay use policy-standard 1R for every logical trade.
 - Hard-rule Clear/Fail results aren't recomputed retroactively when rules change.
 - Assessment corrections overwrite the single active `PostTradeAssessment` row; only regrouping a logical trade's membership supersedes an old assessment (stamping `superseded_at`/`superseded_reason`) rather than versioning every edit.
 - Daily P&L/balance/drawdown/risk-limit monitoring use mutable logical trades in final-close order, never raw positions.

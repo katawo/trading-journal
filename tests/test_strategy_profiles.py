@@ -320,14 +320,14 @@ def test_default_strategy_is_inherited_by_every_trade(tmp_path) -> None:
         "positions.csv",
         "test-hash",
     )
-    before = {trade.position_id: trade for trade in repository.list_trades()}
+    before = {trade.position_id: trade for trade in repository.list_account_trades(account.id)}
     assert before["1001"].strategy == "Motimoti"
     assert before["1001"].strategy_source == "Account"
     assert before["1002"].strategy == "Motimoti"
     assert before["1002"].strategy_source == "Account"
 
     repository.set_default_strategy("Reversal")
-    after = {trade.position_id: trade for trade in repository.list_trades()}
+    after = {trade.position_id: trade for trade in repository.list_account_trades(account.id)}
     assert after["1001"].strategy == "Motimoti"
     assert after["1002"].strategy == "Motimoti"
 
@@ -385,4 +385,4 @@ def test_profile_rename_preserves_the_default_strategy_by_id(tmp_path) -> None:
     assert renamed.id == profile.id
     assert [item.name for item in repository.list_strategy_profiles()] == ["Journal default", "Motimoti Trend"]
     assert repository.get_journal_settings().default_strategy_name == "Motimoti Trend"
-    assert repository.list_trades()[0].strategy == "Motimoti Trend"
+    assert repository.list_account_trades(account.id)[0].strategy == "Motimoti Trend"

@@ -58,7 +58,7 @@ from trading_journal.presentation.framework import (
     render_framework_dashboard,
 )
 from trading_journal.presentation.branding import TRADE_COMPASS_ICON, render_trade_doctrine
-from trading_journal.presentation.browser_timezone import browser_timezone
+from trading_journal.presentation.browser_timezone import browser_timezone, current_browser_timezone
 from trading_journal.presentation.global_alert_bubble import GlobalAlertItem, render_global_alert_bubble
 from trading_journal.presentation.connection_recovery import render_connection_recovery
 from trading_journal.presentation.multiuser_auth import current_username, is_multiuser_mode, render_login_gate, render_logout_control, user_database_path
@@ -1153,13 +1153,15 @@ def _cached_account_framework_snapshot(
     database_change_token: tuple[int, int, int, int],
     account_id: int,
     payload_shape: str,
+    local_zone_name: str | None = None,
 ) -> dict[str, object]:
     """Cache a reload-safe framework payload without combining account histories."""
 
     del database_change_token, payload_shape
     repo = SQLiteJournalRepository(database_path)
     try:
-        return asdict(FrameworkService(repo).account_snapshot(account_id))
+        local_zone = None if local_zone_name is None else ZoneInfo(local_zone_name)
+        return asdict(FrameworkService(repo, local_zone=local_zone).account_snapshot(account_id))
     finally:
         repo.close()
 
@@ -1250,12 +1252,15 @@ def build_account_framework_snapshot(
     *,
     account_id: int,
 ) -> AccountFrameworkSnapshot:
+    settings = repo.get_journal_settings()
+    zone = current_browser_timezone() if settings.reporting_time_basis == "local" else None
     return _framework_snapshot_from_cache_payload(
         _cached_account_framework_snapshot(
             str(repo.database_path),
             _database_change_token(repo.database_path),
             account_id,
             _FRAMEWORK_PAYLOAD_SHAPE,
+            None if zone is None else str(zone),
         )
     )
 
@@ -1400,7 +1405,7 @@ def build_dashboard_report(repo: SQLiteJournalRepository, *, account_id: int) ->
     settings = repo.get_journal_settings()
     # Only resolved on "local" basis: the same clock two viewers in different
     # timezones would otherwise silently share one cached report for.
-    zone = browser_timezone() if settings.reporting_time_basis == "local" else None
+    zone = current_browser_timezone() if settings.reporting_time_basis == "local" else None
     return _dashboard_report_from_cache_payload(
         _cached_dashboard_report(
             str(repo.database_path),
@@ -2651,6 +2656,10 @@ def main() -> None:
         st.code("make reset-db CONFIRM_RESET=yes", language="bash")
         return
     settings = repo.get_journal_settings()
+    if settings.reporting_time_basis == "local":
+        # Resolve once before navigation. Page renderers reuse the session value
+        # without mounting this keyed component a second time in the same run.
+        browser_timezone()
     st.session_state.setdefault("display_language", settings.display_language)
     install_streamlit_translations()
     render_connection_recovery()

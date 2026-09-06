@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone, tzinfo
 from decimal import Decimal
 import json
 from pathlib import Path
@@ -4001,14 +4001,8 @@ class SQLiteJournalRepository:
             backtest_notes=payload.get("backtest_notes"),
         )
 
-    def list_trades(self) -> list[TradeListItem]:
-        """Every imported position across every account, with its risk-source label.
-
-        No production caller: this exists for tests that assert the effective-risk
-        and risk-source labelling directly. It is deliberately unscoped, so do not
-        wire it into a page — per-account reporting goes through
-        list_trade_performance(account_id) instead.
-        """
+    def list_account_trades(self, account_id: int) -> list[TradeListItem]:
+        """Imported positions for one account, with their risk-source labels."""
         with self._sessions() as session:
             profiles_by_id = {profile.id: profile for profile in session.scalars(select(StrategyProfile)).all()}
             account_strategies = {
@@ -4016,7 +4010,11 @@ class SQLiteJournalRepository:
                 for account in session.scalars(select(MT5Account)).all()
             }
             policies_by_id, active_policies_by_account, funded_capital_by_account = self._risk_reporting_context(session)
-            trades = session.scalars(select(Trade).order_by(Trade.exit_time.desc())).all()
+            trades = session.scalars(
+                select(Trade)
+                .where(Trade.mt5_account_id == account_id)
+                .order_by(Trade.exit_time.desc())
+            ).all()
             return [
                 self._to_trade_list_item(
                     trade,
@@ -4122,7 +4120,14 @@ class SQLiteJournalRepository:
                 )
             return sorted(performance, key=lambda item: (item.exit_time, item.logical_trade_id))
 
-    def realized_pnl_on(self, account_id: int, report_date: date, reporting_time_basis: str) -> str:
+    def realized_pnl_on(
+        self,
+        account_id: int,
+        report_date: date,
+        reporting_time_basis: str,
+        *,
+        local_zone: tzinfo | None = None,
+    ) -> str:
         """Return logical-trade P&L for one reporting day without loading full performance history."""
         if reporting_time_basis not in REPORTING_TIME_BASES:
             raise ValueError("Reporting time basis must be UTC, Server Timezone, or Local Timezone")
@@ -4162,7 +4167,12 @@ class SQLiteJournalRepository:
         total = Decimal("0")
         for members in members_by_logical.values():
             latest = max(members, key=lambda item: (item.exit_time, item.id))
-            if reporting_date(latest.exit_time, latest.server_utc_offset_minutes, reporting_time_basis) == report_date:
+            if reporting_date(
+                latest.exit_time,
+                latest.server_utc_offset_minutes,
+                reporting_time_basis,
+                local_zone=local_zone,
+            ) == report_date:
                 total += sum((Decimal(item.net_pnl) for item in members), Decimal("0"))
         return _decimal_string(total)
 

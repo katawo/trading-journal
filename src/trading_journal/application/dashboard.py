@@ -537,7 +537,12 @@ class DashboardService:
         """Return closed logical-trade P&L for one reporting-calendar day."""
         account_id = self._single_account_id(account_id)
         time_basis = self._repository.get_journal_settings().reporting_time_basis
-        return _decimal_string(Decimal(self._repository.realized_pnl_on(account_id, report_date, time_basis)))
+        return _decimal_string(Decimal(self._repository.realized_pnl_on(
+            account_id,
+            report_date,
+            time_basis,
+            local_zone=self._local_zone,
+        )))
 
     @staticmethod
     def _concentration_side(

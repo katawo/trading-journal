@@ -4,6 +4,7 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 import sqlite3
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import pytest
 from sqlalchemy import event
@@ -723,6 +724,31 @@ def test_zone_score_trend_uses_the_selected_rolling_window(tmp_path) -> None:
     assert one_trade_window[-1][1] == "100"
     assert two_trade_window[-1][1] == "82.5"
     assert all(point[-1] == CURRENT_RUBRIC_VERSION for point in two_trade_window)
+
+
+def test_monitor_trend_and_analysis_share_the_viewers_local_close_day(tmp_path) -> None:
+    repository, account_id = _repository(tmp_path)
+    repository.configure_journal(reporting_time_basis="local")
+    policy, strategy = _policy(repository, account_id), _strategy(repository)
+    trade_id = _import_position(
+        repository,
+        account_id,
+        position_id="local-day-boundary",
+        exit_time="2026-08-10T22:00:00+00:00",
+    )
+    _review(repository, account_id, trade_id, policy, strategy)
+    service = FrameworkService(repository, local_zone=ZoneInfo("Asia/Ho_Chi_Minh"))
+
+    trend = service.rolling_score_trend(account_id)
+    analysis = service.monitor_analysis(
+        account_id,
+        start_date=date(2026, 8, 11),
+        end_date=date(2026, 8, 11),
+    )
+
+    assert trend[0][0].startswith("2026-08-11T05:00:00")
+    assert len(analysis.points) == 1
+    assert analysis.points[0].closed == trend[0][0]
 
 
 def test_zone_score_trend_does_not_look_ahead_to_later_same_day_reviews(tmp_path) -> None:

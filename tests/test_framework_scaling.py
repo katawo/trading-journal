@@ -82,7 +82,7 @@ def test_rolling_score_trend_scales_linearly_in_reviewed_trades(tmp_path: Path) 
     around the linear result.
     """
     small = _time_warm_rolling_trend(tmp_path / "small", total=1000, reviewed=300)
-    large = _time_warm_rolling_trend(tmp_path / "large", total=2000, reviewed=900)
+    large = _time_warm_rolling_trend(tmp_path / "large", total=3000, reviewed=900)
     assert large / small < 4.0, f"rolling_score_trend scaled {large / small:.1f}x for 3x the reviewed trades"
 
 

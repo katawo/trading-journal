@@ -107,7 +107,7 @@ instead of loading the account's full incident history.
 dict, so every existing `Trade` is dirtied even when nothing else changed. Measured: a
 byte-identical re-import of 400 rows issues **400 UPDATE statements**. Bounded in practice
 by the auto-sync hash guard and only 0.25s at 5,000 rows, so this is a reporting problem
-(see C2) rather than a speed problem.
+(see C3) rather than a speed problem.
 
 ### P6 — small, safe wins
 

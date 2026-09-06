@@ -9,35 +9,37 @@ Always check for a repo-specific source-of-truth doc for the actual scoring/work
 If an assessment records a rule-based outcome (e.g. a hard-rule "Clear"/"Fail" result) at the time it was made, that recorded outcome must not be silently recomputed if the underlying rules change later. A user's historical assessment should reflect what the rules said *then*, not what they say now.
 
 - Store the evaluated result itself, not just the inputs plus a pointer to "current rules."
-- If rules change, new assessments use the new rules; old assessments keep their original recorded result unless there's an explicit, intentional re-evaluation feature — and even then, that should likely produce a new revision (see below) rather than overwrite history.
+- If rules change, new assessments use the new rules; old assessments keep their original recorded result unless an explicit, intentional re-evaluation feature is added.
 
-## Corrections Version, They Don't Overwrite
+## Assessment Corrections and Regrouping
 
-When a user edits or corrects a previously saved assessment, prefer creating a new revision that references the original rather than mutating the original row in place.
+This journal keeps one active `PostTradeAssessment` per logical trade. Editing or correcting a review overwrites that active row; it does not create per-edit revision history.
 
-- This keeps prior evidence/reasoning auditable — useful for understanding how someone's self-assessment or reasoning changed, not just the final number.
-- When implementing, check whether the repo has a `*Revision` pattern already established (a base assessment table plus a revisions table) and follow that shape rather than introducing ad hoc edit-in-place logic.
-- Queries that show "the current view" of an assessment should resolve to the latest revision; queries about history should be able to walk all revisions.
+- Supersession is reserved for regrouping that changes logical-trade membership. It stamps `superseded_at` and `superseded_reason` on the old assessment.
+- Current queries use the single active row. Regrouping history remains queryable through `list_superseded_post_trade_assessments_for_trade`.
+- Do not introduce a revision table or turn ordinary review edits into supersession without an explicit product change.
 
-## R-Multiples Require Known Risk
+## Policy Evidence and Reporting R Use Different Risk Conventions
 
-If the app computes R-multiples (P&L expressed as a multiple of risked amount), a trade should only be included in that metric once its initial risk is actually established — never inferred from the outcome.
+Policy-compliance evidence requires known per-trade risk and must never infer risk from the outcome.
 
 Typical valid sources of "known risk," roughly in order of reliability:
 1. A specific preset stop-loss recorded at entry.
 2. For a loss-making trade with no recorded SL: the realized loss itself is a defensible real-loss estimate of risk (the trade lost exactly what it risked, at minimum).
 3. An opt-in estimate from a captured pre-trade account balance, used only when that data was actually captured at the time (not backfilled or guessed).
 
-What NOT to do: never derive "risk" from a profitable trade's outcome (there's no way to know what was actually risked just because it won), and never silently default an unknown-risk trade to some placeholder R value — exclude it from R-based metrics instead, and make that exclusion visible rather than silent.
+What NOT to do for compliance evidence: never derive "risk" from a profitable trade's outcome, and never silently claim that an unknown-risk trade was within policy.
+
+Dashboard and Monitor outcome R, plus daily/weekly risk replay, deliberately use the account policy's standard-risk amount as 1R for every logical trade. That reporting convention is distinct from evidence that proves the trade's actual risk was known and policy-compliant.
 
 ## Logical Trades vs. Raw Positions
 
 Distinguish two layers if the app supports scaling in/out or manual trade grouping:
 
-- **Raw positions**: the immutable, broker-sourced record of what actually happened (fills/positions from the import). Account-level metrics that must reconcile against real account history — daily P&L, balance curve, drawdown, any risk-limit monitoring — should always be computed from raw positions, never from user-editable groupings.
-- **Logical trades**: a user-facing, potentially mutable view that groups/splits/regroups raw positions into what the trader considers "one trade" (e.g. multiple scale-in fills treated as a single position for review purposes).
+- **Raw positions**: the immutable, broker-sourced members imported from MT5. They remain auditable and are never rewritten by grouping.
+- **Logical trades**: the mutable reporting unit that groups/splits/regroups raw positions into what the trader considers "one trade" (e.g. multiple scale-in fills treated as a single position for review purposes).
 
-Keep these layers structurally separate. A user regrouping logical trades for review purposes must never change what the account-level, audit-sensitive metrics report — if it does, that's a correctness bug worth flagging even if no one explicitly asked about it.
+Keep these layers structurally separate. Dashboard P&L, balance, drawdown, and risk-limit monitoring intentionally replay logical trades in final-close order. Regrouping may therefore change period assignment and path-dependent metrics while leaving imported member positions and total monetary P&L intact.
 
 ## Per-Account, Per-Currency Scoping
 
@@ -51,6 +53,6 @@ If accounts are tracked in their own currency, be deliberate about whether the a
 Beyond the general trading-math tests in `references/trading-engineering.md`, prioritize tests for:
 
 - Rule-result snapshot behavior: saved hard-rule outcomes don't change when rules are edited afterward.
-- Revision creation vs. mutation: editing an assessment produces a new revision; the original remains queryable.
-- R-multiple inclusion/exclusion: trades with unknown risk are excluded from R metrics; each of the valid known-risk sources is covered by its own test case; a profitable trade with no SL and no captured pre-trade balance is excluded, not estimated.
-- Logical-trade regrouping does not alter raw-position-derived metrics (daily P&L, drawdown, risk-limit checks) — a good regression test groups/splits a set of raw positions several ways and asserts those metrics are unchanged.
+- Correction vs. supersession: ordinary edits overwrite one active assessment; regrouping supersedes the old assessment and keeps that regrouping history queryable.
+- Metric-specific R behavior: known-risk sources gate policy-compliance evidence, while Dashboard/Monitor and daily/weekly replay consistently use policy-standard 1R even when per-trade risk is unknown.
+- Logical-trade regrouping: grouping/splitting assigns the combined P&L to the logical trade's final close and correctly recomputes daily P&L, balance, drawdown, and risk-limit output without mutating imported positions.
