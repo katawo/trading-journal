@@ -29,11 +29,12 @@ ingestion = [
 ]
 
 [tool.pytest.ini_options]
-addopts = "-m 'not web and not browser'"
+addopts = "-m 'not web and not browser and not perf'"
 markers = [
   "bdd: scenarios organized explicitly as Given/When/Then behavior",
   "web: maintained Streamlit interaction regression scenarios",
   "browser: tests that execute client-side behavior in a real browser",
+  "perf: scaling guards that time framework scoring; wall-clock, so never in the default run",
 ]
 testpaths = ["tests"]
 norecursedirs = ["legacy"]
