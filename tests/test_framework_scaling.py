@@ -73,3 +73,32 @@ def test_rolling_score_trend_scales_linearly_in_reviewed_trades(tmp_path: Path) 
     small = _time_rolling_trend(tmp_path / "small", total=1000, reviewed=400)
     large = _time_rolling_trend(tmp_path / "large", total=2000, reviewed=800)
     assert large / small < 2.8, f"rolling_score_trend scaled {large / small:.1f}x for 2x the reviewed trades"
+
+
+EXPECTED_PILLAR_SCORES = {'psychology': ('100', '100', 'ready', 60, 20, 142, 131), 'risk': ('100', '100', 'ready', 60, 20, 142, 131), 'system': ('70', '70', 'ready', 60, 20, 142, 131)}
+EXPECTED_TREND_HEAD = (('2026-08-01T09:00:00+00:00', '100', '100', '70', 'zone_v2'), ('2026-08-01T09:00:00+00:00', '100', '100', '70', 'zone_v2'), ('2026-08-01T09:00:00+00:00', '100', '100', '70', 'zone_v2'), ('2026-08-01T09:00:00+00:00', '100', '100', '70', 'zone_v2'), ('2026-08-02T09:00:00+00:00', '100', '100', '70', 'zone_v2'))
+EXPECTED_TREND_TAIL = (('2026-08-25T09:00:00+00:00', '100', '100', '70', 'zone_v2'), ('2026-08-26T09:00:00+00:00', '100', '100', '70', 'zone_v2'), ('2026-08-26T09:00:00+00:00', '100', '100', '70', 'zone_v2'), ('2026-08-27T09:00:00+00:00', '100', '100', '70', 'zone_v2'), ('2026-08-27T09:00:00+00:00', '100', '100', '70', 'zone_v2'))
+
+
+@pytest.mark.perf
+def test_pillar_scores_are_unchanged_by_the_scoring_refactor(tmp_path: Path) -> None:
+    """Pin the exact scored output so Tasks 2 and 3 cannot drift it.
+
+    The expected values are generated from the pre-refactor implementation in the
+    next step. If this ever fails, the refactor changed a score — that is a bug,
+    not a baseline to regenerate.
+    """
+    repository, account_id = build_scored_account(tmp_path, total=200, reviewed=60)
+    scores = {
+        item.pillar: (
+            item.score, item.raw_score, item.status, item.reviewed_total,
+            item.sample_size, item.unreviewed_total, item.automatic_evidence_total,
+        )
+        for item in FrameworkService(repository).pillar_scores(account_id)
+    }
+    trend = FrameworkService(repository).rolling_score_trend(account_id)
+
+    assert scores == EXPECTED_PILLAR_SCORES
+    assert len(trend) == 60
+    assert trend[:5] == EXPECTED_TREND_HEAD
+    assert trend[-5:] == EXPECTED_TREND_TAIL

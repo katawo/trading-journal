@@ -984,7 +984,6 @@ class FrameworkService:
             components = self._period_components(
                 focus.pillar, sample,
                 self._historical_risk_events(account_id) if focus.pillar == "risk" else None,
-                {item.trade_id: Decimal(item.net_pnl) for item in sample},
             )
             current = next((_decimal_text(value) for name, value in components if name == COMPONENT_CODES.get(focus.metric_code) and value is not None), None)
         return FrameworkFocusProgress(focus.id, completed, focus.target_reviews, current, completed >= focus.target_reviews)
@@ -1433,8 +1432,7 @@ class FrameworkService:
                 pillar, None, None, "incomplete", 0, 0, unreviewed, automatic,
                 False, 0, (), detail, scope,
             )
-        pnl_by_trade = {item.trade_id: Decimal(item.net_pnl) for item in scores}
-        components = self._period_components(pillar, sample, historical_events, pnl_by_trade)
+        components = self._period_components(pillar, sample, historical_events)
         values = [value for _, value in components]
         # Exclude any component that couldn't be computed and renormalize over what's
         # available, rather than nulling the whole pillar the moment one is missing.
@@ -1472,7 +1470,6 @@ class FrameworkService:
         pillar: str,
         sample: list[TradeProcessScore],
         historical_events: dict[int, dict[str, object]] | None,
-        pnl_by_trade: dict[int, Decimal],
     ) -> tuple[tuple[str, Decimal | None], ...]:
         grades = {item.trade_id: item.criterion_grades for item in sample if item.criterion_grades is not None}
         if pillar == "psychology":

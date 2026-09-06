@@ -2364,9 +2364,9 @@ def test_a_missing_component_is_excluded_and_the_rest_renormalized(tmp_path, mon
 
     original_components = FrameworkService._period_components
 
-    def fake_components(self, pillar, sample, historical_events, pnl_by_trade):
+    def fake_components(self, pillar, sample, historical_events):
         if pillar != "risk":
-            return original_components(self, pillar, sample, historical_events, pnl_by_trade)
+            return original_components(self, pillar, sample, historical_events)
         return (
             ("Policy adherence", Decimal("100")),
             ("Stop discipline", None),
