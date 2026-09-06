@@ -275,7 +275,7 @@ def test_cached_dashboard_report_closes_its_temporary_repository(monkeypatch):
             closed.append(True)
 
     class StubDashboardService:
-        def __init__(self, repo):
+        def __init__(self, repo, *, local_zone=None):
             pass
 
         def build_report(self, *, account_id):
@@ -290,6 +290,7 @@ def test_cached_dashboard_report_closes_its_temporary_repository(monkeypatch):
         (1, 2, 3, 4),
         7,
         journal_app._DASHBOARD_PAYLOAD_SHAPE,
+        None,
     )
 
     assert result == {"account_id": 7}

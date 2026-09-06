@@ -4,6 +4,7 @@ import csv
 import pytest
 from datetime import date, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from trading_journal.application.dashboard import DashboardService
 from trading_journal.application.import_mt5 import MT5ImportService
@@ -19,11 +20,13 @@ V5_HEADER = [
 ]
 
 
-def _write_v5_export(path: Path, *, currency: str = "EUR", server_offset: str = "180") -> None:
+def _write_v5_export(
+    path: Path, *, currency: str = "EUR", server_offset: str = "180", exit_time: str = "2026-08-10T00:30:00"
+) -> None:
     row = {
         "schema_version": "5", "account_login": "123456", "broker_server": "DemoBroker-Live", "account_currency": currency,
         "position_id": "9001", "symbol": "EURUSD", "direction": "long", "entry_time": "2026-08-10T00:00:00",
-        "exit_time": "2026-08-10T00:30:00", "server_utc_offset_minutes": server_offset, "entry_price": "1.10000",
+        "exit_time": exit_time, "server_utc_offset_minutes": server_offset, "entry_price": "1.10000",
         "exit_price": "1.10100", "volume": "1.00", "gross_pnl": "100.00", "commission": "-1.50", "swap": "-0.25",
         "fees": "-0.25", "net_pnl": "98.00", "entry_stop_price": "", "entry_target_price": "",
         "close_stop_price": "", "entry_magic_number": "", "entry_deal_count": "", "exit_reason": "client",
@@ -102,3 +105,16 @@ def test_detect_local_timezone_is_resolved_once_per_process(monkeypatch: pytest.
     for _ in range(50):
         reporting_time.detect_local_timezone()
     assert resolutions <= 1
+
+
+def test_local_basis_groups_dashboard_days_by_the_supplied_zone(tmp_path: Path) -> None:
+    """A 22:00 UTC close is the next day in Asia/Ho_Chi_Minh; the Dashboard must agree with Ongoing."""
+    repository, account_id = _repository(tmp_path)
+    repository.configure_journal(reporting_time_basis="local")
+    export_path = tmp_path / "positions.csv"
+    _write_v5_export(export_path, exit_time="2026-08-10T22:00:00+00:00")
+    MT5ImportService(repository).import_csv(export_path)
+
+    report = DashboardService(repository, local_zone=ZoneInfo("Asia/Ho_Chi_Minh")).build_report(account_id=account_id)
+
+    assert [item.date for item in report.daily] == ["2026-08-11"]

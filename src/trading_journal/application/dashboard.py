@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timezone, tzinfo
 from decimal import Decimal
 from typing import Callable
 
@@ -194,8 +194,12 @@ class _DrawdownTracker:
 
 
 class DashboardService:
-    def __init__(self, repository: SQLiteJournalRepository) -> None:
+    def __init__(self, repository: SQLiteJournalRepository, *, local_zone: tzinfo | None = None) -> None:
         self._repository = repository
+        # Hosted mode runs in the container's clock, which is not the viewer's.
+        # FrameworkService takes the browser zone the same way; the two must agree
+        # about which day a trade closed on.
+        self._local_zone = local_zone
 
     def build_report(
         self,
@@ -321,7 +325,9 @@ class DashboardService:
                     display_label=trade.display_label,
                     position_ids=trade.position_ids,
                     position_count=trade.position_count,
-                    exit_time=reporting_datetime(trade.exit_time, trade.server_utc_offset_minutes, time_basis).isoformat(),
+                    exit_time=reporting_datetime(
+                        trade.exit_time, trade.server_utc_offset_minutes, time_basis, local_zone=self._local_zone
+                    ).isoformat(),
                     position_id=trade.position_id,
                     symbol=trade.symbol,
                     direction=trade.direction,
@@ -523,7 +529,9 @@ class DashboardService:
         settings = self._repository.get_journal_settings()
         account = next((item for item in self._repository.list_mt5_accounts() if item.id == account_id), None)
         offset = 0 if account is None or account.latest_server_utc_offset_minutes is None else account.latest_server_utc_offset_minutes
-        return reporting_datetime(datetime.now(timezone.utc).isoformat(), offset, settings.reporting_time_basis).date()
+        return reporting_datetime(
+            datetime.now(timezone.utc).isoformat(), offset, settings.reporting_time_basis, local_zone=self._local_zone
+        ).date()
 
     def realized_pnl_on(self, report_date: date, account_id: int | None = None) -> str:
         """Return closed logical-trade P&L for one reporting-calendar day."""
@@ -583,9 +591,10 @@ class DashboardService:
             items=items,
         )
 
-    @staticmethod
-    def _trade_date(trade: TradePerformanceItem, reporting_time_basis: str) -> date:
-        return reporting_date(trade.exit_time, trade.server_utc_offset_minutes, reporting_time_basis)
+    def _trade_date(self, trade: TradePerformanceItem, reporting_time_basis: str) -> date:
+        return reporting_date(
+            trade.exit_time, trade.server_utc_offset_minutes, reporting_time_basis, local_zone=self._local_zone
+        )
 
     def _single_account_id(self, account_id: int | None) -> int:
         if account_id is not None:

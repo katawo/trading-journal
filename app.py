@@ -10,6 +10,7 @@ from decimal import Decimal
 from datetime import date
 from pathlib import Path
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -57,6 +58,7 @@ from trading_journal.presentation.framework import (
     render_framework_dashboard,
 )
 from trading_journal.presentation.branding import TRADE_COMPASS_ICON, render_trade_doctrine
+from trading_journal.presentation.browser_timezone import browser_timezone
 from trading_journal.presentation.global_alert_bubble import GlobalAlertItem, render_global_alert_bubble
 from trading_journal.presentation.connection_recovery import render_connection_recovery
 from trading_journal.presentation.multiuser_auth import current_username, is_multiuser_mode, render_login_gate, render_logout_control, user_database_path
@@ -1339,11 +1341,13 @@ def _cached_dashboard_report(
     database_change_token: tuple[int, int, int, int],
     account_id: int,
     payload_shape: str,
+    local_zone_name: str | None,
 ) -> dict[str, object]:
     del database_change_token, payload_shape
     repo = SQLiteJournalRepository(database_path)
     try:
-        return asdict(DashboardService(repo).build_report(account_id=account_id))
+        local_zone = None if local_zone_name is None else ZoneInfo(local_zone_name)
+        return asdict(DashboardService(repo, local_zone=local_zone).build_report(account_id=account_id))
     finally:
         repo.close()
 
@@ -1393,12 +1397,17 @@ def _dashboard_report_from_cache_payload(payload: dict[str, object]) -> Dashboar
 
 
 def build_dashboard_report(repo: SQLiteJournalRepository, *, account_id: int) -> DashboardReport:
+    settings = repo.get_journal_settings()
+    # Only resolved on "local" basis: the same clock two viewers in different
+    # timezones would otherwise silently share one cached report for.
+    zone = browser_timezone() if settings.reporting_time_basis == "local" else None
     return _dashboard_report_from_cache_payload(
         _cached_dashboard_report(
             str(repo.database_path),
             _database_change_token(repo.database_path),
             account_id,
             _DASHBOARD_PAYLOAD_SHAPE,
+            None if zone is None else str(zone),
         )
     )
 
