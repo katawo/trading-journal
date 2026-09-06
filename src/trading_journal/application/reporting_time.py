@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from datetime import date, datetime, timedelta, timezone, tzinfo
+from functools import cache
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -47,8 +48,13 @@ def reporting_date(timestamp_utc: str, server_utc_offset_minutes: int, time_basi
     return reporting_datetime(timestamp_utc, server_utc_offset_minutes, time_basis, local_zone=local_zone).date()
 
 
+@cache
 def detect_local_timezone() -> tzinfo:
-    """Use the host's IANA zone where available, without adding a dependency."""
+    """Use the host's IANA zone where available, without adding a dependency.
+
+    Cached: dashboard builds call this once per trade, and the /etc/localtime
+    fallback is a realpath syscall. Tests that change TZ must call cache_clear().
+    """
     configured = os.environ.get("TZ")
     if configured:
         try:

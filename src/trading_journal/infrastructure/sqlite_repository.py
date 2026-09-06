@@ -4002,6 +4002,13 @@ class SQLiteJournalRepository:
         )
 
     def list_trades(self) -> list[TradeListItem]:
+        """Every imported position across every account, with its risk-source label.
+
+        No production caller: this exists for tests that assert the effective-risk
+        and risk-source labelling directly. It is deliberately unscoped, so do not
+        wire it into a page — per-account reporting goes through
+        list_trade_performance(account_id) instead.
+        """
         with self._sessions() as session:
             profiles_by_id = {profile.id: profile for profile in session.scalars(select(StrategyProfile)).all()}
             account_strategies = {
@@ -4383,7 +4390,7 @@ class SQLiteJournalRepository:
 
     def count_trades(self) -> int:
         with self._sessions() as session:
-            return len(session.scalars(select(Trade)).all())
+            return session.scalar(select(func.count()).select_from(Trade)) or 0
 
     @staticmethod
     def _optional_decimal_string(value: Decimal | None) -> str | None:

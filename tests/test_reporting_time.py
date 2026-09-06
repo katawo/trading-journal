@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import pytest
 from datetime import date, timedelta, timezone
 from pathlib import Path
 
@@ -80,3 +81,24 @@ def test_reporting_basis_changes_the_dashboard_calendar_without_currency_convers
     assert dashboard.realized_pnl_on(date(2026, 8, 10), account_id) == "98"
 
     assert reporting_date("2026-08-09T21:30:00+00:00", 180, "local", local_zone=timezone(timedelta(hours=7))).isoformat() == "2026-08-10"
+
+
+def test_detect_local_timezone_is_resolved_once_per_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The local zone is read per trade on a dashboard build; resolving it each time is a syscall."""
+    from trading_journal.application import reporting_time
+
+    reporting_time.detect_local_timezone.cache_clear()
+    monkeypatch.delenv("TZ", raising=False)
+    resolutions = 0
+    original_resolve = Path.resolve
+
+    def counting_resolve(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal resolutions
+        if self == Path("/etc/localtime"):
+            resolutions += 1
+        return original_resolve(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", counting_resolve)
+    for _ in range(50):
+        reporting_time.detect_local_timezone()
+    assert resolutions <= 1
