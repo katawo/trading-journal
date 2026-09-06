@@ -37,7 +37,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 .claude/hooks/block_dangerous_bash.py"
+            "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/block_dangerous_bash.py"
           }
         ]
       }
@@ -48,7 +48,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 .claude/hooks/schema_pairing_reminder.py"
+            "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/schema_pairing_reminder.py"
           }
         ]
       }
