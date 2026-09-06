@@ -289,3 +289,31 @@ class TestLivePositionIngestion:
         assert "account_login='999999'" in caplog.text
         assert "broker_server='WrongBroker-Live'" in caplog.text
         assert TOKEN not in caplog.text
+
+    def test_given_repeated_pushes_then_the_schema_is_initialized_once(
+        self, alice_environment: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """initialize() runs the whole migration sequence; it belongs once per process, not per request."""
+        initializations = 0
+        original_initialize = SQLiteJournalRepository.initialize
+
+        def counting_initialize(self) -> None:
+            nonlocal initializations
+            initializations += 1
+            original_initialize(self)
+
+        monkeypatch.setattr(SQLiteJournalRepository, "initialize", counting_initialize)
+
+        snapshot = {
+            "schema_version": 1,
+            "account_login": "123456",
+            "broker_server": "DemoBroker-Live",
+            "account_currency": "USD",
+            "snapshot_time": "2026-08-18T08:00:00+00:00",
+            "positions": [],
+        }
+
+        for _ in range(3):
+            ingest_live_positions(IngestLivePositionsRequest(snapshot=snapshot), authorization=AUTHORIZATION)
+
+        assert initializations == 1

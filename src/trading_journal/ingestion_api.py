@@ -14,6 +14,8 @@ SQLite file - the same isolation the Streamlit login gate enforces.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
+from threading import Lock
 
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
@@ -28,6 +30,32 @@ from trading_journal.infrastructure.sqlite_repository import SQLiteJournalReposi
 
 app = FastAPI(title="Trade Compass ingestion", docs_url=None, redoc_url=None)
 logger = logging.getLogger(__name__)
+
+# One repository per user for the life of the process. initialize() runs the full
+# schema-migration sequence inside a write transaction; at one live snapshot every
+# ten seconds per connected user, doing that per request is pure overhead and
+# serialises against concurrent imports. SQLAlchemy's engine pool is thread-safe,
+# so a cached repository is safe to share across FastAPI's worker threads.
+#
+# Keyed by resolved database path rather than username: production has one path per
+# user for the life of the process either way, but tests reuse the same username
+# across cases while pointing it at a fresh per-test database (see
+# tests/test_ingestion_api.py's alice_environment fixture) - keying by username would
+# silently hand a later test the previous test's cached repository.
+_repositories: dict[Path, SQLiteJournalRepository] = {}
+_repositories_lock = Lock()
+
+
+def _user_repository(username: str) -> SQLiteJournalRepository:
+    database_path = user_database_path(username)
+    with _repositories_lock:
+        repository = _repositories.get(database_path)
+        if repository is None:
+            database_path.parent.mkdir(parents=True, exist_ok=True)
+            repository = SQLiteJournalRepository(database_path)
+            repository.initialize()
+            _repositories[database_path] = repository
+        return repository
 
 
 class IngestRequest(BaseModel):
@@ -66,10 +94,7 @@ def _log_validation_rejection(*, endpoint: str, username: str, payload: dict, it
 @app.post("/ingest", response_model=ImportResult)
 def ingest(request: IngestRequest, authorization: str | None = Header(default=None)) -> ImportResult:
     username = _authenticated_username(authorization)
-    database_path = user_database_path(username)
-    database_path.parent.mkdir(parents=True, exist_ok=True)
-    repository = SQLiteJournalRepository(database_path)
-    repository.initialize()
+    repository = _user_repository(username)
     try:
         return MT5ImportService(repository).import_json_positions(request.positions, source_label=f"http:{username}")
     except ImportValidationError as error:
@@ -99,17 +124,12 @@ def ingest(request: IngestRequest, authorization: str | None = Header(default=No
         # guarantee, this endpoint can be hit concurrently - surface it as a
         # retryable conflict rather than a raw 500.
         raise HTTPException(status_code=409, detail="Conflicting concurrent import for this account, retry") from error
-    finally:
-        repository.close()
 
 
 @app.post("/ingest/live-positions")
 def ingest_live_positions(request: IngestLivePositionsRequest, authorization: str | None = Header(default=None)) -> dict[str, int]:
     username = _authenticated_username(authorization)
-    database_path = user_database_path(username)
-    database_path.parent.mkdir(parents=True, exist_ok=True)
-    repository = SQLiteJournalRepository(database_path)
-    repository.initialize()
+    repository = _user_repository(username)
     try:
         account_id = LivePositionImportService(repository).import_snapshot(request.snapshot)
         return {"account_id": account_id}
@@ -125,8 +145,6 @@ def ingest_live_positions(request: IngestLivePositionsRequest, authorization: st
         raise HTTPException(status_code=422, detail=str(error)) from error
     except (IntegrityError, OperationalError) as error:
         raise HTTPException(status_code=409, detail="Conflicting concurrent live snapshot, retry") from error
-    finally:
-        repository.close()
 
 
 @app.get("/health")
