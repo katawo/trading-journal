@@ -789,3 +789,41 @@ def test_dashboard_reports_only_the_selected_account_currency_and_trades(tmp_pat
 
     assert report.trade_count == 2
     assert report.net_pnl == "15"
+
+
+def test_a_window_that_starts_from_a_wiped_balance_reports_no_percentages(tmp_path: Path) -> None:
+    """Prior losses can wipe out funded capital; percentages of a zero baseline are undefined, not a crash."""
+    # Use a clean repository without the fixture's default positions to control prior P&L exactly.
+    repository = SQLiteJournalRepository(tmp_path / "journal.db")
+    repository.initialize()
+    repository.configure_journal(reporting_time_basis="utc")
+    repository.register_mt5_account(
+        display_name="Primary",
+        login="123456",
+        broker_server="DemoBroker-Live",
+        account_currency="USD",
+        export_file_path="",
+        opening_balance="100",
+    )
+    account = repository.find_active_mt5_account("123456", "DemoBroker-Live")
+    assert account is not None
+    # Funded capital is 100. Lose all of it before the window opens.
+    repository.upsert_mt5_positions(
+        account.id,
+        [
+            position("7001", net_pnl="-100", exit_time="2026-08-01T09:00:00+00:00"),
+            position("7002", net_pnl="-20", exit_time="2026-08-05T09:00:00+00:00"),
+        ],
+        "positions.csv",
+        "wiped-hash",
+    )
+
+    report = DashboardService(repository).build_report(
+        account_id=account.id, start_date="2026-08-05", end_date="2026-08-05"
+    )
+
+    assert report.starting_balance == "0"
+    assert report.balance_growth_percent is None
+    assert report.max_drawdown_percent is None
+    assert report.current_drawdown_percent is None
+    assert report.max_drawdown == "20"  # absolute money figures still reconcile

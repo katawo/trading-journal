@@ -185,8 +185,11 @@ class _DrawdownTracker:
         if self.balance is not None and self.peak_balance is not None:
             self.balance += pnl
             self.peak_balance = max(self.peak_balance, self.balance)
-            drawdown_percent = drawdown * Decimal("100") / self.peak_balance
-            self.max_drawdown_percent = max(self.max_drawdown_percent or Decimal("0"), drawdown_percent)
+            # A window can open from a wiped or negative baseline when prior losses
+            # exceed funded capital. A percentage of that peak is undefined, not zero.
+            if self.peak_balance > 0:
+                drawdown_percent = drawdown * Decimal("100") / self.peak_balance
+                self.max_drawdown_percent = max(self.max_drawdown_percent or Decimal("0"), drawdown_percent)
         return drawdown, drawdown_percent
 
 
@@ -355,7 +358,10 @@ class DashboardService:
         daily_max_drawdown_percent = daily_tracker.max_drawdown_percent
 
         ending_balance = None if starting_balance is None else starting_balance + pnl_total
-        balance_growth_percent = None if starting_balance is None else pnl_total * Decimal("100") / starting_balance
+        balance_growth_percent = (
+            None if starting_balance is None or starting_balance <= 0
+            else pnl_total * Decimal("100") / starting_balance
+        )
         worst_day = min(daily.values()) if daily else None
         best_day = max(daily.values()) if daily else None
         trade_pnls = [Decimal(trade.net_pnl) for trade in trades]
