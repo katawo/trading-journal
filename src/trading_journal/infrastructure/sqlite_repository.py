@@ -2271,14 +2271,20 @@ class SQLiteJournalRepository:
     ) -> None:
         """Append only genuine open/resolve transitions for current live alerts."""
         with self._sessions.begin() as session:
-            previous_rows = session.execute(
-                select(LivePositionIncident)
+            # Only the newest row per key decides whether an alert is currently
+            # open. Selecting just those keeps this off a full-history scan on a
+            # path that runs every few seconds while the Ongoing page is open.
+            newest_ids = (
+                select(func.max(LivePositionIncident.id))
                 .where(LivePositionIncident.mt5_account_id == account_id)
-                .order_by(LivePositionIncident.incident_key, LivePositionIncident.id.desc())
-            ).scalars().all()
-            latest: dict[str, LivePositionIncident] = {}
-            for row in previous_rows:
-                latest.setdefault(row.incident_key, row)
+                .group_by(LivePositionIncident.incident_key)
+            )
+            latest: dict[str, LivePositionIncident] = {
+                row.incident_key: row
+                for row in session.scalars(
+                    select(LivePositionIncident).where(LivePositionIncident.id.in_(newest_ids))
+                ).all()
+            }
             open_keys = {key for key, row in latest.items() if row.state == "opened"}
             for key, (category, position_id, detail) in active.items():
                 prior = latest.get(key)

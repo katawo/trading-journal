@@ -730,3 +730,18 @@ def test_schema_v6_upgrade_backfills_pending_member_entry_times(tmp_path) -> Non
     assert pending.first_entry_time == "2026-08-18T07:00:00+00:00"
     assert version == CURRENT_SCHEMA_VERSION
     assert len(list(tmp_path.glob(f"journal.pre-schema-v{CURRENT_SCHEMA_VERSION}-*.db.bak"))) == 1
+
+
+def test_a_recurring_incident_reopens_after_it_was_resolved(tmp_path) -> None:
+    """Only the newest row per key decides state, so a resolved alert can fire again."""
+    repository = _repository(tmp_path)
+    account = repository.get_active_mt5_account()
+    assert account is not None
+    unprotected = {"unprotected:5001": ("unprotected", "5001", "No protective stop.")}
+
+    repository.record_live_incident_transitions(account.id, unprotected, occurred_at="2026-08-18T08:00:00+00:00")
+    repository.record_live_incident_transitions(account.id, {}, occurred_at="2026-08-18T08:01:00+00:00")
+    repository.record_live_incident_transitions(account.id, unprotected, occurred_at="2026-08-18T08:02:00+00:00")
+
+    states = [item.state for item in repository.list_live_position_incidents(account.id)]
+    assert states == ["opened", "resolved", "opened"]
