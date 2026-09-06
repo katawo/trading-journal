@@ -727,7 +727,7 @@ Expected: both pass.
 - [ ] **Step 8: Commit**
 
 ```bash
-git add src/trading_journal/application/reporting_time.py src/trading_journal/application/dashboard.py src/trading_journal/infrastructure/sqlite_repository.py tests/test_reporting_time.py
+git add src/trading_journal/application/reporting_time.py src/trading_journal/infrastructure/sqlite_repository.py tests/test_reporting_time.py
 git commit -m "perf: cache the local timezone and count trades in SQL"
 ```
 
