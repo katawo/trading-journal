@@ -5,8 +5,8 @@ against the real code (SQLite 3.46.1, `.venv`), using synthetic accounts built f
 `tests/test_risk_baseline_dashboard.py` fixture helpers. This document is the spec for
 `docs/superpowers/plans/2026-09-06-perf-and-correctness-fixes.md`.
 
-It supersedes `docs/mt5-import-scale-audit.md`, which is stale — see "Corrections to
-earlier notes" below.
+It supersedes `docs/mt5-import-scale-audit.md`, which was stale and has since been removed
+(Task 10) — see "Corrections to earlier notes" below.
 
 ## Baseline
 
@@ -52,6 +52,12 @@ Measured, uncached, on the Bearings → Monitor page:
 computing all of it, so narrowing "Last 90 days" saves nothing. `window` is a user-facing
 slider (10–100), so every slider move recomputes.
 
+**Resolved (Tasks 2–3).** `_SampleAccumulator`/`_sample_totals` replace the O(i) slice and
+the four-times-over prefix rescan with one accumulating pass (`framework.py:422-476`).
+Measured at 2,000 reviewed: `rolling_score_trend` **9.47s → 0.76s** (~12×). Ordinary
+`pillar_scores()` is essentially unchanged (see P2's status line) — it was never the slow
+path.
+
 ### P2 — a dead dictionary accounts for a third of P1
 
 `framework.py:1436` builds `pnl_by_trade = {item.trade_id: Decimal(item.net_pnl) for item
@@ -61,6 +67,13 @@ sits at `framework.py:987`.
 
 Verified by stubbing the dict to `{}` and re-running the 2,000-reviewed case:
 **9.47s → 3.15s.** One line, ~3×.
+
+**Resolved (Task 2).** The dead `pnl_by_trade` construction at both call sites is gone;
+`_period_components` no longer takes it. Folded into Task 3's one-pass rewrite, whose
+combined P1+P2 win is the 9.47s → 0.76s figure above. `pillar_scores()` — the non-trend,
+non-quadratic call — measured **0.54s → 0.52s**: no meaningful change, because it's
+dominated by the linear `_account_trade_scores` database load, not by the prefix rescans
+either task removed.
 
 ### P3 — the 15s analytics caches are invalidated faster than they fill
 
@@ -84,6 +97,10 @@ row ever recorded for the account, on every Ongoing render, only to keep the lat
 per `incident_key`. The table grows monotonically (one row per open, one per resolve).
 The supporting index `(mt5_account_id, incident_key, id)` already exists.
 
+**Resolved (Task 4).** `record_live_incident_transitions` now selects only the newest row
+per `incident_key` via a `max(id)` grouped subquery (`sqlite_repository.py:2277-2287`),
+instead of loading the account's full incident history.
+
 ### P5 — re-import UPDATEs every unchanged row
 
 `sqlite_repository.py:4268` — `source_updated_at: now` sits in the always-applied `values`
@@ -98,6 +115,13 @@ by the auto-sync hash guard and only 0.25s at 5,000 rows, so this is a reporting
 - `sqlite_repository.py:3998` — `list_trades()` loads every trade across **every** account with no filter and has zero callers outside tests. Dead code, and a cross-account leak if anyone ever used it.
 - `reporting_time.py:58` — `detect_local_timezone()` runs `Path("/etc/localtime").resolve()` on every call with no cache. On "Local Timezone" basis that is roughly three `realpath` syscalls per trade per dashboard build.
 
+**Resolved (Task 5).** `count_trades()` is now `select(func.count()).select_from(Trade)`
+(`sqlite_repository.py:4400-4402`) instead of full ORM hydration. `detect_local_timezone()`
+is `@cache`-decorated (`reporting_time.py`), resolved once per process. `list_trades()` is
+kept, not deleted — it has no production caller but is the only coverage of the
+`risk_source` labelling — and is now documented as test-only at its definition
+(`sqlite_repository.py:4004-4011`).
+
 ### P7 — the ingestion API re-migrates the schema on every request
 
 `ingestion_api.py:71` and `:111` construct a repository and call `initialize()` per HTTP
@@ -105,6 +129,12 @@ request: `_require_clean_framework_schema`, `create_all`, ~30 `PRAGMA table_info
 probes, index and trigger creation, and an `UPDATE account_risk_policies …`, all inside a
 write transaction. Measured **8.8 ms per request** on a 2,000-trade database, against one
 live-snapshot POST every 10s per connected user.
+
+**Resolved (Task 6).** `_user_repository()` now caches one initialized
+`SQLiteJournalRepository` per resolved database path for the life of the process
+(`ingestion_api.py:44-56`); `initialize()` runs once per user, not per request. See the new
+operating-note caveat in `docs/multiuser_web_deploy.md` for the consequence of that cache
+when a user's database file is replaced externally.
 
 ### P8 — the MQL5 exporter is O(n²)
 
@@ -163,12 +193,23 @@ Reproduced:
 date range (`app.py:1346`). The parameters exist and the test suite exercises them, so
 this fires the day a date filter is wired into the UI.
 
+**Resolved (Task 7).** `_DrawdownTracker.advance` now guards on `self.peak_balance > 0`
+before dividing (`dashboard.py:184-190`), leaving `drawdown_percent` undefined instead of
+raising or reporting nonsense when a window opens from a wiped or negative baseline.
+
 ### C3 — misleading import counts
 
 `ImportResult.skipped_count` is hardcoded `0` (`sqlite_repository.py:4354`) and every
 unchanged row counts as `updated`, so the toast at `app.py:1414` tells a user "5,000
 updated" when a single new trade arrived. Confirmed by the repo's own passing test
 `test_reimport_refreshes_execution_data`.
+
+**Resolved (Task 8).** Unchanged rows are now counted as `skipped`, not `updated`
+(`sqlite_repository.py:4376-4380`); the new test
+`test_reimporting_an_unchanged_position_reports_it_as_skipped` pins
+`(created, updated, skipped) == (0, 0, 1)` for a byte-identical re-import, while the
+existing `test_reimport_refreshes_execution_data` (a re-import that actually changes
+`net_pnl`) still reports `updated_count == 1` unchanged.
 
 ### C4 — hosted "Local Timezone" is the server's zone, not the viewer's
 
@@ -177,6 +218,10 @@ page (`ongoing.py:417`) and the Monitor page (`presentation/framework.py:2048`),
 `DashboardService` never passes `local_zone` (`dashboard.py:321`, `:582`). In the Docker
 deployment (container clock = UTC) the Dashboard's local calendar therefore disagrees with
 the other pages' for every user outside UTC.
+
+**Resolved (Task 9).** `app.py`'s cached Dashboard builder now threads the viewer's
+`browser_timezone()` result through to `DashboardService(repo, local_zone=local_zone)`
+(`app.py:1338-1350`), the same zone the Ongoing and Monitor pages already used.
 
 ### C5 — CLAUDE.md documents an audit trail the code does not keep
 
@@ -188,12 +233,13 @@ passing tests (`test_correction_overwrites_the_single_current_assessment`,
 `test_repeated_manual_assessment_save_keeps_one_row`). Supersession fires only when
 logical-trade membership changes.
 
-**Resolved:** the single-current-revision design is intentional. The document is wrong and
-is what changes.
+**Resolved (Task 10, Step 1).** The single-current-revision design is intentional; CLAUDE.md's
+"Domain conventions to preserve" now describes it accurately (one active `PostTradeAssessment`
+row, superseded only on regrouping) instead of the non-existent `PostTradeAssessmentRevision`.
 
 ## Corrections to earlier notes
 
-`docs/mt5-import-scale-audit.md` is stale and should be retired:
+`docs/mt5-import-scale-audit.md` was stale and has been removed (Task 10):
 
 - Its hotspot #1 (one `SELECT` per row in the upsert) **has been fixed** — the bulk pre-fetch is at `sqlite_repository.py:4219-4231`.
 - Its line references (`2826-2911`, `2679-2698`) point at code that has since moved.

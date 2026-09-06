@@ -308,8 +308,10 @@ git commit -m "perf(framework): drop the unused pnl_by_trade map from pillar sco
 `_pillar_scores_from_sample` calls it three times, and `rolling_score_trend` calls that
 once per reviewed trade. Everything past `sample = reviewed[-window:]` is bounded by
 `window`, so replacing the rescans with a single accumulating pass makes the whole trend
-linear — and incidentally makes ordinary `pillar_scores()` three times cheaper, because the
-three pillars now share one pass instead of taking one each.
+linear. It does not meaningfully change ordinary `pillar_scores()`: measured at 5,000
+trades / 2,000 reviewed, `pillar_scores()` went 0.54s → 0.52s, because that call is
+dominated by the linear `_account_trade_scores` database load, not by the three prefix
+rescans this task removes.
 
 **Files:**
 - Modify: `src/trading_journal/application/framework.py:37`, `:466-476`, `:791-817`, `:1411-1441`

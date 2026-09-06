@@ -344,3 +344,11 @@ Only the items with no equivalent structured data anywhere in the app stay self-
 The post-trade MT5 bridge supplies completed positions only. Monitoring replays logical-trade entries and logical final closes in UTC order through the account's active policy. The server UTC offset captured with that active policy defines its reporting calendar across the recalculation. A logical trade contributes once, at its final member close, while a Shutdown candidate is frozen at its earliest member entry. Prior policy timestamps and attached policy IDs remain audit evidence; they do not select the current analytical policy.
 
 The bridge can retrospectively monitor realized R, daily/weekly limits, drawdown, loss streak, exported entry-stop information, and account-balance snapshots. A separate live snapshot feed shows entry-to-current-stop open risk and unprotected positions. Market-price movement alone does not change that risk; changing the stop or position volume does, and a breakeven or profit-locking stop contributes zero risk. This feed is temporary operational state: it never becomes post-trade evidence, historical correlation proof, intratrade stop-adjustment history, mental-state evidence, planned intent, or a real original stop for a profitable no-SL export. Those limitations are why the journal combines automatic evidence with a deliberate human post-trade assessment.
+
+**A note on UTC and Local basis.** The MT5 exporter stamps every row with the broker's
+UTC offset *at export time*, not the offset that applied when each trade closed. For a
+broker that observes DST, trades that closed on the other side of a clock change are
+stored up to an hour away from their true UTC time. Server Timezone basis — the default —
+is unaffected, because it re-applies the same stored offset and recovers the original
+server wall clock. On UTC or Local basis, a trade that closed within an hour of midnight
+may be attributed to the neighbouring day.

@@ -7,8 +7,8 @@ Run `git diff` (staged and unstaged) and review the changes specifically against
 - MT5 stays read-only: no new order/write path, no stored MT5 password.
 - R-multiples only from known risk (recorded SL, real-loss estimate, or opt-in captured pre-trade balance) — never inferred from outcome, never silently defaulted.
 - Hard-rule Clear/Fail results aren't recomputed retroactively when rules change.
-- Assessment corrections create a new revision rather than mutating the original row.
-- Daily P&L/balance/drawdown/risk-limit monitoring use raw positions, never the mutable logical-trade grouping.
+- Assessment corrections overwrite the single active `PostTradeAssessment` row; only regrouping a logical trade's membership supersedes an old assessment (stamping `superseded_at`/`superseded_reason`) rather than versioning every edit.
+- Daily P&L/balance/drawdown/risk-limit monitoring use mutable logical trades in final-close order, never raw positions.
 - No cross-account currency aggregation or conversion.
 - Desktop stays loopback-only.
 - Any schema_version change updates both the `.mq5` exporter and `domain/models.py`.

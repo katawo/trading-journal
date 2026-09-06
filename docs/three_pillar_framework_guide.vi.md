@@ -342,3 +342,11 @@ Chỉ những mục không có dữ liệu tương ứng nào trong ứng dụng
 Cầu nối MT5 sau giao dịch hiện tại chỉ cung cấp vị thế đã đóng. Monitoring phát lại thời điểm lưu policy, entry của logical trade và lần đóng cuối của logical trade theo thứ tự UTC. Policy có hiệu lực tại thời điểm được lưu; độ lệch UTC của server được chụp cùng policy xác định ngày báo cáo tại thời điểm chuyển đổi. Giao dịch đóng trước policy đầu tiên của tài khoản vẫn xuất hiện trên Dashboard và trong bằng chứng audit từng giao dịch, nhưng không tham gia monitoring giới hạn theo thời gian hoặc tạo ứng viên Shutdown. Mỗi logical trade chỉ đóng góp một lần tại lần đóng cuối của member, còn ứng viên Shutdown được chốt tại entry sớm nhất của member.
 
 Cầu nối có thể theo dõi hồi cứu R thực hiện, giới hạn ngày/tuần, drawdown, chuỗi lỗ, thông tin entry-stop đã xuất và ảnh chụp số dư tài khoản. Một luồng snapshot trực tiếp riêng hiển thị rủi ro mở hiện tại dựa trên stop và các vị thế không có bảo vệ, nhưng đó chỉ là trạng thái vận hành tạm thời: nó không trở thành bằng chứng sau giao dịch, bằng chứng tương quan lịch sử, lịch sử chỉnh stop trong giao dịch, bằng chứng trạng thái tinh thần, ý định kế hoạch hay stop ban đầu thực cho bản xuất có lãi không-SL. Những giới hạn này là lý do nhật ký kết hợp bằng chứng tự động với đánh giá sau giao dịch có chủ đích của con người.
+
+**Lưu ý về cơ sở UTC và Múi giờ cục bộ.** Bộ xuất MT5 ghi mỗi dòng bằng độ lệch UTC của
+broker *tại thời điểm xuất*, không phải độ lệch có hiệu lực tại thời điểm giao dịch đó
+đóng. Với broker có áp dụng giờ mùa hè (DST), các giao dịch đóng ở phía bên kia của một
+lần đổi giờ được lưu lệch tới một giờ so với UTC thực. Cơ sở Múi giờ máy chủ — mặc định —
+không bị ảnh hưởng, vì nó áp lại đúng độ lệch đã lưu và khôi phục đúng giờ tường (wall
+clock) gốc của server. Ở cơ sở UTC hoặc Múi giờ cục bộ, một giao dịch đóng trong vòng một
+giờ quanh nửa đêm có thể bị gán sang ngày liền kề.
