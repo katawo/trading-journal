@@ -366,7 +366,9 @@ def test_latest_ingestion_import_ignores_local_file_runs_and_returns_the_newest(
     assert first is not None
     assert (first[1], first[2]) == (1, 0)
 
+    # Byte-identical re-push: nothing about the position changed, so it's
+    # recorded as skipped rather than updated.
     MT5ImportService(repository).import_json_positions([ingestion_row("9101")], source_label="http:alice")
     second = repository.latest_ingestion_import(account.id)
     assert second is not None
-    assert (second[1], second[2]) == (0, 1)
+    assert (second[1], second[2]) == (0, 0)

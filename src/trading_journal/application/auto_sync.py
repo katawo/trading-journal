@@ -23,6 +23,7 @@ class MT5AutoSyncResult:
     message: str | None = None
     created_count: int = 0
     updated_count: int = 0
+    skipped_count: int = 0
     export_updated_at: datetime | None = None
     live_status: str | None = None
     live_message: str | None = None
@@ -107,6 +108,7 @@ class MT5AutoSyncService:
                     "imported",
                     created_count=imported.created_count,
                     updated_count=imported.updated_count,
+                    skipped_count=imported.skipped_count,
                     export_updated_at=export_updated_at,
                     live_status=live_status,
                     live_message=live_message,

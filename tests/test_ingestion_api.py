@@ -143,7 +143,9 @@ class TestCompletedPositionIngestion:
         second = ingest_positions(position_row())
 
         assert (first.created_count, first.updated_count) == (1, 0)
-        assert (second.created_count, second.updated_count) == (0, 1)
+        # Byte-identical re-push: nothing about the position changed, so it's
+        # reported as skipped rather than updated (still idempotent: no duplicate).
+        assert (second.created_count, second.updated_count, second.skipped_count) == (0, 0, 1)
 
     @pytest.mark.parametrize(
         "missing_field",

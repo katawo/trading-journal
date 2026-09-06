@@ -387,6 +387,23 @@ def test_reimport_refreshes_execution_data(repository: SQLiteJournalRepository, 
     assert trade.result_r is None
 
 
+def test_reimporting_an_unchanged_position_reports_it_as_skipped(
+    repository: SQLiteJournalRepository, tmp_path: Path
+) -> None:
+    """The EA re-exports the whole history on every append; unchanged rows are not updates."""
+    export_path = tmp_path / "positions.csv"
+    write_export(export_path, net_pnl="98.00")
+    service = MT5ImportService(repository)
+    first = service.import_csv(export_path)
+    assert (first.created_count, first.updated_count, first.skipped_count) == (1, 0, 0)
+
+    # Byte-identical re-export: nothing about the position changed.
+    write_export(export_path, net_pnl="98.00")
+    second = service.import_csv(export_path)
+
+    assert (second.created_count, second.updated_count, second.skipped_count) == (0, 0, 1)
+
+
 def test_imports_separate_closed_records_from_one_netting_reversal(repository: SQLiteJournalRepository) -> None:
     first = _row_dict_for_json(position_id="9001", direction="long")
     second = _row_dict_for_json(

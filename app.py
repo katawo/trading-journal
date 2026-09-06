@@ -1416,7 +1416,9 @@ def _render_sync_results(results: list[MT5AutoSyncResult], *, notice_key: str | 
     st.session_state["auto_sync_notice_key"] = notice_key
     created = sum(item.created_count for item in imported)
     updated = sum(item.updated_count for item in imported)
-    st.session_state["auto_sync_notice"] = f"Auto-imported {created} created and {updated} updated MT5 position(s)."
+    skipped = sum(item.skipped_count for item in imported)
+    unchanged = f", {skipped} unchanged" if skipped else ""
+    st.session_state["auto_sync_notice"] = f"Auto-imported {created} created and {updated} updated MT5 position(s){unchanged}."
     return True
 
 
@@ -1495,7 +1497,9 @@ def render_manual_sync_button(repo: SQLiteJournalRepository, *, key: str) -> Non
     if imported:
         created = sum(item.created_count for item in imported)
         updated = sum(item.updated_count for item in imported)
-        st.session_state["auto_sync_notice"] = f"Manual sync imported {created} created and {updated} updated MT5 position(s)."
+        skipped = sum(item.skipped_count for item in imported)
+        unchanged = f", {skipped} unchanged" if skipped else ""
+        st.session_state["auto_sync_notice"] = f"Manual sync imported {created} created and {updated} updated MT5 position(s){unchanged}."
         st.rerun()
     elif not failures and waiting:
         st.info(tr("MT5 sync is waiting: ") + "; ".join(item.message or item.account_name for item in waiting))

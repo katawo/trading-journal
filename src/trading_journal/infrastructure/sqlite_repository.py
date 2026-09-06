@@ -4207,6 +4207,7 @@ class SQLiteJournalRepository:
     ) -> ImportResult:
         created = 0
         updated = 0
+        skipped = 0
         now = datetime.now(timezone.utc).isoformat()
         with self._sessions.begin() as session:
             account = session.get(MT5Account, account_id)
@@ -4346,12 +4347,20 @@ class SQLiteJournalRepository:
                     existing_trades_by_position_id[position.position_id] = new_trade
                     created += 1
                 else:
-                    for field, value in values.items():
-                        setattr(trade, field, value)
+                    # source_updated_at is our own bookkeeping stamp, not exported
+                    # evidence: comparing against it would mark every row changed on
+                    # every safety re-export and drown a real update in the count.
+                    evidence = {field: value for field, value in values.items() if field != "source_updated_at"}
+                    changed = any(getattr(trade, field) != value for field, value in evidence.items())
+                    if changed:
+                        for field, value in values.items():
+                            setattr(trade, field, value)
+                        updated += 1
+                    else:
+                        skipped += 1
                     pending_member = pending_members_by_position_id.get(position.position_id)
                     if pending_member is None and trade.auto_risk_policy_id is None and active_policy is not None:
                         trade.auto_risk_policy_id = active_policy.id
-                    updated += 1
             session.flush()
             for logical_trade_id in pending_trade_ids:
                 self._finalize_pending_logical_trade_if_complete(session, logical_trade_id)
@@ -4364,11 +4373,11 @@ class SQLiteJournalRepository:
                 status="succeeded",
                 created_count=created,
                 updated_count=updated,
-                skipped_count=0,
+                skipped_count=skipped,
                 error_count=0,
                 created_at=now,
             ))
-        return ImportResult(created_count=created, updated_count=updated)
+        return ImportResult(created_count=created, updated_count=updated, skipped_count=skipped)
 
     def get_trade_by_mt5_position(self, login: str, broker_server: str, position_id: str) -> ImportedTradeView | None:
         with self._sessions() as session:
