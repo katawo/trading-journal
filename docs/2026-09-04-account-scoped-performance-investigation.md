@@ -111,7 +111,7 @@ The SQLite/WAL metadata token is passed as a cache argument. A committed databas
 | Navigation precomputation | Every full Streamlit rerun | Cache hit is cheap; miss blocks navigation construction | Active account only | Low | Retain single snapshot; consider fragments only if navigation architecture changes |
 | Full account history scoring | Snapshot or coaching cache miss | Loads/scans complete closed-trade history | One account | Scale risk | Add SQL-side/windowed reads after realistic large-history benchmarks |
 | Dashboard report | Dashboard render | Separately cached; still uses full-history service paths on miss | One account | Scale risk | Preserve separate cache, then optimize source queries based on profiling |
-| MT5 import/upsert | Changed export file | Existing scale audit identifies full-file parsing and row-wise upsert | Per imported account | Separate high-scale risk | See `docs/mt5-import-scale-audit.md` |
+| MT5 import/upsert | Changed export file | Row-wise upsert since bulk pre-fetched (`sqlite_repository.py:4219-4231`); measured 1.78s for a 5,000-position import | Per imported account | Separate high-scale risk | See `docs/perf-and-correctness-audit-2026-09.md` |
 
 ## Performance measurements
 

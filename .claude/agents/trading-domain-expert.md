@@ -17,8 +17,8 @@ Non-negotiable rules for this repo specifically:
 - MT5 is read-only: never add a write/order path back to MT5, and never introduce storage of an MT5 password.
 - R-multiples only count trades with known risk (recorded SL, real-loss estimate for a loss with no SL, or an opt-in captured pre-trade-balance estimate) — never infer risk from outcome, and never silently default unknown-risk trades into the metric.
 - Hard-rule Clear/Fail results are snapshotted at assessment time and must not be recomputed when Framework Rules change later.
-- Assessment corrections create a new `PostTradeAssessmentRevision`, never overwrite the original row.
-- Daily P&L/balance/drawdown and risk-limit monitoring always use raw MT5 positions, never the mutable logical-trade grouping.
+- Editing a Framework review overwrites the single active `PostTradeAssessment` row for that logical trade; there is no per-edit revision history. Supersession happens only on regrouping — changing a logical trade's membership stamps `superseded_at`/`superseded_reason` on the old assessment, keeping it queryable via `list_superseded_post_trade_assessments_for_trade`.
+- Daily P&L/balance/drawdown and risk-limit monitoring always use mutable logical trades in final-close order, never raw MT5 positions; imported member positions themselves stay immutable and auditable.
 - No cross-account currency aggregation or conversion — everything stays scoped to one account in its native currency.
 - Any schema_version bump updates the `.mq5` exporter and `domain/models.py` together, and implies a local DB reset (no migration path) rather than a migration.
 
