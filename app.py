@@ -1539,9 +1539,15 @@ def monitor_mt5_exports(repo: SQLiteJournalRepository) -> None:
 
 
 def render_auto_sync_notice() -> None:
-    notice = st.session_state.pop("auto_sync_notice", None)
-    if notice:
-        st.success(notice)
+    # Keep a permanent root slot ahead of auto-refreshing fragments. If the
+    # transient notice is written directly to the page, every appearance and
+    # disappearance shifts the fragments' delta paths. Streamlit includes that
+    # path in a fragment's identity, so the old scheduled fragment can remain
+    # mounted beside the new one and duplicate the live workspace.
+    with st.container(key="auto-sync-notice-slot"):
+        notice = st.session_state.pop("auto_sync_notice", None)
+        if notice:
+            st.success(notice)
 
 
 def render_sync_failures(results: list[MT5AutoSyncResult], *, prefix: str) -> None:

@@ -456,6 +456,37 @@ def test_ongoing_page_renders_its_auto_refreshing_workspace(monkeypatch, tmp_pat
     assert any("Add and select an MT5 account" in item.value for item in app.info)
 
 
+def test_ongoing_page_keeps_one_live_workspace_while_auto_sync_notice_clears(monkeypatch, tmp_path) -> None:
+    database_path = tmp_path / "journal.db"
+    repository = SQLiteJournalRepository(database_path)
+    repository.initialize()
+    repository.register_mt5_account(
+        display_name="Primary",
+        login="123456",
+        broker_server="DemoBroker-Live",
+        account_currency="USD",
+        export_file_path="",
+    )
+    monkeypatch.setenv("TRADING_JOURNAL_DB", str(database_path))
+
+    app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
+    app.switch_page("app_pages/ongoing.py").run()
+    app.session_state["auto_sync_notice"] = "Live snapshot imported."
+    app.run()
+
+    assert not app.exception
+    assert [item.value for item in app.success] == ["Live snapshot imported."]
+    assert sum(item.value == "#### Exposure snapshot" for item in app.markdown) == 1
+    assert sum(item.value == "#### Current logical trades" for item in app.markdown) == 1
+
+    app.run()
+
+    assert not app.exception
+    assert not app.success
+    assert sum(item.value == "#### Exposure snapshot" for item in app.markdown) == 1
+    assert sum(item.value == "#### Current logical trades" for item in app.markdown) == 1
+
+
 def test_ongoing_page_does_not_claim_positions_are_flat_before_the_first_snapshot(monkeypatch, tmp_path) -> None:
     database_path = tmp_path / "journal.db"
     repository = SQLiteJournalRepository(database_path)
