@@ -370,9 +370,11 @@ class DashboardService:
         )
         worst_day = min(daily.values()) if daily else None
         best_day = max(daily.values()) if daily else None
-        trade_pnls = [Decimal(trade.net_pnl) for trade in trades]
-        best_trade = max(trade_pnls) if trade_pnls else None
-        worst_trade = min(trade_pnls) if trade_pnls else None
+        # These values sit inside the winning and losing outcome groups. Keep
+        # them scoped to those same populations so an all-loss record never
+        # presents its smallest loss as a "best" winning trade (and vice versa).
+        best_trade = max(winning_pnls) if winning_pnls else None
+        worst_trade = min(losing_pnls) if losing_pnls else None
         average_day = pnl_total / len(daily) if daily else None
         profitable_day_count = sum(value > 0 for value in daily.values())
         profitable_day_rate = Decimal(profitable_day_count * 100) / Decimal(len(daily)) if daily else Decimal("0")

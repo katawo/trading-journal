@@ -2496,15 +2496,20 @@ def test_dashboard_renders_graphics_for_imported_trades(monkeypatch, tmp_path):
     assert any("Pillars without a scored sample yet show as 0" in item.value for item in app.caption)
     assert not any(item.label == "Breakdown view" for item in app.segmented_control)
     assert 'class="dashboard-stat-section-head">Direction edge<' in stat_markup
-    assert 'class="dashboard-stat-column-head">Edge quality<' in stat_markup
+    assert 'class="dashboard-stat-column-head">Edge summary<' in stat_markup
+    assert 'class="dashboard-stat-column-head">Outcome distribution<' in stat_markup
+    assert 'class="dashboard-stat-column-head">Winning trades<' in stat_markup
+    assert 'class="dashboard-stat-column-head">Losing trades<' in stat_markup
     assert any(
-        '<div class="dashboard-stat-label">Win rate</div>' in item.value
+        '<div class="dashboard-stat-label">Wins</div>' in item.value
         for item in app.markdown
     )
     assert any("dashboard-stat-inline-value" in item.value for item in app.markdown)
     outcome_markup = "\n".join(item.value for item in app.markdown)
-    assert '<div class="dashboard-stat-label">Loss rate</div>' in outcome_markup
-    assert '<div class="dashboard-stat-label">Breakeven rate</div>' in outcome_markup
+    assert '<div class="dashboard-stat-label">Losses</div>' in outcome_markup
+    assert '<div class="dashboard-stat-label">Breakeven</div>' in outcome_markup
+    assert '<div class="dashboard-stat-label">Best trade</div>' in outcome_markup
+    assert '<div class="dashboard-stat-label">Worst trade</div>' in outcome_markup
     assert '<div class="dashboard-stat-label">Win rate (excl. breakeven)</div>' not in outcome_markup
     # AppTest does not expose popover triggers, but it does retain their content.
     assert any("There are no breakeven trades, so both rates are identical." in item.value for item in app.caption)

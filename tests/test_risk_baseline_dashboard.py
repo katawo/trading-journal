@@ -614,6 +614,8 @@ def test_dashboard_excludes_breakeven_trades_from_win_and_loss_aggregates(tmp_pa
     # Averages divide by the same two-win / two-loss populations the counts report.
     assert report.average_win == "10.2505"
     assert report.average_loss == "-2.7505"
+    assert report.best_trade == "20"
+    assert report.worst_trade == "-5"
 
     repository.configure_journal(reporting_time_basis="utc", breakeven_threshold_percent=0)
     exact_zero = DashboardService(repository).build_report()
@@ -622,6 +624,19 @@ def test_dashboard_excludes_breakeven_trades_from_win_and_loss_aggregates(tmp_pa
     assert exact_zero.gross_profit == "21.001"
     assert exact_zero.gross_loss == "6.001"
     assert exact_zero.breakeven_pnl == "0"
+
+
+def test_dashboard_best_and_worst_trade_follow_win_and_loss_buckets(tmp_path: Path) -> None:
+    repository = configured_repository(tmp_path, standard_risk_percent="100")
+    repository.configure_journal(reporting_time_basis="utc", breakeven_threshold_percent=100)
+
+    report = DashboardService(repository).build_report()
+
+    # Both outcomes are inside the configured breakeven band, so neither the
+    # winning nor losing group should borrow an extreme from another bucket.
+    assert (report.win_count, report.loss_count, report.breakeven_count) == (0, 0, 2)
+    assert report.best_trade is None
+    assert report.worst_trade is None
 
 
 @pytest.mark.parametrize("threshold", [0, 5, 10, 60])

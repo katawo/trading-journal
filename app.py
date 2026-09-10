@@ -248,8 +248,13 @@ def _win_rate_popover_details(
     return shown, comparison
 
 
-def _render_outcome_rates(report: DashboardReport, loss_rate: Decimal, breakeven_rate: Decimal) -> None:
-    """Keep one visible win rate and place the alternate denominator on demand."""
+def _render_outcome_distribution(
+    report: DashboardReport,
+    loss_rate: Decimal,
+    breakeven_rate: Decimal,
+    currency: str,
+) -> None:
+    """Pair each outcome count with its all-trade rate in one compact list."""
 
     shown_detail, comparison_detail = _win_rate_popover_details(
         win_count=report.win_count,
@@ -257,7 +262,7 @@ def _render_outcome_rates(report: DashboardReport, loss_rate: Decimal, breakeven
         breakeven_count=report.breakeven_count,
     )
     win_row = st.container(
-        key="dashboard-win-rate-row",
+        key="dashboard-win-outcome-row",
         horizontal=True,
         vertical_alignment="center",
         gap="small",
@@ -270,7 +275,7 @@ def _render_outcome_rates(report: DashboardReport, loss_rate: Decimal, breakeven
         width="stretch",
     )
     label.markdown(
-        f'<div class="dashboard-stat-label">{escape(tr("Win rate"))}</div>',
+        f'<div class="dashboard-stat-label">{escape(tr("Wins"))}</div>',
         unsafe_allow_html=True,
     )
     with label.popover(
@@ -284,14 +289,27 @@ def _render_outcome_rates(report: DashboardReport, loss_rate: Decimal, breakeven
         st.caption(shown_detail)
         st.caption(comparison_detail)
     win_row.markdown(
-        '<div class="dashboard-stat-value dashboard-stat-inline-value dashboard-stat-tone-info">'
-        f'{escape(format_percent(report.win_rate))}</div>',
+        '<div class="dashboard-stat-value dashboard-stat-inline-value dashboard-stat-tone-positive">'
+        f'{escape(format_count(report.win_count))} · {escape(format_percent(report.win_rate))}</div>',
         unsafe_allow_html=True,
     )
     _render_stat_grid(
         [
-            (tr("Loss rate"), format_percent(loss_rate), "negative"),
-            (tr("Breakeven rate"), format_percent(breakeven_rate), "neutral"),
+            (
+                tr("Losses"),
+                f"{format_count(report.loss_count)} · {format_percent(loss_rate)}",
+                "negative",
+            ),
+            (
+                tr("Breakeven"),
+                f"{format_count(report.breakeven_count)} · {format_percent(breakeven_rate)}",
+                "neutral",
+            ),
+            (
+                tr("Breakeven P&L"),
+                format_currency(report.breakeven_pnl, currency),
+                _signed_metric_tone(report.breakeven_pnl),
+            ),
         ],
         class_name="dashboard-stat-list dashboard-outcome-rate-rest",
     )
@@ -679,40 +697,33 @@ def _render_direction_matrix(report: DashboardReport, currency: str) -> None:
 
 
 def _render_dashboard_statistics(report: DashboardReport, currency: str) -> None:
-    """Render one dense outcome surface instead of stacked statistic groups."""
+    """Render edge, distribution, and mirrored win/loss outcome summaries."""
     with st.container(border=False):
         st.markdown(f"#### {tr('Trade outcomes')}")
         st.caption(tr("Outcome statistics use the all-time closed logical-trade record."))
+        loss_rate = Decimal(report.loss_count * 100) / Decimal(report.trade_count)
+        breakeven_rate = Decimal(report.breakeven_count * 100) / Decimal(report.trade_count)
+
         outcome_columns = st.container(key="dashboard-outcome-columns")
-        outcome, profit, loss = outcome_columns.columns(3, gap="medium")
-        with outcome:
-            st.markdown(f'<div class="dashboard-stat-column-head">{tr("Edge quality")}</div>', unsafe_allow_html=True)
-            loss_rate = Decimal(report.loss_count * 100) / Decimal(report.trade_count)
-            breakeven_rate = Decimal(report.breakeven_count * 100) / Decimal(report.trade_count)
-            # On a typical account this is a rounding error, so it only earns a
-            # slot once breakeven trades actually hold P&L back from the gross
-            # totals - which is exactly when the columns would not add up.
-            breakeven_rows = [] if Decimal(report.breakeven_pnl) == 0 else [(
-                tr("Breakeven P&L"),
-                format_currency(report.breakeven_pnl, currency),
-                _signed_metric_tone(report.breakeven_pnl),
-            )]
-            # Keep one canonical visible rate. The less common wins/(wins+losses)
-            # denominator remains available beside it without competing in the list.
-            _render_outcome_rates(report, loss_rate, breakeven_rate)
+        edge, distribution, winning, losing = outcome_columns.columns(4, gap="medium")
+        with edge:
+            st.markdown(
+                f'<div class="dashboard-stat-column-head">{escape(tr("Edge summary"))}</div>',
+                unsafe_allow_html=True,
+            )
             _render_stat_grid([
-                (tr("Payoff ratio"), "—" if report.payoff_ratio is None else format_number(report.payoff_ratio, 2), "info"),
+                (
+                    tr("Expectancy"),
+                    _expectancy_value(report, currency),
+                    _signed_metric_tone(report.expectancy),
+                ),
                 (
                     tr("Profit factor"),
                     _empty_outcome_label(report.breakeven_count, wins=False) if report.profit_factor is None
                     else format_number(report.profit_factor, 2),
                     _profit_factor_metric_tone(report.profit_factor),
                 ),
-                (
-                    tr("Expectancy"),
-                    _expectancy_value(report, currency),
-                    _signed_metric_tone(report.expectancy),
-                ),
+                (tr("Payoff ratio"), "—" if report.payoff_ratio is None else format_number(report.payoff_ratio, 2), "info"),
             ], class_name="dashboard-stat-list")
             # R is available for every trade or for none, because the divisor
             # is the account's funded capital and standard-risk percent rather
@@ -724,10 +735,22 @@ def _render_dashboard_statistics(report: DashboardReport, currency: str) -> None
                 format_percent(Decimal(report.r_trade_count * 100) / Decimal(report.trade_count)),
                 _r_coverage_metric_tone(report.r_trade_count, report.trade_count),
             )]
-            if breakeven_rows or coverage_rows:
-                _render_stat_grid([*breakeven_rows, *coverage_rows], class_name="dashboard-stat-list")
-        with profit:
-            st.markdown(f'<div class="dashboard-stat-column-head">{tr("Profit")}</div>', unsafe_allow_html=True)
+            if coverage_rows:
+                _render_stat_grid(coverage_rows, class_name="dashboard-stat-list")
+        with distribution:
+            st.markdown(
+                f'<div class="dashboard-stat-column-head">{escape(tr("Outcome distribution"))}</div>',
+                unsafe_allow_html=True,
+            )
+            # Keep one canonical visible rate. The less common wins/(wins+losses)
+            # denominator remains available from the help control beside Wins.
+            _render_outcome_distribution(report, loss_rate, breakeven_rate, currency)
+
+        with winning:
+            st.markdown(
+                f'<div class="dashboard-stat-column-head">{escape(tr("Winning trades"))}</div>',
+                unsafe_allow_html=True,
+            )
             _render_stat_grid([
                 (tr("Gross profit"), format_currency(report.gross_profit, currency, signed=False), _signed_metric_tone(report.gross_profit)),
                 (
@@ -737,18 +760,16 @@ def _render_dashboard_statistics(report: DashboardReport, currency: str) -> None
                     "neutral" if report.average_win is None else "positive",
                 ),
                 (
-                    tr("Wins"),
-                    format_count(report.win_count),
-                    _presence_metric_tone(report.win_count, "positive"),
-                ),
-                (
                     tr("Best trade"),
                     "—" if report.best_trade is None else format_currency(report.best_trade, currency),
                     _signed_metric_tone(report.best_trade),
                 ),
             ], class_name="dashboard-stat-list")
-        with loss:
-            st.markdown(f'<div class="dashboard-stat-column-head">{tr("Loss")}</div>', unsafe_allow_html=True)
+        with losing:
+            st.markdown(
+                f'<div class="dashboard-stat-column-head">{escape(tr("Losing trades"))}</div>',
+                unsafe_allow_html=True,
+            )
             _render_stat_grid([
                 (tr("Gross loss"), format_currency(-Decimal(report.gross_loss), currency), _presence_metric_tone(report.loss_count, "negative")),
                 (
@@ -756,11 +777,6 @@ def _render_dashboard_statistics(report: DashboardReport, currency: str) -> None
                     _empty_outcome_label(report.breakeven_count, wins=False) if report.average_loss is None
                     else format_currency(report.average_loss, currency),
                     "neutral" if report.average_loss is None else "negative",
-                ),
-                (
-                    tr("Losses"),
-                    format_count(report.loss_count),
-                    _presence_metric_tone(report.loss_count, "negative"),
                 ),
                 (
                     tr("Worst trade"),
@@ -971,14 +987,14 @@ def apply_application_style() -> None:
             margin-top: 0;
             text-align: right;
         }
-        div.st-key-dashboard-win-rate-row {
+        div.st-key-dashboard-win-outcome-row {
             min-height: 1.6rem;
             padding-top: 0.35rem;
         }
-        div.st-key-dashboard-win-rate-row [data-testid="stHorizontalBlock"] {
+        div.st-key-dashboard-win-outcome-row [data-testid="stHorizontalBlock"] {
             gap: 0.25rem;
         }
-        div.st-key-dashboard-win-rate-row [data-testid="stPopover"] button {
+        div.st-key-dashboard-win-outcome-row [data-testid="stPopover"] button {
             min-height: 1rem;
             padding: 0;
         }

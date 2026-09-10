@@ -40,6 +40,10 @@ def test_vietnamese_keeps_familiar_trading_terms(monkeypatch) -> None:
     assert i18n.tr("Today's reviewed issues") == "Vấn đề đã đánh giá hôm nay"
     assert i18n.tr("Resolved today") == "Đã hoàn tất hôm nay"
     assert i18n.tr("Edge quality") == "Chất lượng lợi thế"
+    assert i18n.tr("Edge summary") == "Tóm tắt lợi thế"
+    assert i18n.tr("Outcome distribution") == "Phân bố kết quả"
+    assert i18n.tr("Winning trades") == "Giao dịch thắng"
+    assert i18n.tr("Losing trades") == "Giao dịch thua"
     assert i18n.tr("Win rate details") == "Chi tiết tỷ lệ thắng"
     assert i18n.tr(
         "Excluding breakevens: {rate} = {wins} wins ÷ {decisive} wins and losses.",
