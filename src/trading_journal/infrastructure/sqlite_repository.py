@@ -25,6 +25,22 @@ RUBRIC_VERSIONS = frozenset({CURRENT_RUBRIC_VERSION})
 CURRENT_SCHEMA_VERSION = 8
 _REMOVED_RUBRIC_VERSION = "legacy_v1"
 _REMOVED_PSYCHOLOGY_ROADMAP_ITEM_KEYS = ("triggers", "behaviour_rules", "practice")
+_INTEGRITY_TRIGGER_NAMES = (
+    "prevent_funded_capital_change",
+    "enforce_trade_account_insert",
+    "prevent_logical_trade_account_reassignment",
+    "prevent_risk_policy_account_reassignment",
+    "enforce_trade_account_update",
+    "enforce_assessment_account_insert",
+    "enforce_assessment_account_update",
+    "enforce_zone_v2_assessment_insert",
+    "enforce_zone_v2_assessment_update",
+    "enforce_zone_v2_period_insert",
+    "enforce_zone_v2_period_update",
+    "enforce_zone_v2_focus_insert",
+    "enforce_zone_v2_focus_update",
+    "enforce_journal_settings_singleton",
+)
 PSYCHOLOGY_CRITERIA = (
     "edge_execution",
     "risk_acceptance",
@@ -950,6 +966,7 @@ class SQLiteJournalRepository:
             self._backup_before_schema_migration()
         Base.metadata.create_all(self._engine)
         with self._engine.begin() as connection:
+            self._drop_integrity_triggers(connection)
             columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(journal_settings)")}
             if "display_language" not in columns:
                 connection.exec_driver_sql("ALTER TABLE journal_settings ADD COLUMN display_language VARCHAR(2) NOT NULL DEFAULT 'en'")
@@ -1024,6 +1041,7 @@ class SQLiteJournalRepository:
                     "ALTER TABLE framework_period_reviews ADD COLUMN rubric_version VARCHAR(24) NOT NULL DEFAULT 'legacy_v1'"
                 )
             self._migrate_v1_framework_data(connection)
+            self._create_account_scope_parent_indexes(connection)
             self._migrate_reviews_to_latest_only(connection)
             risk_policy_columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(account_risk_policies)")}
             if "pretrade_balance_auto_evidence_enabled" in risk_policy_columns:
@@ -1048,9 +1066,7 @@ class SQLiteJournalRepository:
             self._migrate_account_scoped_framework_schema(connection)
             # create_all does not add newly-declared indexes to an existing table.
             for statement in (
-                "CREATE UNIQUE INDEX IF NOT EXISTS uq_logical_trade_account ON logical_trades (id, mt5_account_id)",
                 "CREATE INDEX IF NOT EXISTS ix_logical_trades_account_id ON logical_trades (mt5_account_id, id)",
-                "CREATE UNIQUE INDEX IF NOT EXISTS uq_risk_policy_account ON account_risk_policies (id, mt5_account_id)",
                 "CREATE UNIQUE INDEX IF NOT EXISTS uq_active_account_risk_policy ON account_risk_policies (mt5_account_id) WHERE active = 1",
                 "CREATE INDEX IF NOT EXISTS ix_trades_account_exit ON trades (mt5_account_id, exit_time, id)",
                 "CREATE INDEX IF NOT EXISTS ix_trades_logical_trade ON trades (logical_trade_id)",
@@ -1320,67 +1336,73 @@ class SQLiteJournalRepository:
             connection.exec_driver_sql("DROP TABLE framework_period_reviews_versioned")
 
     @staticmethod
+    def _create_account_scope_parent_indexes(connection) -> None:  # type: ignore[no-untyped-def]
+        """Create parent keys before rebuilding tables with composite foreign keys."""
+
+        for statement in (
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_logical_trade_account "
+            "ON logical_trades (id, mt5_account_id)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_risk_policy_account "
+            "ON account_risk_policies (id, mt5_account_id)",
+        ):
+            connection.exec_driver_sql(statement)
+
+    @staticmethod
+    def _drop_integrity_triggers(connection) -> None:  # type: ignore[no-untyped-def]
+        """Keep repository-owned triggers out of structural table migrations."""
+
+        for trigger_name in _INTEGRITY_TRIGGER_NAMES:
+            connection.exec_driver_sql(f"DROP TRIGGER IF EXISTS {trigger_name}")
+
+    @staticmethod
     def _create_integrity_triggers(connection) -> None:  # type: ignore[no-untyped-def]
         """Backfill constraints that SQLite cannot add to existing tables in place."""
 
+        SQLiteJournalRepository._drop_integrity_triggers(connection)
         statements = (
-            "DROP TRIGGER IF EXISTS prevent_funded_capital_change",
             "CREATE TRIGGER prevent_funded_capital_change BEFORE UPDATE OF opening_balance ON mt5_accounts "
             "WHEN OLD.opening_balance IS NOT NULL AND OLD.opening_balance IS NOT NEW.opening_balance "
             "BEGIN SELECT RAISE(ABORT, 'Funded capital is immutable'); END",
-            "DROP TRIGGER IF EXISTS enforce_trade_account_insert",
             "CREATE TRIGGER enforce_trade_account_insert BEFORE INSERT ON trades "
             "WHEN NEW.mt5_account_id IS NULL OR NOT EXISTS (SELECT 1 FROM logical_trades l WHERE l.id = NEW.logical_trade_id AND l.mt5_account_id = NEW.mt5_account_id) "
             "OR (NEW.auto_risk_policy_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM account_risk_policies p WHERE p.id = NEW.auto_risk_policy_id AND p.mt5_account_id = NEW.mt5_account_id)) "
             "BEGIN SELECT RAISE(ABORT, 'Cross-account trade reference'); END",
-            "DROP TRIGGER IF EXISTS prevent_logical_trade_account_reassignment",
             "CREATE TRIGGER prevent_logical_trade_account_reassignment BEFORE UPDATE OF mt5_account_id ON logical_trades "
             "WHEN EXISTS (SELECT 1 FROM trades t WHERE t.logical_trade_id = OLD.id) "
             "OR EXISTS (SELECT 1 FROM post_trade_assessments a WHERE a.logical_trade_id = OLD.id) "
             "BEGIN SELECT RAISE(ABORT, 'Logical trade account is immutable once referenced'); END",
-            "DROP TRIGGER IF EXISTS prevent_risk_policy_account_reassignment",
             "CREATE TRIGGER prevent_risk_policy_account_reassignment BEFORE UPDATE OF mt5_account_id ON account_risk_policies "
             "WHEN EXISTS (SELECT 1 FROM trades t WHERE t.auto_risk_policy_id = OLD.id) "
             "OR EXISTS (SELECT 1 FROM post_trade_assessments a WHERE a.risk_policy_id = OLD.id) "
             "BEGIN SELECT RAISE(ABORT, 'Risk policy account is immutable once referenced'); END",
-            "DROP TRIGGER IF EXISTS enforce_trade_account_update",
             "CREATE TRIGGER enforce_trade_account_update BEFORE UPDATE OF mt5_account_id, logical_trade_id, auto_risk_policy_id ON trades "
             "WHEN NEW.mt5_account_id IS NULL OR NOT EXISTS (SELECT 1 FROM logical_trades l WHERE l.id = NEW.logical_trade_id AND l.mt5_account_id = NEW.mt5_account_id) "
             "OR (NEW.auto_risk_policy_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM account_risk_policies p WHERE p.id = NEW.auto_risk_policy_id AND p.mt5_account_id = NEW.mt5_account_id)) "
             "BEGIN SELECT RAISE(ABORT, 'Cross-account trade reference'); END",
-            "DROP TRIGGER IF EXISTS enforce_assessment_account_insert",
             "CREATE TRIGGER enforce_assessment_account_insert BEFORE INSERT ON post_trade_assessments "
             "WHEN NOT EXISTS (SELECT 1 FROM logical_trades l WHERE l.id = NEW.logical_trade_id AND l.mt5_account_id = NEW.mt5_account_id) "
             "OR (NEW.risk_policy_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM account_risk_policies p WHERE p.id = NEW.risk_policy_id AND p.mt5_account_id = NEW.mt5_account_id)) "
             "BEGIN SELECT RAISE(ABORT, 'Cross-account assessment reference'); END",
-            "DROP TRIGGER IF EXISTS enforce_assessment_account_update",
             "CREATE TRIGGER enforce_assessment_account_update BEFORE UPDATE OF mt5_account_id, logical_trade_id, risk_policy_id ON post_trade_assessments "
             "WHEN NOT EXISTS (SELECT 1 FROM logical_trades l WHERE l.id = NEW.logical_trade_id AND l.mt5_account_id = NEW.mt5_account_id) "
             "OR (NEW.risk_policy_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM account_risk_policies p WHERE p.id = NEW.risk_policy_id AND p.mt5_account_id = NEW.mt5_account_id)) "
             "BEGIN SELECT RAISE(ABORT, 'Cross-account assessment reference'); END",
-            "DROP TRIGGER IF EXISTS enforce_zone_v2_assessment_insert",
             "CREATE TRIGGER enforce_zone_v2_assessment_insert BEFORE INSERT ON post_trade_assessments "
             "WHEN NEW.rubric_version != 'zone_v2' OR NOT json_valid(NEW.criterion_grades) OR NOT json_valid(NEW.violation_codes) OR NOT json_valid(NEW.hard_rule_codes) OR NOT json_valid(NEW.assessed_position_ids) "
             "BEGIN SELECT RAISE(ABORT, 'Only valid zone_v2 assessments are supported'); END",
-            "DROP TRIGGER IF EXISTS enforce_zone_v2_assessment_update",
             "CREATE TRIGGER enforce_zone_v2_assessment_update BEFORE UPDATE OF rubric_version, criterion_grades, violation_codes, hard_rule_codes, assessed_position_ids ON post_trade_assessments "
             "WHEN NEW.rubric_version != 'zone_v2' OR NOT json_valid(NEW.criterion_grades) OR NOT json_valid(NEW.violation_codes) OR NOT json_valid(NEW.hard_rule_codes) OR NOT json_valid(NEW.assessed_position_ids) "
             "BEGIN SELECT RAISE(ABORT, 'Only valid zone_v2 assessments are supported'); END",
-            "DROP TRIGGER IF EXISTS enforce_zone_v2_period_insert",
             "CREATE TRIGGER enforce_zone_v2_period_insert BEFORE INSERT ON framework_period_reviews "
             "WHEN NEW.rubric_version != 'zone_v2' OR NOT json_valid(NEW.alert_codes) OR NOT json_valid(NEW.recurring_issues) "
             "BEGIN SELECT RAISE(ABORT, 'Only valid zone_v2 period reviews are supported'); END",
-            "DROP TRIGGER IF EXISTS enforce_zone_v2_period_update",
             "CREATE TRIGGER enforce_zone_v2_period_update BEFORE UPDATE OF rubric_version, alert_codes, recurring_issues ON framework_period_reviews "
             "WHEN NEW.rubric_version != 'zone_v2' OR NOT json_valid(NEW.alert_codes) OR NOT json_valid(NEW.recurring_issues) "
             "BEGIN SELECT RAISE(ABORT, 'Only valid zone_v2 period reviews are supported'); END",
-            "DROP TRIGGER IF EXISTS enforce_zone_v2_focus_insert",
             "CREATE TRIGGER enforce_zone_v2_focus_insert BEFORE INSERT ON framework_focuses "
             "WHEN NEW.rubric_version != 'zone_v2' BEGIN SELECT RAISE(ABORT, 'Only zone_v2 focuses are supported'); END",
-            "DROP TRIGGER IF EXISTS enforce_zone_v2_focus_update",
             "CREATE TRIGGER enforce_zone_v2_focus_update BEFORE UPDATE OF rubric_version ON framework_focuses "
             "WHEN NEW.rubric_version != 'zone_v2' BEGIN SELECT RAISE(ABORT, 'Only zone_v2 focuses are supported'); END",
-            "DROP TRIGGER IF EXISTS enforce_journal_settings_singleton",
             "CREATE TRIGGER enforce_journal_settings_singleton BEFORE INSERT ON journal_settings "
             "WHEN NEW.id != 1 BEGIN SELECT RAISE(ABORT, 'Journal settings is a singleton'); END",
         )

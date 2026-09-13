@@ -10,7 +10,11 @@ import pytest
 
 from trading_journal.application.dashboard import DashboardService
 from trading_journal.domain.models import MT5PositionExport
-from trading_journal.infrastructure.sqlite_repository import SQLiteJournalRepository
+from trading_journal.infrastructure.sqlite_repository import (
+    CURRENT_SCHEMA_VERSION,
+    PostTradeAssessment,
+    SQLiteJournalRepository,
+)
 
 
 def position(
@@ -136,25 +140,113 @@ def test_schema_v7_adds_breakeven_threshold_with_five_percent_default(tmp_path: 
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 8
 
 
-def test_risk_policy_schema_drops_pretrade_balance_evidence_flag(tmp_path: Path) -> None:
+@pytest.mark.parametrize("source_schema_version", [0, 3])
+def test_legacy_review_and_risk_schema_migrate_together_without_stale_triggers(
+    tmp_path: Path,
+    source_schema_version: int,
+) -> None:
     database_path = tmp_path / "journal.db"
-    repository = SQLiteJournalRepository(database_path)
-    repository.initialize()
+    repository = configured_repository(tmp_path)
     repository.close()
     with sqlite3.connect(database_path) as connection:
+        risk_policies_before = connection.execute(
+            "SELECT id, mt5_account_id, version, active, risk_per_trade_percent "
+            "FROM account_risk_policies ORDER BY id"
+        ).fetchall()
         connection.execute(
             "ALTER TABLE account_risk_policies "
             "ADD COLUMN pretrade_balance_auto_evidence_enabled BOOLEAN NOT NULL DEFAULT 0"
         )
-        connection.execute("PRAGMA user_version = 3")
+        connection.execute(
+            "ALTER TABLE post_trade_assessments "
+            "ADD COLUMN version INTEGER NOT NULL DEFAULT 1 CHECK(version >= 1)"
+        )
+        connection.execute(f"PRAGMA user_version = {source_schema_version}")
 
     migrated = SQLiteJournalRepository(database_path)
     migrated.initialize()
     migrated.close()
-    with sqlite3.connect(database_path) as connection:
-        columns = {row[1] for row in connection.execute("PRAGMA table_info(account_risk_policies)")}
+    reopened = SQLiteJournalRepository(database_path)
+    reopened.initialize()
+    reopened.close()
 
-    assert "pretrade_balance_auto_evidence_enabled" not in columns
+    with sqlite3.connect(database_path) as connection:
+        risk_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(account_risk_policies)")
+        }
+        assessment_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(post_trade_assessments)")
+        }
+        temporary_tables = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE '%_versioned'"
+        ).fetchall()
+        trigger_sql = connection.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type = 'trigger' AND name = 'prevent_logical_trade_account_reassignment'"
+        ).fetchone()
+        risk_policies_after = connection.execute(
+            "SELECT id, mt5_account_id, version, active, risk_per_trade_percent "
+            "FROM account_risk_policies ORDER BY id"
+        ).fetchall()
+        schema_version = connection.execute("PRAGMA user_version").fetchone()[0]
+        quick_check = connection.execute("PRAGMA quick_check").fetchone()[0]
+        foreign_key_violations = connection.execute("PRAGMA foreign_key_check").fetchall()
+
+    assert risk_policies_after == risk_policies_before
+    assert "pretrade_balance_auto_evidence_enabled" not in risk_columns
+    assert "version" not in assessment_columns
+    assert temporary_tables == []
+    assert trigger_sql is not None
+    assert "post_trade_assessments_versioned" not in trigger_sql[0]
+    assert "post_trade_assessments" in trigger_sql[0]
+    assert schema_version == CURRENT_SCHEMA_VERSION
+    assert quick_check == "ok"
+    assert foreign_key_violations == []
+    assert len(list(tmp_path.glob(f"journal.pre-schema-v{CURRENT_SCHEMA_VERSION}-*.db.bak"))) == 1
+
+
+def test_review_rebuild_prepares_composite_parent_indexes_for_v0_schema(tmp_path: Path) -> None:
+    repository = SQLiteJournalRepository(tmp_path / "journal.db")
+    with repository._engine.begin() as connection:
+        connection.exec_driver_sql("CREATE TABLE mt5_accounts (id INTEGER PRIMARY KEY)")
+        connection.exec_driver_sql(
+            "CREATE TABLE logical_trades (id INTEGER PRIMARY KEY, mt5_account_id INTEGER NOT NULL)"
+        )
+        connection.exec_driver_sql(
+            "CREATE TABLE account_risk_policies "
+            "(id INTEGER PRIMARY KEY, mt5_account_id INTEGER NOT NULL)"
+        )
+        connection.exec_driver_sql("CREATE TABLE strategy_profiles (id INTEGER PRIMARY KEY)")
+        PostTradeAssessment.__table__.create(connection)
+        connection.exec_driver_sql(
+            "ALTER TABLE post_trade_assessments "
+            "ADD COLUMN version INTEGER NOT NULL DEFAULT 1 CHECK(version >= 1)"
+        )
+
+    with repository._engine.begin() as connection:
+        repository._create_account_scope_parent_indexes(connection)
+        repository._migrate_reviews_to_latest_only(connection)
+    repository.close()
+
+    with sqlite3.connect(tmp_path / "journal.db") as connection:
+        logical_indexes = {
+            row[1] for row in connection.execute("PRAGMA index_list(logical_trades)")
+        }
+        risk_indexes = {
+            row[1] for row in connection.execute("PRAGMA index_list(account_risk_policies)")
+        }
+        assessment_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(post_trade_assessments)")
+        }
+        temporary_table = connection.execute(
+            "SELECT 1 FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'post_trade_assessments_versioned'"
+        ).fetchone()
+
+    assert "uq_logical_trade_account" in logical_indexes
+    assert "uq_risk_policy_account" in risk_indexes
+    assert "version" not in assessment_columns
+    assert temporary_table is None
 
 
 def test_account_policy_supplies_r_and_preserves_imported_policy_context(tmp_path: Path) -> None:
