@@ -164,7 +164,20 @@ def render_logout_control() -> None:
     """A small sidebar logout button; safe to call only after render_login_gate() succeeds."""
 
     with st.sidebar:
-        _authenticator().logout("Log out", "sidebar")
+        _authenticator().logout("Log out", "sidebar", callback=_reset_session_for_logout)
+
+
+def _reset_session_for_logout(_event: dict[str, object] | None = None) -> None:
+    """Remove every user's UI state before another account can use this tab.
+
+    streamlit-authenticator invokes the callback before it clears its own
+    identity fields and deletes the re-authentication cookie.  Keep its logout
+    guard set after clearing the session so a browser cookie that has not yet
+    been deleted cannot restore the previous account during the logout rerun.
+    """
+
+    st.session_state.clear()
+    st.session_state["logout"] = True
 
 
 def current_username() -> str | None:

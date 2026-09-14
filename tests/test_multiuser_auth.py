@@ -5,6 +5,14 @@ from trading_journal.presentation.branding import TRADE_COMPASS_ICON
 from trading_journal.presentation.multiuser_auth import _cookie_key
 
 
+class _Sidebar:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args) -> None:
+        return None
+
+
 def test_cookie_key_rejects_an_unset_secret(monkeypatch) -> None:
     monkeypatch.delenv("TRADING_JOURNAL_MULTIUSER_COOKIE_KEY", raising=False)
     with pytest.raises(RuntimeError, match="TRADING_JOURNAL_MULTIUSER_COOKIE_KEY"):
@@ -38,3 +46,43 @@ def test_login_page_uses_the_trade_compass_favicon(monkeypatch, tmp_path) -> Non
 
     assert multiuser_auth.render_login_gate() is None
     assert configured["page_icon"] == TRADE_COMPASS_ICON
+
+
+def test_logout_clears_user_specific_session_state_and_blocks_cookie_restore(monkeypatch) -> None:
+    session_state = {
+        "username": "alice",
+        "authentication_status": True,
+        "post-trade-review-trade-id": 42,
+        "logical-trade-regroup-confirmation": {"account_id": 1},
+        "auto_sync_results": [object()],
+        "display_language": "vi",
+        "_multiuser_authenticator": object(),
+    }
+    monkeypatch.setattr(multiuser_auth.st, "session_state", session_state)
+
+    multiuser_auth._reset_session_for_logout({"username": "alice"})
+
+    assert session_state == {"logout": True}
+
+
+def test_logout_control_registers_the_full_session_reset_callback(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class Authenticator:
+        def logout(self, button_name, location, *, callback) -> None:
+            captured.update(
+                button_name=button_name,
+                location=location,
+                callback=callback,
+            )
+
+    monkeypatch.setattr(multiuser_auth.st, "sidebar", _Sidebar())
+    monkeypatch.setattr(multiuser_auth, "_authenticator", Authenticator)
+
+    multiuser_auth.render_logout_control()
+
+    assert captured == {
+        "button_name": "Log out",
+        "location": "sidebar",
+        "callback": multiuser_auth._reset_session_for_logout,
+    }
