@@ -28,6 +28,7 @@ __all__ = [
 
 
 _PLACEHOLDER_COOKIE_KEY = "trade-compass-dev-only-change-me"
+_PASSWORD_LOGIN_COOKIE_PENDING_KEY = "_multiuser_password_login_cookie_pending"
 
 
 def _cookie_key() -> str:
@@ -128,6 +129,7 @@ def render_login_gate() -> str | None:
     # draws nothing) and fall straight through to the app with no login chrome.
     if st.session_state.get("authentication_status"):
         authenticator.login("main")
+        st.session_state.pop(_PASSWORD_LOGIN_COOKIE_PENDING_KEY, None)
         return st.session_state.get("username")
 
     # Otherwise render the login form inside a centered column. On a fresh
@@ -139,17 +141,13 @@ def render_login_gate() -> str | None:
             st.image(TRADE_COMPASS_ICON, width=44)
             st.subheader(tr("Trade Compass"))
         render_trade_doctrine(tr("Survival · Consistency · Discipline"))
-        authenticator.login("main")
+        authenticator.login("main", callback=_mark_password_login_cookie_pending)
         message = st.empty()
 
     authentication_status = st.session_state.get("authentication_status")
     if authentication_status:
-        # A fresh, successful submit already drew the login form above (the widgets
-        # are placed before login() can know the result) - returning here would let
-        # main() render the dashboard right below that still-visible form in this
-        # same run. Rerun instead so the next run's already-signed-in fast path
-        # (above) skips drawing the form at all.
-        st.rerun()
+        # Do not render the dashboard below the login form in this same run.
+        _finish_authenticated_login_run()
 
     # Not signed in: this run only shows the login screen. Hide the app sidebar
     # and nav so no menu leaks onto the login page — before first login or after
@@ -158,6 +156,25 @@ def render_login_gate() -> str | None:
     if authentication_status is False:
         message.error(tr("Incorrect username or password."))
     return None
+
+
+def _mark_password_login_cookie_pending(_event: dict[str, object]) -> None:
+    """Distinguish a password login, which still has a browser cookie write pending."""
+
+    st.session_state[_PASSWORD_LOGIN_COOKIE_PENDING_KEY] = True
+
+
+def _finish_authenticated_login_run() -> None:
+    """Wait for a password login's client-side cookie write before rerunning."""
+
+    if st.session_state.get(_PASSWORD_LOGIN_COOKIE_PENDING_KEY):
+        # The authenticator has just mounted its CookieManager "set"
+        # component.  An immediate server-side rerun can unmount it before its
+        # JavaScript replaces a previous user's browser cookie.  Stop this run
+        # after emitting the component; its setComponentValue() response starts
+        # the clean authenticated rerun.
+        st.stop()
+    st.rerun()
 
 
 def render_logout_control() -> None:

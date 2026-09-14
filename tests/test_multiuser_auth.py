@@ -86,3 +86,54 @@ def test_logout_control_registers_the_full_session_reset_callback(monkeypatch) -
         "location": "sidebar",
         "callback": multiuser_auth._reset_session_for_logout,
     }
+
+
+def test_password_login_marks_the_cookie_write_as_pending(monkeypatch) -> None:
+    session_state: dict[str, object] = {}
+    monkeypatch.setattr(multiuser_auth.st, "session_state", session_state)
+
+    multiuser_auth._mark_password_login_cookie_pending({"username": "kata"})
+
+    assert session_state[multiuser_auth._PASSWORD_LOGIN_COOKIE_PENDING_KEY] is True
+
+
+def test_password_login_waits_for_the_cookie_component_before_rerunning(monkeypatch) -> None:
+    class Stopped(Exception):
+        pass
+
+    reran = False
+
+    def rerun() -> None:
+        nonlocal reran
+        reran = True
+
+    def stop() -> None:
+        raise Stopped
+
+    monkeypatch.setattr(
+        multiuser_auth.st,
+        "session_state",
+        {multiuser_auth._PASSWORD_LOGIN_COOKIE_PENDING_KEY: True},
+    )
+    monkeypatch.setattr(multiuser_auth.st, "stop", stop)
+    monkeypatch.setattr(multiuser_auth.st, "rerun", rerun)
+
+    with pytest.raises(Stopped):
+        multiuser_auth._finish_authenticated_login_run()
+
+    assert reran is False
+
+
+def test_cookie_restored_login_reruns_immediately(monkeypatch) -> None:
+    reran = False
+
+    def rerun() -> None:
+        nonlocal reran
+        reran = True
+
+    monkeypatch.setattr(multiuser_auth.st, "session_state", {})
+    monkeypatch.setattr(multiuser_auth.st, "rerun", rerun)
+
+    multiuser_auth._finish_authenticated_login_run()
+
+    assert reran is True
